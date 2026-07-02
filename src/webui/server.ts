@@ -961,6 +961,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
       const result = await handleUserMessage(_rpMsg, _rpPass, body.test_mode === true);
 
+      // 探针心跳更新（callCount递增+lastHeartbeat刷新，status由超时逻辑判定）
+      try {
+        const _ht = Date.now();
+        for (const _d of HOOK_DEFS) {
+          const _m = hookMonitor.get(_d.id);
+          if (_m) { _m.callCount++; _m.lastHeartbeat = _ht; }
+        }
+      } catch (_: any) {}
+
       // TTS 同步生成：回复中含语音URL
       const tts = body.tts !== false;
       let audio_url: string | null = null;
@@ -986,6 +995,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ...result, audio_url }));
+      return;
     }
 
     // ── 撤回消息（30秒内可撤回已发送的消息） ──
@@ -1225,6 +1235,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       res.write(`data: ${JSON.stringify({ type: 'done', content: _fullText, audio_url: audio_url })}\n\n`);
       res.end();
+      return;
     }
 
     // ── 重置 ──
@@ -2329,12 +2340,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const cards = HOOK_DEFS.map(d => {
         const m = hookMonitor.get(d.id)!;
         const elapsed = now - m.lastHeartbeat;
-        let status = m.lastStatus;
+        let status = 'green';
         if (m.lastHeartbeat === 0) status = 'gray';
-        else if (elapsed > d.th) status = 'red';
-        else if (elapsed > d.th / 3) status = 'yellow';
+        else if (elapsed >= d.th) status = 'red';
+        else if (elapsed >= d.th / 3) status = 'yellow';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.1) status = 'red';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) status = 'yellow';
+        else status = 'green';
         const avgD = m.callCount > 0 ? Math.round(m.totalDuration / m.callCount) : 0;
         return { id: d.id, name: d.name, status,
           callCount: m.callCount, errorCount: m.errorCount,
@@ -2361,8 +2373,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const yellTh = d.th / 3;
         let status = 'gray';
         if (m.lastHeartbeat === 0) status = 'gray';
-        else if (elapsed > d.th) status = 'red';
-        else if (elapsed > yellTh) status = 'yellow';
+        else if (elapsed >= d.th) status = 'red';
+        else if (elapsed >= yellTh) status = 'yellow';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.1) status = 'red';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) status = 'yellow';
         else if (m.lastHeartbeat > 0) status = 'green';
@@ -2385,7 +2397,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const cards = HOOK_DEFS.map(d => {
         const m = hookMonitor.get(d.id)!; const el = now - m.lastHeartbeat; const yellT = d.th / 3;
         let s = m.lastStatus;
-        if (m.lastHeartbeat === 0) s = 'gray'; else if (el > d.th) s = 'red'; else if (el > yellT) s = 'yellow';
+        if (m.lastHeartbeat === 0) s = 'gray'; else if (el >= d.th) s = 'red'; else if (el >= yellT) s = 'yellow';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.1) s = 'red';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) s = 'yellow';
         else if (m.lastHeartbeat > 0) s = 'green';
@@ -2423,19 +2435,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const m = hookMonitor.get(d.id)!;
         const elapsed = now - m.lastHeartbeat;
         const yellY = d.th / 3;
-        let s = 'gray';
+        let s = 'green';
         if (m.lastHeartbeat === 0) s = 'gray';
-        else if (elapsed > d.th) s = 'red';
-        else if (elapsed > yellY) s = 'yellow';
+        else if (elapsed >= d.th) s = 'red';
+        else if (elapsed >= yellY) s = 'yellow';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.1) s = 'red';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) s = 'yellow';
-        else s = 'green';
+        else if (m.lastHeartbeat > 0) s = 'green';
         const cl = s === 'green' ? '#2ecc71' : s === 'yellow' ? '#f1c40f' : s === 'red' ? '#e74c3c' : '#333';
         const avgD = m.callCount > 0 ? Math.round(m.totalDuration / m.callCount) : 0;
         const errRate = m.callCount > 0 ? (m.errorCount / m.callCount * 100).toFixed(1) : '0';
         const elas = elapsed >= 60000 ? (elapsed/60000).toFixed(1)+'m' : (elapsed/1000).toFixed(0)+'s';
         const ths = d.th >= 60000 ? (d.th/60000).toFixed(0)+'m' : (d.th/1000).toFixed(0)+'s';
-        return `<div style="background:#0a0c10;border:1px solid #222;border-radius:6px;padding:8px 12px;font-size:12px"><div style="display:flex;justify-content:space-between"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${cl};margin-right:4px;vertical-align:middle"></span><b>${d.id}</b><span style="color:#889;margin-left:4px;font-size:11px">${d.name}</span></span><span style="color:#556;font-size:10px">⏱${ths}</span></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:10px;color:#889"><span>📊${m.callCount}次</span><span style="color:${parseFloat(errRate)>10?'#e74c3c':parseFloat(errRate)>3?'#f1c40f':'#556'}">❌${m.errorCount}(${errRate}%)</span><span>⚡${avgD}ms</span><span>🕐${elas}前</span></div></div>`;
+        const errCl2 = parseFloat(errRate)>10?'#e74c3c':parseFloat(errRate)>3?'#f1c40f':'#556';
+        return `<div style="background:#0a0c10;border:1px solid #222;border-radius:6px;padding:6px 10px;font-size:12px"><div style="display:flex;justify-content:space-between;align-items:center"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${cl};margin-right:4px;vertical-align:middle"></span><b>${d.id}</b><span style="color:#889;margin-left:4px;font-size:11px">${d.name}</span></span><span style="color:#556;font-size:10px">${ths}</span></div><div style="display:flex;justify-content:space-between;margin-top:2px;font-size:10px;color:#889"><span>${m.callCount}x</span><span style="color:${errCl2}">${m.errorCount}err</span><span>${avgD}ms</span><span>${elas}</span></div></div>`;
       }).join('');
       const g = HOOK_DEFS.filter(d => { const m=hookMonitor.get(d.id)!; const e=now-m.lastHeartbeat; const t=d.th/3; return m.lastHeartbeat>0&&e<=t&&(!m.errorCount||m.errorCount/m.callCount<=0.03); }).length;
       const y = HOOK_DEFS.filter(d => { const m=hookMonitor.get(d.id)!; const e=now-m.lastHeartbeat; const t=d.th/3; return m.lastHeartbeat>0&&(e>t||(m.errorCount&&m.errorCount/m.callCount>0.03)); }).length;
@@ -2453,11 +2466,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
-    res.writeHead(404); res.end('404');
+    if (!res.headersSent) { res.writeHead(404); res.end('404'); }
   } catch (err: any) {
-    console.error('[WebUI] Error:', err);
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: err.message || 'Internal Server Error' }));
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: err.message || 'Internal Server Error' }));
+    } else {
+      console.error('[WebUI] Error (response already sent):', err);
+    }
   }
 }
 
@@ -2498,6 +2514,8 @@ async function main(): Promise<void> {
         console.warn(`[Hook] ${_d.id} ${_d.name} 超时 ${Math.round(_elapsed/60000)}min → 标红`);
       } else if (_elapsed > 3 * 60 * 1000) {
         _m.lastStatus = 'gray';
+      } else if (_m.lastStatus === 'red' || _m.lastStatus === 'gray') {
+        _m.lastStatus = 'green';
       }
     }
   }, 30000);

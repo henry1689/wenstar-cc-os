@@ -92,37 +92,25 @@ function _renderCards(d) {
   for (var i = 0; i < d.cards.length; i++) {
     var c = d.cards[i];
     var cl = c.status === 'green' ? '#2ecc71' : c.status === 'yellow' ? '#f1c40f' : c.status === 'red' ? '#e74c3c' : '#333';
-    var th = c.thresholdMs || 0;
-    var ths = th >= 60000 ? (th/60000).toFixed(0) + 'm' : (th/1000).toFixed(0) + 's';
-    var ela = c.elapsedMs || 0;
-    var elas = ela >= 60000 ? (ela/60000).toFixed(1) + 'm' : (ela/1000).toFixed(0) + 's';
+    var ths = (c.thresholdMs||0) >= 60000 ? ((c.thresholdMs||0)/60000).toFixed(0)+'m' : ((c.thresholdMs||0)/1000).toFixed(0)+'s';
+    var elas = (c.elapsedMs||0) >= 60000 ? ((c.elapsedMs||0)/60000).toFixed(1)+'m' : ((c.elapsedMs||0)/1000).toFixed(0)+'s';
     var errRate = c.errorRate || 0;
     var errCl = errRate > 10 ? 'color:#e74c3c' : errRate > 3 ? 'color:#f1c40f' : 'color:#556';
     var avgD = c.avgDuration || 0;
-    var rcAvg = c.recentAvg || 0;
-    var trend = rcAvg > 0 && avgD > 0 ? (rcAvg < avgD * 0.8 ? '<span style="color:#2ecc71">' + String.fromCodePoint(0x25B2) + '</span>' : rcAvg > avgD * 1.2 ? '<span style="color:#e74c3c">' + String.fromCodePoint(0x25BC) + '</span>' : '<span style="color:#556">' + String.fromCodePoint(0x25B6) + '</span>') : '';
-    h += '<div style="background:#0a0c10;border:1px solid #222;border-radius:8px;padding:6px 14px;font-size:13px">';
-    h += '<div style="display:flex;justify-content:space-between;align-items:center">';
-    h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + cl + ';margin-right:4px;vertical-align:middle"></span>';
-    h += '<b style="font-size:14px">' + c.id + '</b><span style="color:#889;margin-left:4px;font-size:12px">' + c.name + '</span></span>';
-    h += '<span style="font-size:11px;color:#556">' + ths + '</span></div>';
-    h += '<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:3px">';
-    h += '<span style="color:#889">' + String.fromCodePoint(0x1F4CA) + (c.callCount||0) + String.fromCodePoint(0x56DE) + '</span>';
-    h += '<span style="' + errCl + '">' + String.fromCodePoint(0x274C) + (c.errorCount||0) + '</span>';
-    h += '<span style="color:#556">' + String.fromCodePoint(0x23F1) + '(' + avgD + '/' + ths + ')</span>';
-    h += '<span>' + trend + '<span style="color:#556;margin-left:2px">' + rcAvg + 'ms</span></span></div>';
-    h += '<div style="font-size:10px;color:#445;margin-top:1px">' + String.fromCodePoint(0x1F550) + String.fromCodePoint(0xFE0F) + elas + String.fromCodePoint(0x524D) + '</div></div>';
+    h += '<div style="background:#0a0c10;border:1px solid #222;border-radius:8px;padding:6px 10px;font-size:12px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+cl+';margin-right:4px;vertical-align:middle"></span><b>'+c.id+'</b><span style="color:#889;margin-left:4px;font-size:11px">'+c.name+'</span></span><span style="color:#556;font-size:10px">'+ths+'</span></div>';
+    h += '<div style="display:flex;justify-content:space-between;font-size:10px;margin-top:2px;color:#889"><span>'+ (c.callCount||0)+'x</span><span style="'+errCl+'">'+(c.errorCount||0)+'err</span><span>'+avgD+'ms</span><span>'+elas+'</span></div></div>';
   }
   document.getElementById('grd').innerHTML = h;
   var g = d.cards.filter(function(x){return x.status==='green'}).length;
   var y = d.cards.filter(function(x){return x.status==='yellow'}).length;
   var r = d.cards.filter(function(x){return x.status==='red'}).length;
-  document.getElementById('st').innerHTML = String.fromCodePoint(0x1F7E2) + g + ' ' + String.fromCodePoint(0x1F7E1) + y + ' ' + String.fromCodePoint(0x1F534) + r;
-  var ts = g+y+r > 0 ? Math.round((g+(y*0.5))/Math.max(1,g+y+r)*100) : 0;
-  if (document.getElementById('al')) document.getElementById('al').innerHTML = String.fromCodePoint(0x1F3AF) + String.fromCodePoint(0x5065) + String.fromCodePoint(0x5EB7) + ts + '%';
+  var total = g+y+r;
+  document.getElementById('st').innerHTML = 'g'+g+' y'+y+' r'+r;
+  var ts = total > 0 ? Math.round((g+(y*0.5))/total*100) : 0;
+  if (document.getElementById('al')) document.getElementById('al').innerHTML = 'health'+ts+'%';
   _checkAndSpeak(d.cards);
-}
-function rf() {
+}function rf() {
   fetch('/_hooks/monitor',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){_renderCards(d)});
 }
 function ra(){fetch('/_hooks/alerts',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){document.getElementById('ab').textContent=d.alerts.length;if(!d.alerts.length){document.getElementById('ap').innerHTML='<span style="color:#556">✅ 正常</span>'}else{document.getElementById('ap').innerHTML=d.alerts.map(function(a){return '<div style="font-size:10px;color:#aab;padding:1px 0">⚠ '+a.id+' '+a.type+'</div>'}).join('')}})}
