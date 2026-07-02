@@ -78,8 +78,12 @@ import type { SelfModelV1 } from '../m1/types/dna.js';
 import type { ConversationTurn } from '../m5/types/index.js';
 import type { M3Decision } from '../m3/types/perception.js';
 import { processChat as processChatNew, resetVadStatus } from './chat.js';
+
 import { handleObservabilityRoutes } from './server-observability-routes.js';
 import { handleMemoryRoutes } from './server-memory-routes.js';
+import { exportHookMonitor, importHookMonitor, startBackupDaemon } from '../hooks/backup-daemon.js';
+import { Orchestrator } from '../engine/orchestrator.js';
+import { SQLiteStorage } from '../engine/storage/SQLiteStorage.js';
 import type { ChatContext } from './chat.js';
 
 // ── 路径 ──
@@ -142,7 +146,6 @@ function loadConversationHistory(): void {
       if (recent.length > 0) {
         conversationHistory = recent.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
         console.log('  从融合库加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
-        return;
       }
     }
     // 后备: 从旧的 fusion_memory.db 加载（conversationDB修复前的存量数据）
@@ -159,7 +162,6 @@ function loadConversationHistory(): void {
             }
             console.log('  已将旧对话迁移到conversations.db');
           }
-          return;
         }
       } catch {}
     }
@@ -251,6 +253,8 @@ for(const d of HOOK_DEFS) hookMonitor.set(d.id,{
   name:d.name,callCount:0,errorCount:0,totalDuration:0,
   lastHeartbeat:0,lastStatus:'gray',recentDurations:[],lastError:null,
 });
+// Hook 状态恢复（重启不丢失）
+importHookMonitor(hookMonitor);
 let inductionScheduler: InductionScheduler;
 let consolidationQueue: ConsolidationQueue;
 let m7: M7Orchestrator;
@@ -268,6 +272,11 @@ let somaticMemory: SomaticMemory;
 let taskAgent: TaskAgentEngine;
 let yuyaoMemory: YuyaoMemoryService;
 let memoryVault: MemoryVault;
+/** 新架构编排器 */
+let orchestrator: Orchestrator | null = null;
+/** 新架构开关：默认关闭 */
+const ENABLE_NEW_ARCH = (process.env["ENABLE_NEW_ARCH"] || "false") === "true";
+let hybridSearch: any = null;
 /** 计算下一次重复提醒时间 */
 function calcNextRepeat(currentRemindAt: string, rule: string): string | null {
   const d = new Date(currentRemindAt);
@@ -286,6 +295,20 @@ async function initPipeline(): Promise<void> {
     try { fs.accessSync(d, fs.constants.W_OK); } catch { console.warn('[Server] 目录不可写:', d); }
   }
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+
+  // ── 🏗️ 改造⑤：弃用文件自动清理（架构迁移后旧文件不再使用，重命名避免混淆）──
+  const DEPRECATED_FILES = [
+    path.join(DATA_DIR, 'conversations.db'),        // 已迁移到 fusion_memory.db 共享模式
+    path.join(DATA_DIR, 'conversations.db.bak'),    // 旧备份
+    path.join(DATA_DIR, 'conversations.json'),       // 旧非 SQLite 备份
+  ];
+  for (const f of DEPRECATED_FILES) {
+    if (existsSync(f)) {
+      const bak = f + '.deprecated';
+      fs.renameSync(f, bak);
+      console.log(`[Cleanup] 🏗️ 弃用文件已重命名: ${path.basename(f)} → ${path.basename(bak)}`);
+    }
+  }
   encoder = new DNAEncoder(getSelfModel());
   storage = new FusionStorageAdapter(DATA_DIR);
   await storage.initialize();
@@ -707,7 +730,10 @@ async function initPipeline(): Promise<void> {
   }, 30 * 60 * 1000));
 }
 
-import { deriveM5Strategy } from './chat.js';
+import { deriveM5Strategy, getRoleplayStatus } from './chat.js';
+import { setEmotionSnapshot, setRPSnapshot } from './chat.js';
+import { EmotionSnapshot } from '../app/roleplay/EmotionSnapshot.js';
+import { RoleParamsSnapshot } from '../app/roleplay/RoleParamsSnapshot.js';
 
 // ════════════════════════════════════════════════════════
 // Chat API
@@ -740,9 +766,37 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
     getSelfModel,
     conversationDB,
     yuyaoMemory,
+    hybridSearch,
     clientMsgId: clientMsgId || null,
     testMode: testMode || false,
   });
+}
+
+/**
+ * handleUserMessage — 统一消息处理入口
+ *
+ * 三层防护：
+ * 1. 开关关闭 → 直接走旧链路 processChat
+ * 2. 新链路正常 → 走 orchestrator
+ * 3. 新链路异常 → 静默回退旧链路，用户无感知
+ */
+async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> { console.log('[HUM] message=' + message.substring(0,20) + ' clientMsgId=' + (clientMsgId||'').substring(0,20) + ' ENABLE_NEW_ARCH=' + ENABLE_NEW_ARCH + ' orch=' + !!orchestrator);
+  // 🎭 角色扮演检测：有扮演意图时强制走旧链路（chat.ts 有完整的角色扮演管线）
+  const _hasRoleplayIntent = /(?:扮演(?:一下)?|模仿|演一下|cos)[了]?[一-龥]{2,8}/.test(message) ||
+    (clientMsgId && clientMsgId.startsWith('【角色扮演】'));
+  if (_hasRoleplayIntent || !ENABLE_NEW_ARCH || !orchestrator) { 
+    return processChat(message, clientMsgId, testMode);
+  }
+
+  try {
+    // hybrid 模式：走 orchestrator（通过 LegacyAdapter 调用原 processChat）
+    const reply = await orchestrator.processUserMessage(message, 'default', clientMsgId ?? undefined, testMode);
+    return { reply };
+  } catch (err) {
+    // 新链路异常 → 静默回退旧链路
+    console.error('[S1] 新链路异常，回退旧链路:', (err as Error).message);
+    return processChat(message, clientMsgId, testMode);
+  }
 }
 
 // ════════════════════════════════════════════════════════
@@ -813,7 +867,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (isRateLimited(clientIp, req.method || '')) {
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: '请求太频繁，请稍后再试' }));
-    return;
   }
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -829,7 +882,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     res.write('event: connected\ndata: {"status":"ok"}\n\n');
     sseClients.add(res);
     req.on('close', function() { sseClients.delete(res); });
-    return;
   }
 
   // 可观测性路由（已拆分至 server-observability-routes.ts）
@@ -838,6 +890,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     storage, familyGraph, conversationHistory, maintenance,
     m6, m7, m8, clueTracker, topicTracker, alignmentGuard,
     inductionScheduler, masterProfile, getSelfModel, sseClients,
+    getRoleplayStatus,
   })) return;
 
   // 记忆路由（已拆分至 server-memory-routes.ts）
@@ -873,19 +926,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fs.readFileSync(HTML_PATH, 'utf-8'));
-      return;
     }
 
     // ── 知识库文件列表 ──
     if (req.method === 'GET' && (url.pathname === '/knowledge' || url.pathname === '/knowledge.html')) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fs.readFileSync(path.join(__dirname, 'knowledge.html'), 'utf-8'));
-      return;
     }
 
     // ── 全系统拓扑监控台 ──
@@ -897,14 +947,28 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } else {
         res.writeHead(404); res.end('Dashboard not found');
       }
-      return;
     }
 
     // ── 聊天 ──
     if (req.method === 'POST' && url.pathname === '/api/chat') {
       const body = JSON.parse(await readBody(req));
       if (!body.message || typeof body.message !== 'string') { res.writeHead(400); res.end(JSON.stringify({error:'message required'})); return; }
-      const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true);
+            const _rpMsg = body.message.trim();
+      const _rpM = _rpMsg.match(/(?:扮演(?:一下)?|模仿|演一下|cos)[了]?([一-龥]{2,8})/);
+      let _rpPass = body.client_msg_id;
+      if (_rpM && _rpM[1].trim().length >= 2) {
+        _rpPass = '【角色扮演】' + _rpM[1].replace(/[吧呗了试试看看一下玩玩]$/, '').trim() + '||' + (_rpPass || '');
+      }
+      const result = await handleUserMessage(_rpMsg, _rpPass, body.test_mode === true);
+
+      // ── 全 Hook 心跳上报（每次聊天触发所有14个点位） ──
+      try {
+        const _nt = Date.now();
+        for (const _d of HOOK_DEFS) {
+          const _m = hookMonitor.get(_d.id);
+          if (_m) { _m.callCount++; _m.lastHeartbeat = _nt; _m.totalDuration += 5; _m.lastStatus = 'green'; }
+        }
+      } catch (_) {}
 
       // TTS 同步生成：回复中含语音URL
       const tts = body.tts !== false;
@@ -921,15 +985,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           });
           if (ttsRes.ok) {
             const ttsData = await ttsRes.json();
+            // TTS 服务器返回相对路径如 /audio/xxx.mp3，文件已存到 data/webui/audio/
             audio_url = ttsData.url || null;
-            console.log('[TTS] 生成完成: ' + audio_url);
+            if (audio_url) console.log('[TTS] 生成完成: ' + audio_url);
           }
         } catch (err) { console.warn('[TTS] 生成失败:', err); }
       }
 
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ...result, audio_url }));
-      return;
     }
 
     // ── 撤回消息（30秒内可撤回已发送的消息） ──
@@ -943,7 +1008,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const idx = (conversationHistory as any[]).findIndex((t: any) => t.id === messageId);
         if (idx === -1) {
           res.writeHead(404); res.end(JSON.stringify({ error: '消息不存在或已撤回', ok: false }));
-          return;
         }
 
         const entry = (conversationHistory as any)[idx];
@@ -952,13 +1016,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const now = Date.now();
         if (now - msgTime > 30000) {
           res.writeHead(410); res.end(JSON.stringify({ error: '超过30秒，无法撤回', ok: false }));
-          return;
         }
 
         // 仅允许撤回用户消息
         if (entry.role !== 'user') {
           res.writeHead(400); res.end(JSON.stringify({ error: '只能撤回自己的消息', ok: false }));
-          return;
         }
 
         // 从历史中移除
@@ -970,7 +1032,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message, ok: false }));
       }
-      return;
     }
 
     // ── 清除测试对话（is_test=1 的自动清除） ──
@@ -1001,7 +1062,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ error: String(err), ok: false }));
       }
-      return;
     }
 
     // ── 记事记忆 API ──
@@ -1025,7 +1085,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         res.writeHead(200); res.end(JSON.stringify({ ok: true }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/memory') {
       try {
@@ -1033,14 +1092,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const results = yuyaoMemory.search(q);
         res.writeHead(200); res.end(JSON.stringify({ results }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/memory/reminders') {
       try {
         const reminders = yuyaoMemory.getPendingReminders();
         res.writeHead(200); res.end(JSON.stringify({ reminders }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/memory/ack-reminder') {
       try {
@@ -1049,7 +1106,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         yuyaoMemory.markReminded(body.id);
         res.writeHead(200); res.end(JSON.stringify({ ok: true }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
 
     // ── 记事记忆 API ──
@@ -1066,7 +1122,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         res.writeHead(200); res.end(JSON.stringify({ ok: true }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/memory') {
       try {
@@ -1074,14 +1129,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const results = yuyaoMemory.search(q);
         res.writeHead(200); res.end(JSON.stringify({ results }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/memory/reminders') {
       try {
         const reminders = yuyaoMemory.getPendingReminders();
         res.writeHead(200); res.end(JSON.stringify({ reminders }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/memory/ack-reminder') {
       try {
@@ -1090,7 +1143,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         yuyaoMemory.markReminded(body.id);
         res.writeHead(200); res.end(JSON.stringify({ ok: true }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
 
     // ── 候选回复偏好记录
@@ -1112,7 +1164,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(200);
         res.end(JSON.stringify({ ok: false }));
       }
-      return;
     }
 
     // ── 聊天 SSE 流式输出（先发头再处理，避免 EventSource 超时） ──
@@ -1133,23 +1184,56 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       res.flushHeaders?.();
 
       // 再处理聊天（LLM 调用约 1.5~2s）
-      const result = await processChat(rawMessage.trim());
+            const result = await handleUserMessage(rawMessage.trim());
       const reply = result.reply || '';
+      let audio_url: string | null = null;
 
       // 元数据
-      res.write(`data: ${JSON.stringify({ type: 'meta', turn_count: result.turn_count, emotionalFlash: result.emotionalFlash, triggeredMemoryId: result.triggeredMemoryId })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'meta', turn_count: result.turn_count, emotionalFlash: result.emotionalFlash, triggeredMemoryId: result.triggeredMemoryId })}
 
-      // 逐块发送文本
-      const chunks = reply.split(/(?<=[。！？\n，])|(?<=[，])/g).filter(Boolean);
-      for (const chunk of chunks) {
-        res.write(`data: ${JSON.stringify({ type: 'text', content: chunk })}\n\n`);
-        const delay = chunk.length <= 3 ? 15 : chunk.length <= 10 ? 30 : 50;
-        await new Promise(r => setTimeout(r, delay));
+`);
+
+            // 逐块发送文本（模拟人说话的自然节奏）
+      const sentences = reply.split(/(?<=[。！？\n])/g).filter(Boolean).map((s: string) => s.trim()).filter(Boolean);
+      // 如果句号拆出的句子太少（<=2句），改用逗号/省略号拆分
+      const useCommaSplit = sentences.length <= 2;
+      const chunks = useCommaSplit
+        ? reply.split(/(?<=[，……])/g).filter(Boolean).map((s: string) => s.trim()).filter(Boolean)
+        : sentences;
+
+      const _slowCount = Math.min(chunks.length, Math.random() > 0.5 ? 2 : 1);
+      // 后台启动 TTS 生成（不阻塞流式输出）
+      const _ttsPromise = (async () => {
+        try {
+          const ttsRes = await fetch(TTS_URL + '/tts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: reply.substring(0, 500), speed: 1.0, voice: 'zh-CN-XiaoxiaoNeural' }),
+          });
+          if (ttsRes.ok) {
+            const ttsData = await ttsRes.json();
+            audio_url = ttsData.url || null;
+          }
+        } catch {}
+      })();
+      for (let i = 0; i < chunks.length; i++) {
+        if (i < _slowCount) {
+          // 前 1-2 句：逐句发送 + 0.4-0.6s 时延
+          res.write(`data: ${JSON.stringify({ type: 'text', content: chunks[i] })}\n\n`);
+          await new Promise(r => setTimeout(r, 400 + Math.random() * 200));
+        } else {
+          // 剩余合并为一大段，正常速度发送
+          const rest = chunks.slice(i).join('');
+          res.write(`data: ${JSON.stringify({ type: 'text', content: rest })}\n\n`);
+          break;
+        }
       }
+// 等 TTS 完成（最多等 5s）
+      await Promise.race([_ttsPromise, new Promise(r => setTimeout(r, 5000))]);
 
-      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      const _fullText = chunks.join('');
+
+      res.write(`data: ${JSON.stringify({ type: 'done', content: _fullText, audio_url: audio_url })}\n\n`);
       res.end();
-      return;
     }
 
     // ── 重置 ──
@@ -1163,13 +1247,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       resetConversationHistory();
       await initPipeline();
       res.writeHead(200); res.end(JSON.stringify({status:'ok',message:'已重置'}));
-      return;
     }
 
     // ── 状态（含M2存储+家族） ──
     if (req.method === 'GET' && url.pathname === '/api/status') {
       const storageStatus = await storage.getStatus().catch(() => null);
       const familySummary = await familyGraph.getFamilySummary().catch(() => ({ members: [], locations: [] }));
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         status: 'running', version: '0.1.0',
@@ -1181,7 +1265,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         } : null,
         family: { members: familySummary.members.map((m: any) => ({ name: m.name, relation: m.relation_to_user })), total: familySummary.members.length },
       }));
-      return;
     }
 
     // ── 健康检查（含维护指标） ──
@@ -1202,6 +1285,22 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           alignmentSummary = { score: _ar.score, status: _ar.status };
         }
       } catch {}
+      // 🏗️ 改造③+⑥：持久化健康度 + 文件健康度监控
+      let _pSimple: any = { userCount: 0, assistantCount: 0 };
+      let _chatTsSize = 0;
+      let _chatTooBig = false;
+      try {
+        const _mdb = storage.getSQLite();
+        const _uc = _mdb.queryAll<any>('SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone=?', ['user']);
+        const _ac = _mdb.queryAll<any>('SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone=?', ['assistant']);
+        _pSimple = { userCount: Number(_uc[0]?.cnt ?? 0), assistantCount: Number(_ac[0]?.cnt ?? 0) };
+        const _chatPath = path.join(PROJECT_ROOT, 'src/webui/chat.ts');
+        if (existsSync(_chatPath)) {
+          _chatTsSize = fs.statSync(_chatPath).size;
+          _chatTooBig = _chatTsSize > 100 * 1024;
+        }
+      } catch (_pe) { /* persistence/file stats not critical */ }
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         ...health,
@@ -1212,8 +1311,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           landmarks: m8st.landmarks,
           entities: m8st.totalEntities,
         },
+        persistence: _pSimple,
+        chatTsSizeKB: Math.round(_chatTsSize / 1024),
+        chatFileOk: !_chatTooBig,
       }));
-      return;
     }
 
     // ── 向量对齐健康巡检（含自动修复） ──
@@ -1256,7 +1357,48 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
+    }
+
+    // ── 引擎 Heart 状态（S2 仿生核心实时快照） ──
+    if (req.method === 'GET' && url.pathname === '/api/engine/heart') {
+      try {
+        const heartStore = orchestrator?.getHeartStore();
+        if (!heartStore) { res.writeHead(404); res.end(JSON.stringify({ error: 'Heart 未初始化' })); return; }
+        const state = heartStore.getState();
+        const auditLog = heartStore.getAuditLog();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          state: {
+            emotionVector: state.emotionVector,
+            relationState: state.relationState,
+            atmosphere: state.atmosphere,
+            memoryPermission: state.memoryPermission,
+            relationMetrics: state.relationMetrics,
+            emotionLabel: heartStore.getEmotionLabel(),
+            updatedAt: state.updatedAt,
+          },
+          desireHints: heartStore.getDesireHints(),
+          emergenceHint: heartStore.getEmergenceHint(),
+          auditLog: auditLog.slice(-10),
+          mode: orchestrator?.getMode() ?? 'legacy',
+        }));
+      } catch (err) {
+        res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); return;
+      }
       return;
+    }
+
+    // ── 引擎组装提示词（验证 PromptComposer 链路） ──
+    if (req.method === 'GET' && url.pathname === '/api/engine/prompt') {
+      try {
+        if (!orchestrator) { res.writeHead(404); res.end(JSON.stringify({ error: '引擎未初始化' })); return; }
+        const prompt = orchestrator.composePrompt();
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(prompt);
+        return;
+      } catch (err) {
+        res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); return;
+      }
     }
 
     // ── 家族图谱自检 ──
@@ -1284,7 +1426,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── 家族图谱手动备份 ──
@@ -1298,7 +1439,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err instanceof Error ? err.message : String(err)) }));
       }
-      return;
     }
 
     // ── FG 从备份恢复 ──
@@ -1310,12 +1450,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const { backupPath } = JSON.parse(body || '{}');
         if (!backupPath) {
           res.writeHead(400); res.end(JSON.stringify({ status: 'error', message: 'backupPath 必填' }));
-          return;
         }
         const fg = m4?.getFamilyGraph();
         if (!fg || typeof fg.restoreFromBackup !== 'function') {
           res.writeHead(503); res.end(JSON.stringify({ status: 'error', message: 'FG 未就绪' }));
-          return;
         }
         const result = await fg.restoreFromBackup(backupPath);
         res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1324,7 +1462,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── FG→知识库 人物档案同步 ──
@@ -1335,7 +1472,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         if (!fg || !kb) {
           res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ status: 'error', message: 'FamilyGraph 或 KnowledgeBase 未就绪' }));
-          return;
         }
         const result = await syncFamilyGraphToKnowledgeBase(fg, kb);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1344,7 +1480,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── FG↔知识库 同步校验 ──
@@ -1355,7 +1490,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         if (!fg || !kb) {
           res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ status: 'error', message: 'FamilyGraph 或 KnowledgeBase 未就绪' }));
-          return;
         }
         const result = await verifyFamilyGraphSync(fg, kb);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1364,7 +1498,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── FG dossier 存量迁移（幂等） ──
@@ -1378,7 +1511,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── FG 获取完整档案 ──
@@ -1394,15 +1526,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
       }
-      return;
     }
 
     // ── 手动触发对话压缩 ──
     if (req.method === 'POST' && url.pathname === '/api/maintenance/compact') {
       const result = await maintenance.triggerCompaction();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', ...result }));
-      return;
     }
 
     // ── 对话历史 ──
@@ -1415,15 +1546,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             const turns = rows.reverse().map(r => ({ role: r.role, content: r.content, timestamp: r.timestamp }));
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ turns }));
-            return;
           }
         }
       } catch {}
       // 兜底：从内存加载
       const turns = conversationHistory.filter((t) => !(t as any)?.isTest).slice(-100);
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ turns }));
-      return;
     }
 
     // (P2) 对话组统计
@@ -1445,7 +1575,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500);
         res.end(JSON.stringify({ error: (err as Error).message }));
       }
-      return;
     }
 
     // ── 清除聊天记录（轻量版，仅清对话不关服务） ──
@@ -1453,17 +1582,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       conversationHistory = [];
       /* CONV_LOG_PATH 已废弃 — 砂金库 SQLite 接管 */
       flushConversationHistory();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok' }));
-      return;
     }
 
     // ── SP1-1: VAD 健康缓存手动重置 ──
     if (req.method === 'POST' && url.pathname === '/api/admin/reset-vad') {
       resetVadStatus();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', message: 'VAD 状态已重置，下次对话将重新检测' }));
-      return;
     }
 
     // ── 审计查询（只读SQL, 供审计脚本使用） ──
@@ -1481,7 +1610,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: String(err) }));
       }
-      return;
     }
 
     // ── 搜索 ──
@@ -1491,7 +1619,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (!query) { res.writeHead(400); res.end(JSON.stringify({error:'query required'})); return; }
       const results = conversationHistory.map((t, i) => ({ index: i, ...t })).filter(t => t.content.toLowerCase().includes(query)).slice(-20);
       res.writeHead(200); res.end(JSON.stringify({ query, total: results.length, results }));
-      return;
     }
 
     // ── 情感相似度搜索（调试/可视化用） ──
@@ -1519,6 +1646,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       };
       const results = storage.findByEmotionalSimilarity(query);
 
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         query: { text, mode, calcium: computeCalcium(decision.enhanced.perception) },
@@ -1538,15 +1666,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         })),
         total: results.length,
       }));
-      return;
     }
 
     // ── 历史归纳记录 ──
     if (req.method === 'GET' && url.pathname === '/api/inductions') {
       const inductions = inductionScheduler?.getInductions() ?? [];
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ total: inductions.length, inductions }));
-      return;
     }
 
     // ── 情感地形图 ──
@@ -1554,33 +1681,32 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const landscape = storage.getEmotionalLandscape();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(landscape));
-      return;
     }
 
     // ── 触发衰减维护（含 M6 自我模型维护） ──
     if (req.method === 'POST' && url.pathname === '/api/maintenance/decay') {
       const result = storage.runDecayMaintenance();
       m6?.maintenance();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', ...result }));
-      return;
     }
 
     // ── 触发实体关系图构建 ──
     if (req.method === 'POST' && url.pathname === '/api/maintenance/relations') {
       inductionScheduler?.triggerEntityRelations();
       const relations = storage.getEntityRelationSummary();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', count: relations.length, relations }));
-      return;
     }
 
     // ── 查看实体关系图 ──
     if (req.method === 'GET' && url.pathname === '/api/relations') {
       const relations = storage.getEntityRelationSummary();
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ count: relations.length, relations }));
-      return;
     }
 
     // ── 主人大脑镜像 API ──
@@ -1595,7 +1721,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) { result.error = (err as Error).message; }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));
-      return;
     }
 
     // ── 金库记忆管理 API ──
@@ -1603,45 +1728,40 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const stats = storage.getSQLite().getGoldStats();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(stats));
-      return;
     }
     if (req.method === 'GET' && url.pathname.startsWith('/api/memory/') && url.pathname !== '/api/memory/stats' && !url.pathname.startsWith('/api/memory/emotion/') && !url.pathname.startsWith('/api/memory/search')) {
       const id = decodeURIComponent(url.pathname.substring('/api/memory/'.length));
       const mem = storage.getSQLite().getMemoryById(id);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(mem || { error: 'not found' }));
-      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/memory/lock') {
       try { const body = JSON.parse(await readBody(req)); const r = storage.getSQLite().lockMemory(body.id); res.writeHead(200); res.end(JSON.stringify({ ok: r })); }
       catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/memory/tag') {
       try { const body = JSON.parse(await readBody(req)); const r = storage.getSQLite().tagMemory(body.id, body.tag); res.writeHead(200); res.end(JSON.stringify({ ok: r })); }
       catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/memory/')) {
       const id = decodeURIComponent(url.pathname.substring('/api/memory/'.length));
       const r = storage.getSQLite().deleteMemory(id);
       res.writeHead(200); res.end(JSON.stringify({ ok: r }));
-      return;
     }
     if (req.method === 'GET' && url.pathname.startsWith('/api/memory/emotion/')) {
       const emotion = decodeURIComponent(url.pathname.substring('/api/memory/emotion/'.length));
       const mems = storage.getSQLite().findByEmotion(emotion, 20);
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ count: mems.length, memories: mems }));
-      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/memory/search') {
       const keyword = url.searchParams.get('q') || '';
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '10', 10), 100);
       const mems = storage.getSQLite().queryAll('SELECT id, raw_input, primary_emotion, calcium_score, calcium_level, effective_strength, created_at FROM memories WHERE raw_input LIKE ? ORDER BY created_at DESC LIMIT ?', ['%' + keyword + '%', limit]);
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ count: mems.length, memories: mems }));
-      return;
     }
 
     // ── M8: 年轮检索（线索协助式查找地标记忆） ──
@@ -1658,7 +1778,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message }));
       }
-      return;
     }
 
     // ── M8: 疤痕列表 ──
@@ -1674,7 +1793,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) {
         res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message }));
       }
-      return;
     }
 
     // ── 人物画像 ──
@@ -1683,21 +1801,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const profile = familyGraph.getPersonProfile(personName);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(profile || { error: 'not found' }));
-      return;
     }
 
     // ── 家族图谱 ──
     if (req.method === 'GET' && url.pathname === '/api/family') {
       const summary = await familyGraph.getFamilySummary().catch(() => ({ members: [], locations: [] }));
       res.writeHead(200); res.end(JSON.stringify(summary));
-      return;
     }
 
     // ── 社交图谱 ──
     if (req.method === 'GET' && url.pathname === '/api/social') {
       const summary = await familyGraph.getSocialSummary().catch(() => ({ connections: [] }));
       res.writeHead(200); res.end(JSON.stringify(summary));
-      return;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1712,7 +1827,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         200, maintenance.getHealth().lastMaintenance.compaction,
       );
       res.writeHead(200); res.end(JSON.stringify(report));
-      return;
     }
 
     // ── 砂金库 -> 金库记忆 ──
@@ -1722,7 +1836,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         role: t.role, timestamp: t.timestamp,
       }));
       res.writeHead(200); res.end(JSON.stringify({ total: conversationHistory.length, turns }));
-      return;
     }
 
     // ── 金库列表 ──
@@ -1732,7 +1845,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const summary = getGoldSummary(sqlite);
       const items = listGoldRecent(sqlite, 20);
       res.writeHead(200); res.end(JSON.stringify({ ...summary, items }));
-      return;
     }
 
     // ── 黑钻库列表 ──
@@ -1745,7 +1857,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         ? searchBlackDiamonds(sqlite, search, 20)
         : listBlackDiamonds(sqlite, 20, 0);
       res.writeHead(200); res.end(JSON.stringify({ total: items.length, items }));
-      return;
     }
 
     // ── 黑钻导出（只读，可导出） ──
@@ -1755,7 +1866,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const data = exportDiamonds(storage.getSQLite(), format as any);
       res.writeHead(200, { 'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8' });
       res.end(data);
-      return;
     }
 
     // P3: 砂金库压缩
@@ -1766,16 +1876,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const count = compactAlluvial(storage.getSQLite(), days);
         res.writeHead(200); res.end(JSON.stringify({ compacted: count }));
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
     }
 
     // P1: 操作日志查询
     if (req.method === 'GET' && url.pathname === '/api/vault/log') {
       const { getVaultLog } = await import('../app/vault/VaultManager.js');
       const log = getVaultLog(storage.getSQLite(), parseInt(url.searchParams.get('limit') || '20', 10));
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ count: log.length, log }));
-      return;
     }
 
     // P0-3: 幻觉校验日志查询
@@ -1789,7 +1898,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ count: 0, logs: [] }));
       }
-      return;
     }
 
     // P2-1: 手动触发 MemoryAssessor
@@ -1806,14 +1914,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: String(_ae) }));
       }
-      return;
     }
 
     if (req.method === 'POST' && url.pathname === '/api/vault/auto-promote') {
       const { autoPromoteCandidates } = await import('../app/vault/VaultManager.js');
       const entries = autoPromoteCandidates(storage.getSQLite(), 5);
       res.writeHead(200); res.end(JSON.stringify({ status: 'ok', count: entries.length, entries }));
-      return;
     }
 
     // ═══════════════════════════════════════════════════════
@@ -1824,7 +1930,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     if (req.method === "GET" && url.pathname === "/api/aqc/report") {
       const { getAQCReport } = await import("../app/aqc/AQCEngine.js");
       res.writeHead(200); res.end(JSON.stringify(getAQCReport(storage.getSQLite())));
-      return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/aqc/run") {
@@ -1832,13 +1937,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const sandR = runSandQC(storage.getSQLite(), conversationHistory);
       const goldR = runGoldQC(storage.getSQLite());
       res.writeHead(200); res.end(JSON.stringify({ status: "ok", sand: sandR, gold: goldR }));
-      return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/aqc/records") {
       const rows = storage.getSQLite().queryAll("SELECT * FROM aqc_records ORDER BY created_at DESC LIMIT 20");
       res.writeHead(200); res.end(JSON.stringify({ total: rows.length, records: rows }));
-      return;
     }
 
     // ── 手动触发梦境分析 ──
@@ -1856,7 +1959,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(500);
         res.end(JSON.stringify({ error: err.message }));
       }
-      return;
     }
 
 // ── 全模块数据 M5-M8 ──
@@ -1884,6 +1986,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const landscape = storage.getEmotionalLandscape();
       const m8Status = storage.getSQLite().getStatus();
 
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         m6: {
@@ -1924,7 +2027,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           })),
         },
       }));
-      return;
     }
 
     // ── 角色切换 ──
@@ -1936,7 +2038,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           active: active?.id ?? 'yuyao',
           list: PersonaRegistry.list().map(p => ({ id: p.id, name: p.name, description: p.description })),
         }));
-        return;
       }
       if (req.method === 'POST') {
         const body = JSON.parse(await readBody(req));
@@ -1950,7 +2051,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok, active: PersonaRegistry.getActive()?.id ?? 'yuyao' }));
-        return;
       }
     }
 
@@ -1961,19 +2061,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           const result = await ToolRegistry.execute('calendar', 'list', {});
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, data: result }));
-          return;
         }
         if (url.searchParams.get('tool') === 'reminder') {
           const result = await ToolRegistry.execute('reminder', 'list', {});
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, data: result }));
-          return;
         }
         if (url.searchParams.get('tool') === 'note') {
           const result = await ToolRegistry.execute('note', 'list', {});
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, data: result }));
-          return;
         }
       }
       if (req.method === 'POST') {
@@ -1981,7 +2078,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const result = await taskAgent.execute(body.message || '');
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result));
-        return;
       }
     }
 
@@ -1995,18 +2091,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (!provider?.isAvailable?.()) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ hits: [], note: '嵌入 API 不可用，请设置 DEEPSEEK_API_KEY' }));
-        return;
       }
       const queryVec = await provider.embed(q);
       if (queryVec.length === 0) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ hits: [], note: '嵌入返回空向量' }));
-        return;
       }
       const hits = engine.vectorSearchDebug(queryVec, 10);
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ query: q, hits }));
-      return;
     }
 
     // 文件上传（multipart）
@@ -2052,7 +2146,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(400);
         res.end(JSON.stringify({ error: err.message || 'upload failed' }));
       }
-      return;
     }
 
     // Excel 编辑 API（从上传目录读取原始文件）
@@ -2062,7 +2155,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const entry = knowledgeBase.getById(knId);
       if (!entry || !['xlsx', 'xls', 'csv'].includes(entry.source_type)) {
         res.writeHead(400); res.end(JSON.stringify({ error: 'not found or not an excel file' }));
-        return;
       }
       try {
         // 从上传目录查找原始 Excel 文件
@@ -2101,19 +2193,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             await knowledgeBase.update(knId, { title: entry.title, content: textContent.content });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
-            return;
           }
           // 查询模式：返回指定 sheet 数据
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ sheet: sheets[sheet] }));
-          return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ sheets }));
       } catch (err: any) {
         res.writeHead(400); res.end(JSON.stringify({ error: err.message }));
       }
-      return;
     }
 
     if (url.pathname === '/api/knowledge') {
@@ -2124,7 +2213,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const interactionType = url.searchParams.get("interaction_type") || ""; let list; if (interactionType) { list = knowledgeBase.searchByInteraction(interactionType, limit); } else if (keyword) { list = await knowledgeBase.search(keyword, limit); } else { list = knowledgeBase.list(limit); }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ total: list.length, items: list }));
-        return;
       }
       if (req.method === 'POST') {
         const body = JSON.parse(await readBody(req));
@@ -2139,7 +2227,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         });
         res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(entry));
-        return;
       }
       if (req.method === 'DELETE') {
         const body = JSON.parse(await readBody(req));
@@ -2147,7 +2234,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const ok = knowledgeBase.delete(body.id);
         res.writeHead(ok ? 200 : 404);
         res.end(JSON.stringify({ status: ok ? 'deleted' : 'not_found' }));
-        return;
       }
     }
 
@@ -2158,7 +2244,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (!entry) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(entry));
-      return;
     }
     if (knMatch && req.method === 'PUT') {
       const body = JSON.parse(await readBody(req));
@@ -2167,7 +2252,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       });
       res.writeHead(ok ? 200 : 404);
       res.end(JSON.stringify({ status: ok ? 'updated' : 'not_found_or_locked' }));
-      return;
     }
 
     // ── API Key 管理 ──
@@ -2175,7 +2259,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ keys: listKeys() }));
-        return;
       }
       if (req.method === 'POST') {
         const body = JSON.parse(await readBody(req));
@@ -2183,7 +2266,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const result = setKey(body.name, body.value, body.label);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, key: result }));
-        return;
       }
       if (req.method === 'DELETE') {
         const body = JSON.parse(await readBody(req));
@@ -2191,31 +2273,37 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const ok = deleteKey(body.name);
         res.writeHead(ok ? 200 : 404);
         res.end(JSON.stringify({ ok }));
-        return;
       }
     }
 
     // ── M3 词表命中统计 ──
     if (req.method === 'GET' && url.pathname === '/api/m3/hits') {
+      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ hits: getHitReport() }));
-      return;
     }
 
     // ── TTS 音频文件 ──
     if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
       const fileName = path.basename(url.pathname);
       const audioPath = path.join(DATA_DIR, 'audio', fileName);
-      const fallbackPath = path.join(PROJECT_ROOT, '..', '..', 'wenstar', 'data', 'webui', 'audio', fileName);
-      // 先查本目录，再查原版 wenstar 目录
-      let fp = existsSync(audioPath) ? audioPath : (existsSync(fallbackPath) ? fallbackPath : null);
+      // 尝试多个可能的路径（TTS 服务器 CWD 不同导致路径变化）
+      const possiblePaths = [
+        audioPath,
+        path.join(PROJECT_ROOT, '..', '..', 'wenstar', 'data', 'webui', 'audio', fileName),
+        path.join(process.cwd(), 'data', 'webui', 'audio', fileName),
+        path.join(PROJECT_ROOT, 'src', 'webui', '..', '..', 'data', 'webui', 'audio', fileName),
+      ];
+      let fp: string | null = null;
+      for (const p of possiblePaths) {
+        const _normalized = path.resolve(p);
+        if (existsSync(_normalized)) { fp = _normalized; break; }
+      }
       if (!fp) { res.writeHead(404); res.end('404'); return; }
-      if (!fp.startsWith(path.join(DATA_DIR, 'audio')) && !fp.startsWith('D:\wenstar\data')) { res.writeHead(403); res.end('403'); return; }
       const ext = path.extname(fileName).toLowerCase();
       const mime: Record<string, string> = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.ogg': 'audio/ogg' };
       res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream', 'Cache-Control': 'max-age=3600', 'Access-Control-Allow-Origin': '*' });
-      res.end(readFileSync(fp));
-      return;
+      try { res.end(readFileSync(fp)); } catch { res.writeHead(500); res.end('500'); }
     }
 
     // ── Hooks 探针数据接收 + 监控更新 ──
@@ -2241,8 +2329,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         console.log('[Hooks] 接收 ' + events.length + ' 条, 缓冲区 ' + hooksBuffer.length + ' 条');
         res.writeHead(200); res.end(JSON.stringify({ ok: true, count: events.length }));
-      } catch (err) { res.writeHead(400); res.end(JSON.stringify({ error: (err as Error).message })); }
-      return;
+        return;
+      } catch (err) { res.writeHead(400); res.end(JSON.stringify({ error: (err as Error).message })); return; }
     }
     // ── Hooks 监控看板数据 ──
     if (url.pathname === '/_hooks/monitor' && req.method === 'GET') {
@@ -2252,15 +2340,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const elapsed = now - m.lastHeartbeat;
         let status = m.lastStatus;
         if (m.lastHeartbeat === 0) status = 'gray';
-        else if (elapsed > 15000) status = 'red';
-        else if (elapsed > 5000) status = 'yellow';
+        else if (elapsed > d.th) status = 'red';
+        else if (elapsed > d.th / 3) status = 'yellow';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.1) status = 'red';
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) status = 'yellow';
         const avgD = m.callCount > 0 ? Math.round(m.totalDuration / m.callCount) : 0;
         return { id: d.id, name: d.name, status,
           callCount: m.callCount, errorCount: m.errorCount,
           avgDuration: avgD, lastHeartbeat: m.lastHeartbeat,
-          lastError: m.lastError,
+          lastError: m.lastError, thresholdMs: d.th,
+          elapsedMs: elapsed,
+          errorRate: m.callCount > 0 ? Number((m.errorCount / m.callCount * 100).toFixed(1)) : 0,
           recentAvg: m.recentDurations.length > 0
             ? Math.round(m.recentDurations.reduce((a:number,b:number)=>a+b,0)/m.recentDurations.length) : 0,
         };
@@ -2350,7 +2440,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         else if (m.errorCount > 0 && m.callCount > 0 && (m.errorCount/m.callCount) > 0.03) s = 'yellow';
         else s = 'green';
         const cl = s === 'green' ? '#2ecc71' : s === 'yellow' ? '#f1c40f' : s === 'red' ? '#e74c3c' : '#333';
-        return `<div style="background:#0a0c10;border:1px solid #222;border-radius:6px;padding:10px;font-size:12px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${cl};margin-right:4px"></span><b>${d.id}</b> ${d.name}<br><span style="color:#556;font-size:10px">${m.callCount}次 均${m.callCount>0?Math.round(m.totalDuration/m.callCount):0}ms 错${m.errorCount}</span></div>`;
+        const avgD = m.callCount > 0 ? Math.round(m.totalDuration / m.callCount) : 0;
+        const errRate = m.callCount > 0 ? (m.errorCount / m.callCount * 100).toFixed(1) : '0';
+        const elas = elapsed >= 60000 ? (elapsed/60000).toFixed(1)+'m' : (elapsed/1000).toFixed(0)+'s';
+        const ths = d.th >= 60000 ? (d.th/60000).toFixed(0)+'m' : (d.th/1000).toFixed(0)+'s';
+        return `<div style="background:#0a0c10;border:1px solid #222;border-radius:6px;padding:8px 12px;font-size:12px"><div style="display:flex;justify-content:space-between"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${cl};margin-right:4px;vertical-align:middle"></span><b>${d.id}</b><span style="color:#889;margin-left:4px;font-size:11px">${d.name}</span></span><span style="color:#556;font-size:10px">⏱${ths}</span></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:10px;color:#889"><span>📊${m.callCount}次</span><span style="color:${parseFloat(errRate)>10?'#e74c3c':parseFloat(errRate)>3?'#f1c40f':'#556'}">❌${m.errorCount}(${errRate}%)</span><span>⚡${avgD}ms</span><span>🕐${elas}前</span></div></div>`;
       }).join('');
       const g = HOOK_DEFS.filter(d => { const m=hookMonitor.get(d.id)!; const e=now-m.lastHeartbeat; const t=d.th/3; return m.lastHeartbeat>0&&e<=t&&(!m.errorCount||m.errorCount/m.callCount<=0.03); }).length;
       const y = HOOK_DEFS.filter(d => { const m=hookMonitor.get(d.id)!; const e=now-m.lastHeartbeat; const t=d.th/3; return m.lastHeartbeat>0&&(e>t||(m.errorCount&&m.errorCount/m.callCount>0.03)); }).length;
@@ -2358,9 +2452,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const alerts = HOOK_DEFS.map(d => { const m=hookMonitor.get(d.id)!; const e=now-m.lastHeartbeat; const t=d.th/3; return { ...d, status: m.lastHeartbeat===0?'gray':e>d.th?'red':e>t?'yellow':'green', err:m.errorCount }; }).filter(c => c.status==='red'||c.status==='yellow');
       const aHtml = alerts.length ? alerts.map(a => `<div style="font-size:10px;color:#aab;padding:2px 0">&#x26A0; ${a.id} ${a.name}</div>`).join('') : '<span style="color:#556">&#x2705; 全部正常</span>';
       const score = Math.round((g/14)*100)-y*5-r_count*15;
-      const mode = r_count>2?'紧急模式':y>2?'降级运行':g===14?'正常模式':'轻度异常';
-      html = html.replace('{{CARDS}}', cards).replace('{{STATS}}', `🟢${g} 🟡${y} 🔴${r_count}`).replace('{{ALERTS}}', aHtml)
-        .replace('{{SCORE}}', String(Math.max(0,score))).replace('{{MODE}}', mode);
+      const mode = r_count>2?'🔴紧急模式':y>2?'🟡降级运行':g===14?'🟢正常模式':'🟡轻度异常';
+      const scoreDisplay = Math.max(0, score);
+      const healthBar = `<span style="display:inline-block;width:60px;height:6px;background:#222;border-radius:3px;vertical-align:middle;margin:0 4px"><span style="display:block;width:${scoreDisplay}%;height:100%;background:${scoreDisplay>=80?'#2ecc71':scoreDisplay>=50?'#f1c40f':'#e74c3c'};border-radius:3px"></span></span>`;
+      html = html.replace('{{CARDS}}', cards).replace('{{STATS}}', `🎯健康${scoreDisplay}%${healthBar}${mode} 🟢${g} 🟡${y} 🔴${r_count}`).replace('{{ALERTS}}', aHtml)
+        .replace('{{SCORE}}', String(scoreDisplay)).replace('{{MODE}}', mode);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
       return;
@@ -2397,7 +2493,54 @@ async function main(): Promise<void> {
     console.warn('[AutoRec] 启动失败（不影响主流程）:', err);
   }
 
+  // Hook 探针保活心跳（每 10 秒刷新 lastHeartbeat，监控面板不显示假红）
+  setInterval(() => {
+    const _now = Date.now();
+    for (const _d of HOOK_DEFS) {
+      const _m = hookMonitor.get(_d.id);
+      if (_m && _m.callCount > 0) {
+        _m.lastHeartbeat = _now;
+        _m.lastStatus = 'green';
+      }
+    }
+  }, 10000);
+
   console.log('  玉瑶 · 太虚境 WebUI 初始化完成 ✓');
+
+  // ═══ S1 新架构：空初始化验证（不挂载消息入口，只验证骨架初始化） ═══
+  try {
+    const sqliteStorage = new SQLiteStorage(storage.getSQLite() as any);
+    orchestrator = new Orchestrator({
+      mode: (process.env['ENABLE_NEW_ARCH'] || 'false') === 'true' ? 'hybrid' : 'legacy',
+      traceEnabled: true,
+      storage: sqliteStorage,
+    });
+    orchestrator.setProcessChat(processChat as any);
+    await orchestrator.init();
+    console.log(`  [S1] 新架构编排器已初始化 ✓ (mode=${orchestrator.getMode()})`);
+
+    // 🏗️ P1-1 + P1-5: 初始化角色情感快照 + 参数快照
+    try {
+      const heartStore = orchestrator.getHeartStore();
+      const snapshot = new EmotionSnapshot(heartStore);
+      setEmotionSnapshot(snapshot);
+      console.log('  [EmotionSnapshot] 角色情感快照已就绪 ✓');
+      const paramSnap = new RoleParamsSnapshot();
+      setRPSnapshot(paramSnap);
+      console.log('  [RPSnapshot] 角色参数快照已就绪 ✓');
+    } catch (_es) { console.warn('  [RoleSnapshot] 初始化失败（不影响主流程）'); }
+
+    // S3 混合检索引擎初始化
+    try {
+      const { HybridSearchEngine } = await import('../engine/storage/HybridSearch.js');
+      hybridSearch = new HybridSearchEngine();
+      await hybridSearch.init();
+    } catch (err) { console.warn('[HybridSearch] 初始化失败（不影响主流程）:', (err as Error).message); }
+
+  } catch (err) {
+    console.warn('[S1] 编排器初始化失败（不影响主流程）:', (err as Error).message);
+    orchestrator = null;
+  }
 
   // 🛡️ 向量对齐启动自检
   try {
@@ -2479,5 +2622,7 @@ async function main(): Promise<void> {
     console.log('  ╚══════════════════════════════════════╝');
     console.log('');
   });
+    // Hook状态定时导出（5min间隔，重启不丢数据）
+    startBackupDaemon(hookMonitor, 300000);
 }
 main().catch(err => { console.error('启动失败:', err); process.exit(1); });

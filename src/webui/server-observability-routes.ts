@@ -6,6 +6,9 @@
  *       /api/inductions, /api/landscape, /api/mirror, /api/modules
  */
 import http from 'node:http';
+import { existsSync, statSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export type ObservabilityRouteDeps = {
   req: http.IncomingMessage;
@@ -25,6 +28,8 @@ export type ObservabilityRouteDeps = {
   masterProfile: any;
   getSelfModel: () => any;
   sseClients: Set<http.ServerResponse>;
+  /** 🏗️ 防复发第二层: 角色扮演状态 */
+  getRoleplayStatus?: () => { active: boolean; role: string | null; class: string | null; turns: number };
 };
 
 export async function handleObservabilityRoutes(
@@ -69,7 +74,7 @@ export async function handleObservabilityRoutes(
     return true;
   }
 
-  // ── 健康检查 ──
+  // ── 健康检查（含持久化健康度 + 文件健康度监控，改造③+⑥）──
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const health = maintenance.getHealth();
     const storageStatus = await storage.getStatus().catch(() => null);
@@ -81,11 +86,37 @@ export async function handleObservabilityRoutes(
       const _ar = alignmentGuard.getCachedReport();
       if (_ar) alignmentSummary = { score: _ar.score, status: _ar.status };
     } catch {}
+    let _pSimple: any = { userCount: 0, assistantCount: 0, ratio: '0' };
+    let _chatAlert: string | null = null;
+    try {
+      const _mdb = storage.getSQLite();
+      const _uc = _mdb.queryAll('SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone=?', ['user']);
+      const _ac = _mdb.queryAll('SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone=?', ['assistant']);
+      const uc = Number((_uc[0] as any)?.cnt ?? 0);
+      const ac = Number((_ac[0] as any)?.cnt ?? 0);
+      _pSimple = { userCount: uc, assistantCount: ac, ratio: ac > 0 ? (uc / ac).toFixed(2) : '0' };
+      const _oFile = fileURLToPath(import.meta.url);
+      const _chatPath = join(dirname(dirname(_oFile)), 'webui', 'chat.ts');
+      if (existsSync(_chatPath) && statSync(_chatPath).size > 100 * 1024) {
+        _chatAlert = 'chat.ts 超过100KB';
+      }
+    } catch (_pe) { /* stats not critical */ }
+    // 🏗️ 防复发第二层: 角色扮演健康状态
+    let _rpStatus: any = { active: false };
+    try {
+      if (deps.getRoleplayStatus) {
+        const _rps = deps.getRoleplayStatus();
+        _rpStatus = { active: _rps.active, role: _rps.role, class: _rps.class, turns: _rps.turns };
+      }
+    } catch (_rpe) { /* roleplay status not critical */ }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       ...health,
       alignment: alignmentSummary,
       memory: { ...health.memory, decay: decayStats, landmarks: m8st.landmarks, entities: m8st.totalEntities },
+      persistence: _pSimple,
+      chatFileAlert: _chatAlert,
+      roleplay: _rpStatus,
     }));
     return true;
   }

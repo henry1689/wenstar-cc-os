@@ -94,16 +94,16 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         const limMode: SimilarityMode = p.intimacy > 0.4 ? 'intimacy_search' : 'balanced';
         let limMemories = ctx.storage.findByEmotionalSimilarity({
           current_perception: p, similarity_mode: limMode,
-          entities: currentEntityNames, limit: 3,
+          entities: currentEntityNames, limit: 5,
         });
         limMemories = rerank(limMemories, message);
         // P0-2: 情感阈值过滤
         emotionalMemories = limMemories.filter((m: any) =>
-          (m.scores.emotional > 0.65 || m.composite > 0.35)
+          (m.scores.emotional > 0.5 || m.composite > 0.25)
           && m.record.id !== dna.branch_id
-          && (m.record.effective_strength || 0) >= 0.2
+          && (m.record.effective_strength || 0) >= 0.15
           && (m.record.calcium_level || 0) >= 1
-        ).slice(0, 2);
+        ).slice(0, 3);
         if (emotionalMemories.length > 0) {
           memoryFragments.push('【用户曾提到】"' + emotionalMemories[0].record.raw_input?.substring(0, 60) + '"');
         }
@@ -153,20 +153,20 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         for (const q of allQueryTexts) {
           let memories = ctx.storage.findByEmotionalSimilarity({
             current_perception: p, similarity_mode: mode,
-            entities: uniqueExpanded, limit: 5,
+            entities: uniqueExpanded, limit: 8,
           });
           memories = rerank(memories, q);
 
           const _hasPerson = dna.entity_genes.some((g: any) => g.type === 'person' && g.name !== '我');
-          const _emoThreshold = _hasPerson ? 0.3 : 0.65;
-          const _compThreshold = _hasPerson ? 0.2 : 0.35;
+          const _emoThreshold = _hasPerson ? 0.25 : 0.5;
+          const _compThreshold = _hasPerson ? 0.15 : 0.25;
           const valid = memories.filter((m: any) =>
             (m.scores.emotional > _emoThreshold || m.composite > _compThreshold) && m.record.id !== dna.branch_id
           );
           if (valid.length > 0) allResultSets.push(valid);
         }
 
-        emotionalMemories = mergeDecomposedResults(allResultSets, 3);
+        emotionalMemories = mergeDecomposedResults(allResultSets, 5);
 
         if (relatedEntities.length > 0) {
           const relationMemories = ctx.storage.findMemoriesByEntityNames(relatedEntities.map((r: any) => r.name), 2);
@@ -186,7 +186,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       if (freshMemories.length < 2 && !hasContinuationMarkers) {
         const fallback = ctx.storage.findByEmotionalSimilarity({ current_perception: p, similarity_mode: 'balanced', limit: 2 });
         freshMemories = fallback.filter((m: any) =>
-          (m.scores.emotional > 0.4 || m.scores.calcium > 0.4) && m.record.id !== dna.branch_id && !recentHistoryRaw.includes(m.record.id)
+          (m.scores.emotional > 0.3 || m.scores.calcium > 0.3) && m.record.id !== dna.branch_id && !recentHistoryRaw.includes(m.record.id)
         );
       }
       const finalMemories = freshMemories.length > 0 ? freshMemories : emotionalMemories.slice(0, 1);

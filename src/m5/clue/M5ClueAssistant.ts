@@ -69,8 +69,23 @@ export interface ClueQuestionResult {
  */
 function isVagueQuery(text: string): boolean {
   if (text.length > 80) return false;
-  // "那个"后跟具体技术/话题名词 → 是延续当前话题，不是模糊回忆
-  if (/那个/.test(text) && /架构|方案|项目|代码|设计|系统|模块|功能|问题|事|人/.test(text)) return false;
+  if (text.length < 4) return false;  // 超短句不触发
+
+  // [NOT_VAGUE] 这些是角色扮演/日常聊天的正常表达，不是模糊回忆
+  const NOT_VAGUE = [
+    '那一刻', '那个时刻', '那次之后', '那个地方',
+    '那个美丽', '期待那个', '共同期待',
+    '那个什么', '那个啥',
+    '那年', '那个夏天', '那个冬天',
+    '上次你说', '上次说的', '上次聊', '上次提到',
+  ];
+  for (const phrase of NOT_VAGUE) {
+    if (text.includes(phrase)) return false;
+  }
+
+  // "那个"后跟抽象感受词（的时候/的样子/的感觉等）→ 正常对话，非模糊回忆
+  if (/那个/.test(text) && /那个.+的[时刻样子感觉味道心情天]/.test(text)) return false;
+
   return /那个|上次|那家|那晚|某家|某次/.test(text);
 }
 
@@ -94,6 +109,7 @@ export class M5ClueAssistant {
   private clueTracker: ClueTracker | null;
   private conversationBuffer: Array<{ role: 'user' | 'ai'; text: string; timestamp?: number }> = [];
   private readonly STALE_MS = 5 * 60 * 1000; // 5分钟超时
+  private interceptionCount = 0; // 当前会话拦截次数
 
   constructor(m8Engine: M8Engine, clueTracker?: ClueTracker) {
     this.m8Engine = m8Engine;
@@ -121,6 +137,11 @@ export class M5ClueAssistant {
    */
   async processUserInput(config: ClueQuestionConfig): Promise<ClueQuestionResult> {
     this.cleanStale();
+    // 限流：同一会话最多拦截 2 次，之后全部放行
+    if (this.interceptionCount >= 2) {
+      return { needsQuestion: false, isReady: true };
+    }
+
     const { originalQuery, perception } = config;
     const now = Date.now();
     const prevAiMessage = this.conversationBuffer
@@ -150,6 +171,7 @@ export class M5ClueAssistant {
       }
 
       // 置信度不够，再问一轮
+      this.interceptionCount++;
       const followUp = this.generateFollowUp(originalQuery);
       this.conversationBuffer.push({ role: 'user', text: originalQuery, timestamp: now });
       this.conversationBuffer.push({ role: 'ai', text: followUp, timestamp: now });
@@ -162,6 +184,7 @@ export class M5ClueAssistant {
 
     // 初次检测是否为模糊查询
     if (isVagueQuery(originalQuery)) {
+      this.interceptionCount++;
       const question = this.generateQuestion(originalQuery, config.bionicMemories);
       this.conversationBuffer.push({ role: 'user', text: originalQuery, timestamp: now });
       this.conversationBuffer.push({ role: 'ai', text: question, timestamp: now });
@@ -323,5 +346,6 @@ export class M5ClueAssistant {
    */
   reset(): void {
     this.conversationBuffer = [];
+    this.interceptionCount = 0;
   }
 }

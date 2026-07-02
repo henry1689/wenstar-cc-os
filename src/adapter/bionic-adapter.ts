@@ -20,10 +20,9 @@
 import type { Perception24D } from '../m3/types/perception.js';
 import { LocalCache } from '../app/tools/LocalCache.js';
 import { createHash } from 'node:crypto';
+import { ConfigService } from '../config/ConfigService.js';
 
-// ── 配置 ──
-const BIONIC_API = process.env.BIONIC_API_URL || 'http://localhost:7200/api/v1';
-const EMOTION_API = process.env.EMOTION_API_URL || 'http://localhost:8100/api/v1/emotion';
+// ── 配置（改造④：不在模块级读 process.env，使用 ConfigService 运行时懒加载） ──
 
 // 外部查询缓存：按 query+userId 缓存 30 秒（短期防重复，不阻塞新鲜结果）
 const bionicSearchCache = new LocalCache<string, any[]>({ ttlMs: 30_000, namespace: 'bionic_search' });
@@ -81,7 +80,8 @@ export interface SongSheet {
 
 /** 简化的 HTTP 请求（针对 Node.js fetch 做了兼容处理） */
 async function bionicFetch<T>(path: string, options?: { method?: string; body?: string }, timeout = 5000): Promise<T | null> {
-  const url = `${BIONIC_API}${path}`;
+  const bionicApi = ConfigService.get('BIONIC_API_URL', 'http://localhost:7200/api/v1');
+  const url = `${bionicApi}${path}`;
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
@@ -176,7 +176,8 @@ class BionicAdapter {
   /** 调用情感谱曲引擎（异步，不阻塞回复） */
   async composeEmotion(text: string): Promise<VadSpectrum | null> {
     try {
-      const resp = await fetch(`${EMOTION_API}/compose`, {
+      const emotionApi = ConfigService.get('EMOTION_API_URL', 'http://localhost:8100/api/v1/emotion');
+      const resp = await fetch(`${emotionApi}/compose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: text.slice(0, 10000) }),

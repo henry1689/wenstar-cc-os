@@ -143,8 +143,9 @@ export const config = {
 
   /** ── T1: 太虚图书馆（旗舰版）── */
   library: {
-    enabled: process.env["TAIXU_LIBRARY_ENABLED"] === "true",
-    port: parseInt(process.env["TAIXU_LIBRARY_PORT"] ?? "3737", 10),
+    // 🔴 改造④：模块级不读 process.env，请调用 ConfigService 在运行时读取
+    enabled: false,
+    port: 3737,
     dataDir: "lib/taixu-library/data",
     watchDir: "lib/taixu-library/data/watch",
     syncInterval: 300_000,

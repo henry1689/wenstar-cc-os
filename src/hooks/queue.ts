@@ -13,9 +13,13 @@ import { join } from 'node:path';
 const HOOKS_API = 'http://localhost:3000/_hooks/ingest';
 const BATCH_SIZE = 50;
 const FLUSH_INTERVAL = 5000;
-const BACKLOG_DIR = process.env.DATA_DIR
-  ? join(process.env.DATA_DIR, 'hooks', 'backlog')
-  : join(process.cwd(), 'data', 'webui', 'hooks', 'backlog');
+// 改造④：不在模块级读 process.env，使用函数运行时获取
+function getBacklogDir(): string {
+  const dataDir = process.env.DATA_DIR || '';
+  return dataDir
+    ? join(dataDir, 'hooks', 'backlog')
+    : join(process.cwd(), 'data', 'webui', 'hooks', 'backlog');
+}
 
 class HookQueue {
   private buffer: HookEvent[] = [];
@@ -65,8 +69,8 @@ class HookQueue {
   /** 本地落盘 */
   private async writeBacklog(events: HookEvent[]): Promise<void> {
     try {
-      if (!existsSync(BACKLOG_DIR)) mkdirSync(BACKLOG_DIR, { recursive: true });
-      const filePath = join(BACKLOG_DIR, `hook_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.jsonl`);
+      if (!existsSync(getBacklogDir())) mkdirSync(getBacklogDir(), { recursive: true });
+      const filePath = join(getBacklogDir(), `hook_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.jsonl`);
       const lines = events.map(e => JSON.stringify(e)).join('\n');
       appendFileSync(filePath, lines + '\n');
     } catch {}
@@ -75,18 +79,18 @@ class HookQueue {
   /** 启动时补发 backlog */
   async replayBacklog(): Promise<void> {
     try {
-      if (!existsSync(BACKLOG_DIR)) return;
-      const files = readdirSync(BACKLOG_DIR).filter(f => f.endsWith('.jsonl'));
+      if (!existsSync(getBacklogDir())) return;
+      const files = readdirSync(getBacklogDir()).filter(f => f.endsWith('.jsonl'));
       for (const f of files) {
         try {
-          const data = readFileSync(join(BACKLOG_DIR, f), 'utf-8');
+          const data = readFileSync(join(getBacklogDir(), f), 'utf-8');
           const events = data.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
           const res = await fetch(HOOKS_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(events),
           });
-          if (res.ok) unlinkSync(join(BACKLOG_DIR, f));
+          if (res.ok) unlinkSync(join(getBacklogDir(), f));
         } catch { /* 补发失败下次再试 */ }
       }
     } catch {}

@@ -144,11 +144,14 @@ export class ConversationDB {
     return rows.reverse();
   }
 
-  searchConversations(keyword: string, limit = 10): ConversationRow[] {
+  /** 搜索对话记录 */
+  searchConversations(keyword: string, limit = 10, excludeRoleplay = true): ConversationRow[] {
     this.ensureReady();
-    const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp, topic FROM conversations WHERE content LIKE ? AND is_compacted = 0 ORDER BY timestamp DESC LIMIT ?`,
-    );
+    // 🏗️ P0-4: 非角色扮演时自动过滤角色扮演对话（避免记忆污染）
+    const sql = excludeRoleplay
+      ? `SELECT id, role, content, timestamp, topic FROM conversations WHERE content LIKE ? AND is_compacted = 0 AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp DESC LIMIT ?`
+      : `SELECT id, role, content, timestamp, topic FROM conversations WHERE content LIKE ? AND is_compacted = 0 ORDER BY timestamp DESC LIMIT ?`;
+    const stmt = this.db.prepare(sql);
     stmt.bind([`%${keyword}%`, limit]);
     const rows: ConversationRow[] = [];
     while (stmt.step()) rows.push(stmt.getAsObject() as any);

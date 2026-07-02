@@ -11,13 +11,15 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
 import type { DreamQueue } from './DreamQueue.js';
+import { ConfigService } from '../config/ConfigService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = join(__dirname, '..', '..');
 
-const DEEPSEEK_API_KEY = process.env['DEEPSEEK_API_KEY'];
-const DEEPSEEK_MODEL = process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat';
+// 🔴 改造④：不在模块级读 process.env，统一用 ConfigService 运行时懒加载
+// 原代码 const DEEPSEEK_API_KEY = process.env['DEEPSEEK_API_KEY'];
+// 原代码 const DEEPSEEK_MODEL = process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat';
 
 interface InductionRecord {
   period_type: 'hourly' | 'daily' | 'weekly' | 'monthly';
@@ -106,7 +108,7 @@ export class InductionScheduler {
 
       // LLM 生成玉瑶感悟（优先），不可用时用规则摘要
       let reflection: string | null = null;
-      if (DEEPSEEK_API_KEY && (recent.length >= 2 || highCalcium.length > 0)) {
+      if (ConfigService.get('DEEPSEEK_API_KEY') && (recent.length >= 2 || highCalcium.length > 0)) {
         try {
           reflection = await this.generateReflection(topEntities, highCalcium, mood);
         } catch (err) {
@@ -202,10 +204,10 @@ export class InductionScheduler {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+        'Authorization': `Bearer ${ConfigService.get('DEEPSEEK_API_KEY')}`,
       },
       body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
+        model: ConfigService.get('DEEPSEEK_MODEL', 'deepseek-chat'),
         max_tokens: 200,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.8,

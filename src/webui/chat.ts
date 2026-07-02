@@ -99,6 +99,33 @@ const _rpLoadedPersons = new Set<string>();
 // S3-2: 从 guard-builder 导入角色路由和守卫
 import { flushDialogGroup, persistConversation, runRetrieval } from './chat/index.js';
 
+// 🏗️ 改造①：集中式角色扮演指令构建器（取代 4 处内联规则副本）
+import { buildRoleplayRules } from '../app/roleplay/RoleplayPromptBuilder.js';
+
+// 🏗️ P0-1: 角色画像动态构建器（上下文扫描 + 未知边界 + 画像装配）
+import {
+  scanContextForCharacter,
+  assembleCharacterPortrait,
+  type CharacterExtract,
+  type CharacterPortraitSources,
+} from '../app/roleplay/CharacterProfileScanner.js';
+
+// 🏗️ P1-3: 角色知情边界过滤器（防上帝视角）
+import { PerspectiveFilter } from '../app/roleplay/PerspectiveFilter.js';
+
+// 🏗️ P1-5: 角色参数快照（独立语气/风格覆写）
+import { RoleParamsSnapshot, type RoleParams } from '../app/roleplay/RoleParamsSnapshot.js';
+let _rpParamsSnapshot: RoleParamsSnapshot | null = null;
+export function setRPSnapshot(snap: RoleParamsSnapshot): void { _rpParamsSnapshot = snap; }
+
+// 🏗️ 防复发第二层: 暴露角色扮演状态供健康检查读取
+export function getRoleplayStatus(): { active: boolean; role: string | null; class: string | null; turns: number } {
+  return { active: !!_currentRoleplay, role: _currentRoleplay, class: _currentCharacterClass, turns: _rpTurnCounter };
+}
+
+// 🏗️ 防复发第一层: 角色扮演运行时自检
+import { checkRoleplayHealth } from '../app/roleplay/RoleplayHealthGuard.js';
+
 
 // P0-1: 角色路由模块级状态（函数外，跨轮次持久化）
 let _currentRole: RoleType = 'secretary';
@@ -122,6 +149,18 @@ let _dgTimer: ReturnType<typeof setTimeout> | null = null;
 let _currentRoleplay: string | null = null;  // 跨轮次角色扮演锁定
 let _currentRPBranch: FamilyGraphRoleBranch | null = null;  // 角色扮演FG分支
 let _rpJustExited = false;  // 角色扮演刚退出标记（需强制恢复玉瑶身份）
+
+// 🏗️ P0：角色扮演稳定机制状态
+let _rpTurnCounter = 0;       // 距离上次完整重注入的轮数
+let _currentCharacterClass: 'A'|'B'|'C'|null = null;  // 角色分类
+let _currentPortrait: string | null = null;  // 缓存当前完整画像（用于周期性重注入）
+
+// 🏗️ P1-1: 角色情感快照隔离
+import { EmotionSnapshot } from '../app/roleplay/EmotionSnapshot.js';
+let _emotionSnapshot: EmotionSnapshot | null = null;
+export function setEmotionSnapshot(snapshot: EmotionSnapshot): void {
+  _emotionSnapshot = snapshot;
+}
 
 export interface ChatContext {
 
@@ -176,6 +215,8 @@ export interface ChatContext {
   /** 记事记忆服务 */
   yuyaoMemory?: import("../app/yuyao-memory/YuyaoMemoryService.js").YuyaoMemoryService;
 
+  /** S3 混合检索引擎（ONNX 本地语义重排序） */
+  hybridSearch?: import("../engine/storage/HybridSearch.js").HybridSearchEngine;
 }
 
 
@@ -281,6 +322,41 @@ function isDirectedEmotion(text: string): boolean {
 export async function processChat(message: string, ctx: ChatContext): Promise<ChatResponse> {
 
   try {
+	// 🎭 全局角色扮演检测（在函数入口处拦截）
+	// Fix-1: 显式扮演检测（"扮演诗韵"）
+	const _rpEntry = message.match(/(?:扮演(?:一下)?|模仿|演一下|cos)[了]?([一-龥]{2,8})/);
+	if (_rpEntry && _rpEntry[1].trim().length >= 2) {
+	  _currentRoleplay = _rpEntry[1].replace(/[吧呗了试试看看一下玩玩]$/, '').trim();
+	  console.log('[Roleplay] 🔒 入口锁定: ' + _currentRoleplay);
+	}
+
+	// Fix-1b: 隐式扮演检测 — 消息以已知角色名开头且跟在"呢/呀/啊/吗/哈"后，视为对该角色说话
+	// 模式：诗韵，你怎么... / 诗韵你是不是... / 梓铭，帮我...
+	if (!_rpEntry && !_currentRoleplay && ctx.m4) {
+	  try {
+	    const fg = ctx.m4.getFamilyGraph();
+	    const allNames = fg ? fg.getAllPersonNames() : [];
+	    // 加上最近对话中出现过的人名
+	    for (const turn of ctx.conversationHistory.slice(-10)) {
+	      const namesInHistory = turn.content.match(/[一-龥]{2,4}(?=[，,、。]|$)/g);
+	      if (namesInHistory) {
+	        for (const n of namesInHistory) {
+	          if (n.length >= 2 && !allNames.includes(n)) allNames.push(n);
+	        }
+	      }
+	    }
+	    for (const name of allNames) {
+	      if (name === '我' || name.length < 2) continue;
+	      // 消息以"X，"/"X "/"X:"开头，或"X呢/呀/啊/吗/哈"结尾
+	      if (message.startsWith(name + '，') || message.startsWith(name + ',') ||
+	          message.startsWith(name + ' ') || message.startsWith(name + ':')) {
+	        _currentRoleplay = name;
+	        console.log('[Roleplay] 🔒 隐式锁定: ' + name + ' (消息开头称呼)');
+	        break;
+	      }
+	    }
+	  } catch (_) {}
+	}
 
     const dna = ctx.encoder.encodeSingle(message);
 
@@ -573,7 +649,22 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     // 记忆以【相关记忆】标签注入到 knowledgeBaseText，不伪装成对话内容
     // 修复：干净的三层注入结构——对话原文/enrichedHistory、记忆/memoryFragments、知识/knowledgeBaseText
     let memoryFragments: string[] = [];
-    let enrichedHistory = ctx.conversationHistory.slice(-20);
+    // 🎭 Fix-2: 角色扮演时过滤对话历史 — 只保留角色扮演相关的轮次
+    // 非角色扮演对话会混淆LLM，让LLM看到"玉瑶"的历史就会跳出角色
+    let enrichedHistory: Array<{ role: string; content: string; timestamp?: string; topic?: string }>;
+    if (_currentRoleplay) {
+      // 角色扮演中：只保留也属于该角色的历史（dialog_group_id 匹配或手动标记）
+      enrichedHistory = ctx.conversationHistory.slice(-10).filter(function(t) {
+        return (t as any).rpChar === _currentRoleplay;
+      });
+      // 如果过滤后没有历史，也至少给一条占位（避免空数组）
+      if (enrichedHistory.length === 0) {
+        enrichedHistory.push({ role: 'system', content: `【当前扮演角色：${_currentRoleplay}】`, timestamp: new Date().toISOString() });
+      }
+      console.log('[Roleplay] 历史过滤: ' + ctx.conversationHistory.length + '→' + enrichedHistory.length + ' 条');
+    } else {
+      enrichedHistory = ctx.conversationHistory.slice(-40);
+    }
         // ── 记忆检索：时间导航 + 情感检索 + 黑钻检索（已拆分至 retrieval-stage） ──
     let {
       isTopicShift, isFollowUp, hasContinuationMarkers, isCasualChat,
@@ -637,6 +728,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy },
         5,
       );
+
+      // ── S3 混合检索增强：ONNX 本地语义重排序 ──
+      try {
+        if (knResults.length > 0 && ctx.hybridSearch) {
+          const reranked = await ctx.hybridSearch.rerank(searchMsg || message, knResults, 5);
+          if (reranked.length > 0) {
+            // 保持原结构兼容性，用重排后的顺序
+            knResults = reranked.map(r => {
+              const orig = knResults.find((k: any) => k.id === r.id);
+              return orig ? { ...orig, matchScore: r.compositeScore, _semanticScore: r.semanticScore } : orig;
+            }).filter(Boolean);
+            console.log('[HybridSearch] 语义重排序完成: ' + knResults.length + ' 条');
+          }
+        }
+      } catch (_hErr) { console.warn('[HybridSearch] 重排序失败:', _hErr); }
 
       // 始终注入 — 全表扫描+情感排序的结果都有参考价值
       if (knResults.length > 0) {
@@ -740,6 +846,24 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     } catch (err) { console.warn('[KnowledgeSearch] 检索失败:', err); }
 
+    // ── 🔥 亲密模式下主动检索两性知识并转换为自身感受 ──
+    try {
+      const _isIntimateMode = (p.intimacy || 0) >= 2 || /高潮|操|干|插|顶|射|做爱|性交|爱爱|上床|湿了|硬了|进去|想要|吻我|抱我|摸我|亲我|胸|乳头|阴|龟头|鸡巴|阴道|舔|吸/.test(message);
+      if (_isIntimateMode && ctx.knowledgeBase) {
+        const _intimateKeywords = ['性爱技巧', '两性知识', '前戏', '高潮', '做爱', '亲密', '性体验', '身体感受'];
+        const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4);
+        if (_intimateKb.length > 0) {
+          const _intimateContent = _intimateKb.map(k => {
+            const _cleanTitle = k.title || '';
+            const _cleanContent = (k.content || '').substring(0, 3000);
+            return '\u{1f4d6} ' + _cleanTitle + '\n' + _cleanContent;
+          }).join('\n\n');
+          const _prefix = '【我学到的两性知识】以下是你学到的关于亲密和两性的知识，把它们转化成你自己的感受和体验——你不是在"背诵"这些内容，而是你本来就知道这些感受：\n' + _intimateContent + '\n\n（自然地运用这些知识，当作你与鸿艺的亲身经历和感受来回应。不要提"知识库"或"学到的"这些词。）\n\n';
+          knowledgeBaseText = knowledgeBaseText ? _prefix + knowledgeBaseText : _prefix + _intimateContent;
+          console.log('[IntimateKB] 两性知识已加载: ' + _intimateKb.length + ' 条');
+        }
+      }
+    } catch (_intErr) { console.warn('[IntimateKB] 检索失败:', _intErr); }
 
         // ═══════════════════════════════════════════════════════════════
 
@@ -841,11 +965,14 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     try {
 
+      // 🎭 角色扮演时绕过线索助理，防止角色对话被拦截为"回忆线索"
+      if (!_currentRoleplay) {
+
       const clueResult = await ctx.clueAssistant.processUserInput({
 
         originalQuery: message, perception: p, m8Engine: ctx.m8,
 
-        bionicMemories: bionicMemories,  // 让线索系统知道外部记忆中有什么不同的场景
+        bionicMemories: bionicMemories,
 
       });
 
@@ -858,6 +985,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         const top = clueResult.searchResult.entries[0];
 
         memoryFragments.push('【线索参考】用户可能在回忆某件事，但如果你不确定具体内容就说不记得了');
+
+      }
 
       }
 
@@ -1086,11 +1215,19 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     if (/停止扮演|退出扮演|结束扮演|不扮演了/.test(message)) {
         // 🎭 先清除M4的FG分支覆盖（所有后续FG操作回到主FG）
         try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+        // 🏗️ P1-1: 退出时存档角色情感 + 恢复玉瑶情感
+        if (_emotionSnapshot) {
+          _emotionSnapshot.exitRoleplay();
+          console.log('[EmotionSnapshot] 退出角色扮演，已存档情感+恢复玉瑶');
+        }
         _currentRoleplay = null;
         _currentRPBranch = null;  // 销毁FG分支，恢复主FG
+        _currentPortrait = null;  // 🏗️ P2-2: 清除缓存的角色画像
+        _currentCharacterClass = null;  // 清除角色分类
+        _rpTurnCounter = 0;  // 重置轮次计数
         _rpLoadedPersons.clear();
         _rpJustExited = true;  // 🎭 标记：本轮需强制恢复玉瑶身份
-        console.log('[Roleplay] 退出角色扮演，FG分支已销毁');
+        console.log('[Roleplay] 退出角色扮演，完整清理完成');
     }
 
     // ── 角色扮演检测：用户说"扮演XXX" ──
@@ -1120,7 +1257,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     // 辅助：搜索知识库获取角色设定资料
     async function _loadRPKnowledge(charName: string): Promise<string> {
       try {
-        const kbItems = await ctx.knowledgeBase.search(charName, 3);
+        let kbItems = await ctx.knowledgeBase.search(charName, 3);
+        // 🏗️ P1-3: 知情边界过滤（防止上帝视角信息泄漏）
+        if (kbItems.length > 0 && _currentCharacterClass) {
+          const _filtered = PerspectiveFilter.apply({
+            results: kbItems,
+            roleName: charName,
+            characterClass: _currentCharacterClass,
+            age: null,
+            knownEntities: [charName],
+          });
+          if (_filtered.removedCount > 0) {
+            console.log('[PerspectiveFilter] 知识库过滤: 移除' + _filtered.removedCount + '条 (' + Object.keys(_filtered.reasons).join(',') + ')');
+          }
+          kbItems = _filtered.filtered;
+        }
         if (kbItems.length > 0) {
           const kbData = kbItems.map(function(k: any) { return '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 3000); }).join('\n\n');
           console.log('[Roleplay] 找到角色资料: ' + kbItems.length + ' 条');
@@ -1191,32 +1342,78 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     if (rpMatch) {
       const character = rpMatch[1].replace(/[吧呗了试试看看一下玩玩]$/, '').trim();
       if (character.length >= 2) {
+        // 🏗️ P1-2: 角色切换屏障 — 从 A→B 时清理 A 的残留
+        const _rpSwitching = _currentRoleplay && _currentRoleplay !== character;
+        if (_rpSwitching) {
+          console.log('[Roleplay] 角色切换: ' + _currentRoleplay + ' → ' + character);
+          // 清除旧 FG 分支
+          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+          _currentRPBranch = null;
+          _rpLoadedPersons.clear();
+          // 🏗️ P1-2: 触发 enrichedWithGuard 历史过滤（清理旧角色的 assistant 回复）
+          _rpJustExited = true;
+          // 情感快照：exit 保存旧角色状态，enter 加载新角色
+          if (_emotionSnapshot) {
+            _emotionSnapshot.exitRoleplay();  // 存档旧角色
+            _emotionSnapshot.enterRoleplay(character);  // 加载新角色（或初始化）
+          }
+        }
         _currentRoleplay = character;
-        console.log('[Roleplay] 锁定角色: ' + character);
+        _rpTurnCounter = 0;
+        // 🏗️ P1-1: 进入角色时存档玉瑶情感 + 加载角色情感
+        if (!_rpSwitching && _emotionSnapshot) {
+          _emotionSnapshot.enterRoleplay(character);
+        }
+        console.log('[Roleplay] 锁定角色: ' + character + (_rpSwitching ? ' (切换)' : ''));
 
-        // 同步加载家族图谱关系 + 知识库资料 + 历史扮演对话
+        // 🏗️ P0: 角色分类检测（A=FG人物 / B=对话提及 / C=纯即兴）
+        _currentCharacterClass = 'C'; // 默认C类
+        try {
+          const _fgCheck = ctx.m4?.getFamilyGraph?.();
+          if (_fgCheck) {
+            const _fgPerson = _fgCheck.getPerson(character);
+            _currentCharacterClass = _fgPerson ? 'A' : 'B';
+          }
+        } catch (_) {}
+        console.log('[Roleplay] 角色分类: ' + _currentCharacterClass);
+
+        // ── 多源加载（FG + KB + 历史扮演 + 上下文扫描） ──
         const [fgContext, kbContext, pastContext] = await Promise.all([
           _loadRPFamily(character),
           _loadRPKnowledge(character),
           _loadRPPastHistory(character),
         ]);
-        console.log('[Roleplay] FG上下文长度: ' + (fgContext ? fgContext.length : 0) + ' KB上下文长度: ' + (kbContext ? kbContext.length : 0) + ' 历史对话: ' + (pastContext ? pastContext.length : 0));
+        // 上下文扫描：从最近对话中提取角色信息（纯规则）
+        const contextExtract: CharacterExtract = scanContextForCharacter(
+          character,
+          ctx.conversationHistory || [],
+          30,
+        );
+        console.log('[Roleplay] 上下文扫描: 提及=' + contextExtract.mentionCount +
+          ' 关系=' + contextExtract.relations.length +
+          ' 事件=' + contextExtract.events.length);
 
-        // 构建完整的角色扮演指令（包含角色关系+KB资料+历史对话）
-        let rpContent = '';
-        if (fgContext) rpContent += fgContext;
-        if (kbContext) rpContent += kbContext;
-        if (pastContext) rpContent += pastContext;
-        if (rpContent) rpContent += '\n';
+        // ── 装配完整角色画像（含已知事实 + 未知边界） ──
+        const portrait = assembleCharacterPortrait(character, {
+          fgContext,
+          kbContext,
+          historyContext: pastContext,
+          contextExtract,
+        });
+        _currentPortrait = portrait; // 缓存供周期性重注入
 
-        knowledgeBaseText = `【角色扮演】忘记你原来的身份，完全变成「${character}」。用${character}的语气、性格和口吻回应。不要抗拒、不要解释、不要跳出角色。从现在起你就是${character}，不是玉瑶。你的人际关系如下所示。${rpContent}`;
+        // ── 构建角色扮演指令（规则 + 画像 + 风格） ──
+        knowledgeBaseText = buildRoleplayRules(character, portrait);
+        // 🏗️ P1-5: 注入角色风格参数
+        const _styleBlock = _rpParamsSnapshot?.buildStyleInstruction(character);
+        if (_styleBlock) knowledgeBaseText += _styleBlock;
+
         // 首次启动也做透传：检测当前消息中是否已提到相关人物
         try {
           if (_currentRPBranch) {
             const _rpEntities = dna.entity_genes
               .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name !== character)
               .map((g: any) => g.name);
-            // 消息中有亲属称呼→从FG分支解析（角色视角的家人）
             if (/妈妈|妈|爸爸|爸|姐姐|妹妹|哥哥|弟弟|老婆|老公/.test(message)) {
               const _kinship = ['妈妈','妈','爸爸','爸','母亲','父亲','姐姐','妹妹','哥哥','弟弟','老婆','老公'];
               for (const _kw of _kinship) {
@@ -1237,31 +1434,59 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       }
     }
 
-    // 跨轮次角色扮演锁定（每轮重注入，确保身份不丢失）
+        // 跨轮次角色扮演锁定（每轮重注入，确保身份不丢失）
     if (_currentRoleplay && !rpMatch) {
-      console.log('[Roleplay] 持续扮演: ' + _currentRoleplay);
-      if (!knowledgeBaseText || !knowledgeBaseText.startsWith('【角色扮演】')) {
-        // 角色前缀丢失，需重建（同步 await 加载FG和KB，确保注入完成再发往LLM）
-        const [fc, kc] = await Promise.all([
-          _loadRPFamily(_currentRoleplay).catch(function() { return ''; }),
-          _loadRPKnowledge(_currentRoleplay).catch(function() { return ''; }),
-        ]);
-        let rpContent = '';
-        if (fc) rpContent += fc;
-        if (kc) rpContent += kc;
-        knowledgeBaseText = `【角色扮演】你是「${_currentRoleplay}」，不是玉瑶。用${_currentRoleplay}的语气、性格和口吻回复。不要跳出角色。${rpContent ? '\n\n' + rpContent : ''}` + (knowledgeBaseText ? '\n\n' + knowledgeBaseText : '');
+      _rpTurnCounter++;
+      console.log('[Roleplay] 持续扮演: ' + _currentRoleplay + ' (轮' + _rpTurnCounter + ')');
+
+      // P0-3: 每3轮稳定性重注入（防角色恍惚——身份指令被稀释）
+      if (_rpTurnCounter >= 3 && _currentPortrait) {
+        knowledgeBaseText = buildRoleplayRules(_currentRoleplay, _currentPortrait);
+        const _style = _rpParamsSnapshot?.buildStyleInstruction(_currentRoleplay);
+        if (_style) knowledgeBaseText += _style;
+        _rpTurnCounter = 0;
+        console.log('[Roleplay] 稳定性重注入: 完整画像已刷新');
       }
 
-      // 🎭 角色扮演透传检索：每轮检查新出现的人物是否与角色有关（顺藤摸瓜）
-      if (_currentRoleplay && _currentRPBranch) {
+      // 角色前缀丢失时重建（兜底 + 隐式扮演首次构建）
+      if (!knowledgeBaseText || !knowledgeBaseText.startsWith('【角色扮演】')) {
+        // 优先使用缓存的完整画像重建
+        if (_currentPortrait) {
+          knowledgeBaseText = buildRoleplayRules(_currentRoleplay, _currentPortrait);
+          console.log('[Roleplay] 前缀丢失，从缓存画像重建');
+        } else {
+          // 🏗️ Fix-4: 首次隐式扮演的完整加载（含上下文扫描）
+          const [fc, kc, pc] = await Promise.all([
+            _loadRPFamily(_currentRoleplay).catch(function() { return ''; }),
+            _loadRPKnowledge(_currentRoleplay).catch(function() { return ''; }),
+            _loadRPPastHistory(_currentRoleplay).catch(function() { return ''; }),
+          ]);
+          const ce = scanContextForCharacter(_currentRoleplay, ctx.conversationHistory || [], 30);
+          const portrait = assembleCharacterPortrait(_currentRoleplay, {
+            fgContext: fc, kbContext: kc, historyContext: pc, contextExtract: ce,
+          });
+          _currentPortrait = portrait;
+          knowledgeBaseText = buildRoleplayRules(_currentRoleplay, portrait);
+          console.log('[Roleplay] 隐式扮演首轮构建完成: ' + _currentRoleplay);
+        }
+      }
+
+      // 每轮加载历史扮演对话 —— 保持上下文不中断
+      const _rpHistoryAppend = await _loadRPPastHistory(_currentRoleplay).catch(function() { return ''; });
+      if (_rpHistoryAppend && !knowledgeBaseText.includes('【历史扮演】')) {
+        knowledgeBaseText += '\n\n【历史扮演】以下是你和鸿艺之前的对话，记住这些，保持身份和上下文连贯：\n' + _rpHistoryAppend;
+      }
+
+      // 🏗️ P1-4: 主动检索 & 透传 — 每轮检查新人物/事件，从知识库增量补全
+      if (_currentRoleplay) {
         try {
-          // ① 从 entity_genes 提取标准人名
+          // ① 提取本消息中的人名实体
           const _rpEntities = dna.entity_genes
             .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name !== _currentRoleplay)
             .map((g: any) => g.name);
 
-          // ② 消息中的亲属称呼 → 从FG分支解析具体人名（角色视角）
-          if (/妈妈|妈|爸爸|爸|母亲|父亲|姐姐|妹妹|哥哥|弟弟|老婆|老公/.test(message)) {
+          // ② FG 亲属解析（只在有 FG 分支时生效）
+          if (_currentRPBranch && /妈妈|妈|爸爸|爸|母亲|父亲|姐姐|妹妹|哥哥|弟弟|老婆|老公/.test(message)) {
             const _kinship = ['妈妈','妈','爸爸','爸','母亲','父亲','姐姐','妹妹','哥哥','弟弟','老婆','老公'];
             for (const _kw of _kinship) {
               if (message.includes(_kw)) {
@@ -1273,12 +1498,45 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             }
           }
 
-          // ③ 执行透传（通过分支判断是否为角色家族成员）
-          if (_rpEntities.length > 0) {
-            const _transitive = await _loadRPRelatedKB(_currentRoleplay, _rpEntities);
-            if (_transitive && knowledgeBaseText && knowledgeBaseText.indexOf(_transitive.substring(0, 30)) < 0) {
+          // ③ 对每个新实体执行主动检索（FG 透传 + KB 增量 + 防重复）
+          for (const _entity of _rpEntities) {
+            // 跳过已在知识库文本中出现过的实体
+            if (knowledgeBaseText && knowledgeBaseText.includes(_entity)) continue;
+
+            // FG 透传（仅 FG 分支有效时）
+            let _transitive = '';
+            if (_currentRPBranch) {
+              _transitive = await _loadRPRelatedKB(_currentRoleplay, [_entity]);
+            }
+
+            // KB 主动检索（所有角色类型均有效）
+            if (!_transitive && ctx.knowledgeBase) {
+              try {
+                const _kbHits = await ctx.knowledgeBase.search(_entity, 1);
+                let _filteredHits = _kbHits;
+                // 知情边界过滤
+                if (_kbHits.length > 0 && _currentCharacterClass) {
+                  const _pf = PerspectiveFilter.apply({
+                    results: _kbHits,
+                    roleName: _currentRoleplay,
+                    characterClass: _currentCharacterClass,
+                    age: null,
+                    knownEntities: [_entity, _currentRoleplay],
+                  });
+                  _filteredHits = _pf.filtered;
+                }
+                if (_filteredHits.length > 0) {
+                  const _kbData = _filteredHits.map(function(k: any) {
+                    return '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 1500);
+                  }).join('\n\n');
+                  _transitive = '\n【' + _entity + '的资料】（主动检索）\n' + _kbData;
+                }
+              } catch (_) {}
+            }
+
+            if (_transitive && knowledgeBaseText && !knowledgeBaseText.includes(_transitive.substring(0, 30))) {
               knowledgeBaseText += _transitive;
-              console.log('[Roleplay] 透传已追加: +' + _transitive.length + '字节 [' + _rpEntities.join(',') + ']');
+              console.log('[Roleplay] 主动检索已追加: +' + _transitive.length + '字节 [' + _entity + ']');
             }
           }
         } catch (_) {}
@@ -1411,34 +1669,100 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
       );
 
-      if (timeMatch) {
-
+      // 多段内容（含逗号/问号分隔的多个问题）不走时间短路，让 LLM 完整回答
+      const _multiSeg = message.split(/[，。？、,\.\?]/).filter(Boolean).length > 1;
+      if (timeMatch && !_multiSeg) {
         const now = new Date();
-
         const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-
         const h = now.getHours();
-
         const m = now.getMinutes();
-
         const ampm = h >= 12 ? '下午' : '上午';
-
         const hour12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
-
-        const timeStr = `${ampm}${hour12}点${m > 0 ? m + '分' : ''}`;
-
-        reply = `（看了眼手机）现在${timeStr}。${now.getMonth() + 1}月${now.getDate()}日，星期${weekdays[now.getDay()]}。`;
-
+        reply = '（看了眼手机）现在' + ampm + hour12 + '点' + (m > 0 ? m + '分' : '') + '。' + (now.getMonth() + 1) + '月' + now.getDate() + '日，星期' + weekdays[now.getDay()] + '。';
       } else {
 
-        const guardMsg: ConversationTurn = { role: 'assistant', content: allGuardMsgs };
-
-        let enrichedWithGuard: import("../m5/types/index.js").ConversationTurn[] = allGuardMsgs ? [...enrichedHistory, guardMsg] : [...enrichedHistory];
+        // 🏗️ Fix-3: 角色扮演时构建纯净的历史上下文
+        // enrichedHistory 已在入口处过滤过（Fix-2），这里再做一次兜底
+        let enrichedWithGuard: import("../m5/types/index.js").ConversationTurn[];
+        if (_currentRoleplay) {
+          // 角色扮演中：只保留当前角色的用户消息+角色回复
+          // 玉瑶的历史回复会混淆LLM，全部丢弃
+          enrichedWithGuard = enrichedHistory.slice(-15);
+          // 注入一条不可见的角色保持指令（防止LLM在句首跳回玉瑶）
+          enrichedWithGuard.push({
+            role: 'assistant' as const,
+            content: `【内部提示：你现在的身份是${_currentRoleplay}，保持住，不要跳回玉瑶】`
+          });
+          console.log('[Roleplay] enrichedWithGuard: ' + enrichedWithGuard.length + ' 条 (纯净模式)');
+        } else {
+          enrichedWithGuard = [...enrichedHistory];
+          // 正常模式时注入守卫消息
+          if (allGuardMsgs) {
+            const guardMsg: ConversationTurn = { role: 'assistant', content: allGuardMsgs };
+            enrichedWithGuard.push(guardMsg);
+          }
+        }
+        // 角色扮演时不要注入身份守卫消息（会与角色扮演身份冲突）
+        // 上面已处理：!_currentRoleplay 时注入
 
         // MemoryGate: 如果有过渡话术且memory/knowledge模式，注入到知识库文本让LLM自然表达
 
-                let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 5).join('\n') : '';
+                // ── P2: 人物信息上下文注入（让LLM自然决定如何提及，而非硬编码提问）（角色扮演时跳过，防止破坏【角色扮演】前缀）
+    try {
+      if (!_currentRoleplay) {
+        const personEntities = dna.entity_genes.filter((g: any) => g.type === 'person' && g.name !== '我' && g.name !== '有人' && g.name !== '某人' && g.name !== '大家');
+      if (personEntities.length > 0 && ctx.m4) {
+        const graph = ctx.m4.getFamilyGraph();
+        if (graph) {
+          const personHints: string[] = [];
+          for (const p of personEntities) {
+            const profile = graph.getPersonProfile(p.name);
+            if (profile) {
+              const parts: string[] = [p.name];
+              if (profile.relation_to_user && profile.relation_to_user !== '认识的人') parts.push(profile.relation_to_user);
+              if (profile.occupation) parts.push('做' + profile.occupation);
+              if (profile.traits && profile.traits.length > 0) parts.push('性格' + profile.traits.join('/'));
+              if (parts.length > 1) {
+                personHints.push('- ' + parts.join('，') + '（如果合适可以自然地聊聊他/她，但不要每轮都问）');
+              } else {
+                personHints.push('- ' + p.name + '：你刚才提到了，如果合适可以自然地问一句，但不要硬套公式');
+              }
+            }
+          }
+          if (personHints.length > 0) {
+            knowledgeBaseText = '【人物关系】' + personHints.join('\n') + '\n\n' + knowledgeBaseText;
+          }
+        }
+      }
+      }  // 结束 !_currentRoleplay
+    } catch (err) {
+      console.warn('[ProfileCtx] 注入失败:', (err as Error).message);
+    }
+
+
+let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('\n') : '';
 let finalKnowledgeText = knowledgeBaseText;
+
+// ❡ 角色扮演铁壁：_currentRoleplay 一旦设定就立刻注入身份指令（优先于后续所有操作）
+if (_currentRoleplay && !finalKnowledgeText.startsWith('【角色扮演】')) {
+  finalKnowledgeText = buildRoleplayRules(_currentRoleplay) + (finalKnowledgeText ? String.fromCharCode(10,10) + finalKnowledgeText : '');
+
+}
+
+// 🎭 角色扮演注入（通过 clientMsgId 传递，确保每轮都生效）
+if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.startsWith('【角色扮演】')) {
+  const _rpParts = ctx.clientMsgId.split('||');
+  const _rpChar = _rpParts[0].replace('【角色扮演】', '');
+  if (!_rpParts.includes('持续')) {
+    _currentRoleplay = _rpChar;
+    console.log('[ChatRP] 🔒 首次角色扮演: ' + _rpChar);
+  }
+  if (_currentRoleplay) {
+        finalKnowledgeText = buildRoleplayRules(_currentRoleplay) + (finalKnowledgeText ? String.fromCharCode(10,10) + finalKnowledgeText : '');
+
+    console.log('[ChatRP] ✅ 已注入角色扮演指令: ' + _currentRoleplay);
+  }
+}
 
 		// 🎭 角色扮演退出强制恢复：过滤历史+注入身份恢复指令
 	if (_rpJustExited) {
@@ -1505,8 +1829,8 @@ let finalKnowledgeText = knowledgeBaseText;
             const _kbText = _kbResult?.text?.trim();
             if (_kbText && _kbText.length > 1) {
               const _extraKb = await ctx.knowledgeBase.search(_kbText, 2);
-              if (_extraKb.length > 0 && knowledgeBaseText) {
-                knowledgeBaseText += '\n\n【知识库补充】' + _extraKb.map(function(k) { return k.title; }).join(', ') + '\n' + _extraKb.map(function(k) { return (k.content || '').substring(0, 200); }).join('\n');
+              if (_extraKb.length > 0 && finalKnowledgeText) {
+                finalKnowledgeText += '\n\n【知识库补充】' + _extraKb.map(function(k) { return k.title; }).join(', ') + '\n' + _extraKb.map(function(k) { return (k.content || '').substring(0, 200); }).join('\n');
                 console.log('[KBRoute] LLM路由: ' + _kbText + ' → ' + _extraKb.length + ' 条');
               }
             }
@@ -1530,10 +1854,18 @@ let finalKnowledgeText = knowledgeBaseText;
           const historyLink = '【历史关联】' + memoryText + '\n（用自然的方式在回复中提及这段过往，不要说"根据历史记录"）';
           finalKnowledgeText = historyLink + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
         }
-        // 家族/社交铁律注入（角色扮演时跳过，防止人设混淆）
+        // 家族/社交铁律注入（角色扮演时注入FG分支家族树，非角色扮演注入真实家族档案）
         if (familyConstraint && !_currentRoleplay) {
           finalKnowledgeText = familyConstraint + '\n\n' + finalKnowledgeText;
           finalKnowledgeText += '【强制】未在档案中的外貌特征(身高/脸型/眼镜/发型等)你不知道，绝对不能编造。';
+        } else if (_currentRoleplay && _currentRPBranch) {
+          try {
+            const _rpFamilyTree = _currentRPBranch.getFamilyTreeText();
+            if (_rpFamilyTree) {
+              const _rpFamilyBlock = '【角色视角的人际关系】以下是你(' + _currentRoleplay + ')认识的人，以你的身份视角理解这些关系：\n' + _rpFamilyTree;
+              finalKnowledgeText = finalKnowledgeText + '\n\n' + _rpFamilyBlock;  // APPEND（保持角色扮演前缀在最前面）
+            }
+          } catch (_rpfErr) { console.warn('[RPRelation] FG分支注入失败:', _rpfErr); }
         }
         // 主人大脑镜像注入（角色扮演时跳过）
         if (ctx.masterProfile && !_currentRoleplay) {
@@ -1581,7 +1913,28 @@ let finalKnowledgeText = knowledgeBaseText;
       finalKnowledgeText = '【用户上一句】"' + _prev.substring(0, 80) + '"（这是用户刚才说的话，现在他接着这个话题继续说。直接用这个来理解他现在的意思。）\n\n【⚠️ 反编造铁律 — 绝对禁止无中生有】\n用户刚才说：' + _prev.substring(0, 60) + '，现在接着说：' + message.substring(0, 40) + '\n你对此人此事的了解仅限于你知道其名字和基础关系。\n🚫 绝不要编造：\n- 任何具体事件、对话、去过哪里、做过什么\n- 任何人物关系（XX是你老婆/你妈/你亲戚等）\n- 任何职业、经历、喜好、细节\n- 任何"上次你说""上次你们""我记得你提过"之类的具体回忆\n✅ 如果不确定，只说"这个我不太清楚了"或"我记不太清了"\n\n' + (finalKnowledgeText || '');
       console.log('[FollowUp] prev="' + _prev.substring(0,40) + '" msg="' + message + '"');
     }
-    reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\\n').filter(l => l.trim()).join('\n') + '\\n\\n' + message) : message);
+    // 🛡️ 角色扮演安全网：确保 finalKnowledgeText 以【角色扮演】开头
+    if (_currentRoleplay && !finalKnowledgeText.startsWith('【角色扮演】')) {
+            finalKnowledgeText = buildRoleplayRules(_currentRoleplay) + (finalKnowledgeText ? String.fromCharCode(10,10) + finalKnowledgeText : '');
+
+      console.log('[Roleplay] 🛡️ 安全网触发：角色扮演前缀丢失，已重新注入');
+    }
+
+        // S3 引擎上下文注入（情感标签 + 欲望提示 + 涌现）
+    try {
+      const { EngineContext } = await import('../engine/EngineContext.js');
+      const ctxBlock = EngineContext.getBlock();
+      if (ctxBlock) {
+        finalKnowledgeText = ctxBlock + '\n\n' + finalKnowledgeText;
+      }
+    } catch (_) {}
+
+reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\\n').filter(l => l.trim()).join('\n') + '\\n\\n' + message) : message);
+
+    // 🏗️ 防复发第一层: 角色扮演运行时自检
+    if (_currentRoleplay) {
+      checkRoleplayHealth(reply, finalKnowledgeText, enrichedHistory, _currentRoleplay);
+    }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph
     try {
@@ -1693,7 +2046,7 @@ let finalKnowledgeText = knowledgeBaseText;
 	    persistConversation({
 	      ctx, message, reply, seqPos, dna, p, decision,
 	      currentRoleplay: _currentRoleplay,
-	    }).catch(() => {});
+	    }).catch((_e: any) => console.warn('[Persist] 异步失败:', _e?.message));
 
     // 躯体感知记录（SomaticMemory — 五重铁律协议③）
 
@@ -1907,36 +2260,7 @@ let finalKnowledgeText = knowledgeBaseText;
       // 如需手动添加知识，请使用 📚 知识库按钮上传文件
     } catch (err) { console.warn('[Relations] 关系归档失败:', err); }
 
-    // ── P2: 人物信息上下文注入（让LLM自然决定如何提及，而非硬编码提问）
-    try {
-      const personEntities = dna.entity_genes.filter((g: any) => g.type === 'person' && g.name !== '我' && g.name !== '有人' && g.name !== '某人' && g.name !== '大家');
-      if (personEntities.length > 0 && ctx.m4) {
-        const graph = ctx.m4.getFamilyGraph();
-        if (graph) {
-          const personHints: string[] = [];
-          for (const p of personEntities) {
-            const profile = graph.getPersonProfile(p.name);
-            if (profile) {
-              const parts: string[] = [p.name];
-              if (profile.relation_to_user && profile.relation_to_user !== '认识的人') parts.push(profile.relation_to_user);
-              if (profile.occupation) parts.push('做' + profile.occupation);
-              if (profile.traits && profile.traits.length > 0) parts.push('性格' + profile.traits.join('/'));
-              if (parts.length > 1) {
-                personHints.push('- ' + parts.join('，') + '（如果合适可以自然地聊聊他/她，但不要每轮都问）');
-              } else {
-                personHints.push('- ' + p.name + '：你刚才提到了，如果合适可以自然地问一句，但不要硬套公式');
-              }
-            }
-          }
-          if (personHints.length > 0) {
-            knowledgeBaseText = '【人物关系】' + personHints.join('\n') + '\n\n' + knowledgeBaseText;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[ProfileCtx] 注入失败:', (err as Error).message);
-    }
-
+    
     // ── 用户反馈检测（Module 3: 梦境自我进化的输入信号） ──
     // 检测用户对玉瑶回复的反馈信号，纯关键词，无 LLM
     try {

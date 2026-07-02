@@ -146,6 +146,8 @@ export class SQLiteAdapter {
     try { this.db.run("ALTER TABLE memories ADD COLUMN round_count INTEGER DEFAULT 1"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN topic_label TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN anchor_score REAL"); } catch { /* 列已存在 */ }
+    // 🏗️ Fix: ConsolidationQueue.write() 需要 dna_root_id 列
+    try { this.db.run("ALTER TABLE memories ADD COLUMN dna_root_id TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_dialog_group ON memories(dialog_group_id)");
     // 家族图谱别名表（模糊去重）
     try {
@@ -358,6 +360,46 @@ export class SQLiteAdapter {
 
     // 持久化到磁盘
     this.save();
+  }
+
+  /**
+   * writeMemory — 对话持久化专用写入（改造②：替代 persistence-stage 中
+   * 通过 getDb() 绕过封装层直接操作 sql.js 的 unsafe 模式）
+   *
+   * 使用 runSql() 私有方法（稳定可靠），不走 as any 逃逸路径。
+   * 写入后触发批量刷新 save()。
+   */
+  writeMemory(opts: {
+    id: string; seqPos: number; createdAt: string;
+    perceptionJson: string; calciumScore: number; calciumLevel: number;
+    locusPath: string; leafZone: string; rawInput: string;
+    primaryEmotion: string; memoryType: string;
+    dialogGroupId?: string | null; topicLabel?: string | null;
+  }): boolean {
+    this.ensureReady();
+    try {
+      this.runSql(
+        `INSERT OR REPLACE INTO memories
+        (id, seq_pos, created_at, perception_json, calcium_score, calcium_level,
+         locus_path, leaf_zone, raw_input, recall_count, promoted_to_diamond,
+         strength_updated_at, effective_strength, is_landmark, primary_emotion,
+         memory_type, dialog_group_id, topic_label)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?)`,
+        [
+          opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
+          opts.calciumScore, opts.calciumLevel,
+          opts.locusPath, opts.leafZone, opts.rawInput.substring(0, 2000),
+          opts.createdAt,  // strength_updated_at
+          opts.primaryEmotion, opts.memoryType || 'dialog',
+          opts.dialogGroupId ?? null, opts.topicLabel ?? null,
+        ],
+      );
+      this.save();
+      return true;
+    } catch (e: any) {
+      console.error(`[SQLiteAdapter] ❌ writeMemory 失败 seq=${opts.seqPos} zone=${opts.leafZone}:`, e?.message);
+      return false;
+    }
   }
 
   private ensureEntity(name: string, type: string): void {

@@ -187,17 +187,17 @@ export class FamilyGraphRoleBranch {
 
   /**
    * 获取角色家族树中某人的画像
-   * 优先返回分支内的画像数据，没有则从主FG补充加载
+   * 🔴 铁律：分支中不存在的角色绝不从主FG补充加载。
+   *   ——否则用户问"梓铭是谁"时，诗韵视角会泄漏主FG中梓铭的数据。
+   *   只有在以下情况才返回数据：
+   *   a) 该人物在分支的家族树中（角色认识的人）
+   *   b) 该人物通过 integrateFromEntity 被用户明确提及并加入分支
    */
   getPersonProfile(name: string): PersonProfile | null {
     const bp = this.persons.get(name);
     if (bp?.profile) return bp.profile;
-    // 分支中没有，从主FG补充加载（并缓存到分支）
-    const profile = (this.fg as any).getPersonProfile(name);
-    if (profile && !this.persons.has(name)) {
-      this.persons.set(name, { name, profile, relations: [] });
-    }
-    return profile;
+    // 🚫 分支中没有，不返回主FG数据——防泄漏
+    return null;
   }
 
   /**
@@ -280,13 +280,14 @@ export class FamilyGraphRoleBranch {
       if (name === '我' || name === this.rootName) continue;
       if (this.persons.has(name)) continue; // 已在分支中，无需重复加载
 
-      // 新人名：从主 FG 补充加载（如果有的话）
+      // 新人名：只从主FG补充加载主FG中已有的profile
+      // 🔴 不加载关系边——避免主FG中梓铭→熊勇的关系泄漏到诗韵视角
       const mainProfile = (this.fg as any).getPersonProfile(name);
       if (mainProfile) {
         this.persons.set(name, { name, profile: mainProfile, relations: [] });
         nodesCreated++;
         details.push(`从主FG补充: ${name}`);
-        console.log(`[FGRoleBranch] 补充人物「${name}」到角色「${this.rootName}」的分支`);
+        console.log(`[FGRoleBranch] 补充人物「${name}」到角色「${this.rootName}」的分支（仅画像，无关系边）`);
       } else {
         // 主 FG 中也没有 → 新建一个占位节点
         this.persons.set(name, {

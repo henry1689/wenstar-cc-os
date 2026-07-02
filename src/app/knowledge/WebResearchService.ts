@@ -18,11 +18,16 @@ interface ResearchResult {
   entryId: string;
 }
 
-/** 用户自定义搜索 API（可配置） */
-const CUSTOM_SEARCH_URL = process.env['RESEARCH_API_URL'] || '';
-const CUSTOM_SEARCH_KEY = process.env['RESEARCH_API_KEY'] || '';
+/** 用户自定义搜索 API（可配置）— 改造④：不在模块级读 process.env */
+function getSearchConfig() {
+  return {
+    url: (process.env as any)['RESEARCH_API_URL'] || '',
+    key: (process.env as any)['RESEARCH_API_KEY'] || '',
+  };
+}
 
 async function searchCustomAPI(keyword: string): Promise<string> {
+  const { url: CUSTOM_SEARCH_URL, key: CUSTOM_SEARCH_KEY } = getSearchConfig();
   if (!CUSTOM_SEARCH_URL) return '';
   try {
     const url = CUSTOM_SEARCH_URL.replace('%s', encodeURIComponent(keyword));

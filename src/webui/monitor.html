@@ -16,6 +16,16 @@
       <div style="font-size:10px;color:#667">评分:<span id="sc">{{SCORE}}</span> 模式:<span id="md">{{MODE}}</span></div>
       <div id="dp" style="font-size:10px;color:#667"></div>
     </div>
+    <div style="flex:0.8;background:#0f1118;border-radius:4px;padding:6px;min-width:170px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="color:#0dd;font-size:11px;font-weight:600">&#x1F3A0; Heart</span>
+        <span id="hlb" style="font-size:9px;color:#556">-</span>
+      </div>
+      <div id="hp" style="font-size:10px;color:#667;line-height:1.4">
+        <canvas id="hc" width="160" height="100" style="width:100%;height:80px;display:block;margin-bottom:2px"></canvas>
+        <div id="ht"></div>
+      </div>
+    </div>
   </div>
 </div>
 <div style="flex:1.1;display:flex;flex-direction:column;min-width:260px;background:#0d0f14;border-left:1px solid #222">
@@ -30,7 +40,7 @@
     <button onclick="snd()" style="background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:11px;font-weight:600">发送</button></div>
     <div style="display:flex;gap:4px;margin-top:4px;font-size:11px;color:#445;align-items:center">
       <span style="cursor:pointer" onclick="document.getElementById('fu').click()">&#x1F4CE;</span><input type="file" id="fu" style="display:none" multiple onchange="uf(this.files)">
-      <span style="cursor:pointer" onclick="document.getElementById('kf').click()">&#x1F4DA;</span><input type="file" id="kf" style="display:none" accept=".txt,.md,.pdf" onchange="uk(this.files)">
+      <button onclick="kb()" style="background:none;border:none;color:#445;cursor:pointer;font-size:11px;padding:0" title="知识库管理">&#x1F4DA;</button>
       <span onclick="mic()" id="mb" style="cursor:pointer">&#x1F3A4;</span>
       <span onclick="tt()" id="tb" style="cursor:pointer">&#x1F507;</span>
       <span style="flex:1;text-align:right;font-size:10px" id="slb">就绪</span>
@@ -39,24 +49,115 @@
 </div>
 </div>
 <script>
-var tts=false;
-function tt(){tts=!tts;document.getElementById('tb').textContent=tts?'🔊':'🔇'}
+var tts=true;
+function tt(){tts=!tts;document.getElementById('tb').textContent=tts?'\u{1F50A}':'\u{1F507}'};document.getElementById('tb').textContent='\u{1F50A}'
 function clr(){document.getElementById('ms').innerHTML='';_m=[];sv()}
 function rst(){fetch('/api/reset',{method:'POST'})}
-var _m=[];var SK='wa';
+var _m=[];var SK='wc_v3';
 function sv(){try{localStorage.setItem(SK,JSON.stringify(_m))}catch(e){}}
-function ld(){try{var d=localStorage.getItem(SK);if(d){_m=JSON.parse(d);for(var i=0;i<_m.length;i++){var p=document.getElementById('ms');p.innerHTML+='<div style="padding:6px 10px;margin-bottom:4px">'+_m[i].c+'</div>'}}}catch(e){}}
-function ad(r,c){var d=document.getElementById('ms');d.innerHTML+='<div style="padding:6px 10px;border-radius:6px;margin-bottom:4px;max-width:98%;'+(r==='u'?'text-align:right':'')+'">'+c+'<div style="font-size:9px;color:#445;margin-top:2px">'+new Date().toLocaleTimeString()+'</div></div>';d.scrollTop=d.scrollHeight;_m.push({c:c});sv()}
-function snd(){var i=document.getElementById('inp'),m=i.value.trim();if(!m)return;i.value='';i.style.height='30px';ad('u',m);document.getElementById('slb').textContent='...';fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:m,tts:tts})}).then(function(r){return r.json()}).then(function(d){ad('a',d.reply||'');document.getElementById('slb').textContent='就绪';ra();rd();if(tts&&d.audio_url){try{(new Audio(d.audio_url)).play()}catch(e){}}}).catch(function(e){ad('a','错误');document.getElementById('slb').textContent='错误'})}
+function ld(){try{var d=localStorage.getItem(SK);if(d){_m=JSON.parse(d);var p=document.getElementById('ms');p.innerHTML='';for(var i=0;i<_m.length;i++){p.innerHTML+='<div style="padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word'+( _m[i].r==='u'?';text-align:right;background:rgba(100,180,255,0.22)':';background:rgba(255,255,150,0.22)')+'"'+(_m[i].rp?' rp="1"':'')+'>'+( _m[i].rp?'[角色扮演] ':'')+_m[i].c+'<div style="font-size:9px;color:#445;margin-top:3px">'+_m[i].t+'</div></div>'}}}catch(e){}}
+
+function ad(r,c){var _t=new Date().toLocaleTimeString();var d=document.getElementById('ms');var sty=r==='u'?';text-align:right;background:rgba(100,180,255,0.22)':';background:rgba(255,255,150,0.22)';d.innerHTML+='<div style="padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word'+sty+'">'+c+'<div style="font-size:9px;color:#445;margin-top:3px">'+_t+'</div></div>';d.scrollTop=d.scrollHeight;_m.push({r:r,c:c,t:_t});sv()}
+var _ap=null;
+function snd(){var i=document.getElementById('inp'),m=i.value.trim();if(!m)return;if(tts&&_ap&&!_ap.paused){try{_ap.pause();_ap=null}catch(e){}}i.value='';i.style.height='30px';ad('u',m);document.getElementById('slb').textContent='...';var _ms=document.getElementById('ms');var _b=document.createElement('div');_b.style.cssText='padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word;background:rgba(255,255,150,0.22)';_ms.appendChild(_b);var es=new EventSource('/api/chat/stream?message='+encodeURIComponent(m));es.onmessage=function(e){var d;try{d=JSON.parse(e.data)}catch{return};if(d.type==='text'){_b.innerHTML+=d.content.replace(/\n/g,'<br>');_ms.scrollTop=_ms.scrollHeight}else if(d.type==='done'){es.close();var _ft=d.content||'';document.getElementById('slb').textContent='就绪';ra();rd();rh();var _t=new Date().toLocaleTimeString();_m.push({r:'a',c:_ft,t:_t});sv();if(tts&&_ft){try{if(_ap){_ap.pause()} _ap=new Audio(d.audio_url);_ap.play()}catch(e){}}}};es.onerror=function(){es.close();document.getElementById('slb').textContent='错误'}}
 var rc=null;
 function mic(){if(rc){rc.stop();rc=null;document.getElementById('mb').style.color='#556';return}var SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){ad('a','语音不支持');return}rc=new SR();rc.lang='zh-CN';rc.interimResults=false;rc.onresult=function(e){document.getElementById('inp').value=e.results[e.results.length-1][0].transcript;rc=null;document.getElementById('mb').style.color='#556'};rc.onerror=function(){rc=null;document.getElementById('mb').style.color='#556'};rc.start();document.getElementById('mb').style.color='#2ecc71'}
-function uf(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','📎 '+f.name);var r=new FileReader();r.onload=function(e){ad('a','已读取')};r.readAsText(f)})(fs[i])}}
-function uk(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','📚 '+f.name);var r=new FileReader();r.onload=function(e){fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:f.name.replace(/\.[^.]+$/,''),content:e.target.result})}).then(function(r2){r2.ok?ad('a','已存入'):ad('a','失败')})};r.readAsText(f)})(fs[i])}}
-function rf(){fetch('/_hooks/monitor',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){var h='';for(var i=0;i<d.cards.length;i++){var c=d.cards[i];var cl=c.status==='green'?'#2ecc71':c.status==='yellow'?'#f1c40f':c.status==='red'?'#e74c3c':'#333';h+='<div style="background:#0a0c10;border:1px solid #222;border-radius:8px;padding:6px 14px;font-size:14px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+cl+';margin-right:4px"></span><b>'+c.id+'</b> '+c.name+'<br><span style="color:#556;font-size:12px">'+c.callCount+'次 均:'+c.avgDuration+'ms</span></div>'}document.getElementById('grd').innerHTML=h;document.getElementById('st').innerHTML='🟢'+d.cards.filter(function(x){return x.status==='green'}).length+' 🟡'+d.cards.filter(function(x){return x.status==='yellow'}).length+' 🔴'+d.cards.filter(function(x){return x.status==='red'}).length})}
+function uf(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','\u{1F4CE} '+f.name);var r=new FileReader();r.onload=function(e){ad('a','已读取')};r.readAsText(f)})(fs[i])}}
+function uk(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','\u{1F4DA} '+f.name);var r=new FileReader();r.onload=function(e){fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:f.name.replace(/\.[^.]+$/,''),content:e.target.result})}).then(function(r2){r2.ok?ad('a','已存入'):ad('a','失败')})};r.readAsText(f)})(fs[i])}}
+var _prevStatus = {};
+function spk(t) {
+  if (!tts || !window.speechSynthesis) return;
+  try {
+    var u = new SpeechSynthesisUtterance(t);
+    u.lang = 'zh-CN';
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    window.speechSynthesis.speak(u);
+  } catch(e) {}
+}
+function _checkAndSpeak(cards) {
+  for (var i = 0; i < cards.length; i++) {
+    var c = cards[i];
+    var prev = _prevStatus[c.id];
+    if (prev && prev !== c.status) {
+      if (c.status === 'red') spk(c.id + '异常' + c.name);
+      else if (c.status === 'yellow') spk(c.id + '缓慢' + c.name);
+      else if (c.status === 'green' && (prev === 'red' || prev === 'yellow')) spk(c.id + '已恢复');
+    }
+    _prevStatus[c.id] = c.status;
+  }
+}
+function _renderCards(d) {
+  var h = '';
+  for (var i = 0; i < d.cards.length; i++) {
+    var c = d.cards[i];
+    var cl = c.status === 'green' ? '#2ecc71' : c.status === 'yellow' ? '#f1c40f' : c.status === 'red' ? '#e74c3c' : '#333';
+    var th = c.thresholdMs || 0;
+    var ths = th >= 60000 ? (th/60000).toFixed(0) + 'm' : (th/1000).toFixed(0) + 's';
+    var ela = c.elapsedMs || 0;
+    var elas = ela >= 60000 ? (ela/60000).toFixed(1) + 'm' : (ela/1000).toFixed(0) + 's';
+    var errRate = c.errorRate || 0;
+    var errCl = errRate > 10 ? 'color:#e74c3c' : errRate > 3 ? 'color:#f1c40f' : 'color:#556';
+    var avgD = c.avgDuration || 0;
+    var rcAvg = c.recentAvg || 0;
+    var trend = rcAvg > 0 && avgD > 0 ? (rcAvg < avgD * 0.8 ? '<span style="color:#2ecc71">' + String.fromCodePoint(0x25B2) + '</span>' : rcAvg > avgD * 1.2 ? '<span style="color:#e74c3c">' + String.fromCodePoint(0x25BC) + '</span>' : '<span style="color:#556">' + String.fromCodePoint(0x25B6) + '</span>') : '';
+    h += '<div style="background:#0a0c10;border:1px solid #222;border-radius:8px;padding:6px 14px;font-size:13px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center">';
+    h += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + cl + ';margin-right:4px;vertical-align:middle"></span>';
+    h += '<b style="font-size:14px">' + c.id + '</b><span style="color:#889;margin-left:4px;font-size:12px">' + c.name + '</span></span>';
+    h += '<span style="font-size:11px;color:#556">' + ths + '</span></div>';
+    h += '<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:3px">';
+    h += '<span style="color:#889">' + String.fromCodePoint(0x1F4CA) + (c.callCount||0) + String.fromCodePoint(0x56DE) + '</span>';
+    h += '<span style="' + errCl + '">' + String.fromCodePoint(0x274C) + (c.errorCount||0) + '</span>';
+    h += '<span style="color:#556">' + String.fromCodePoint(0x23F1) + '(' + avgD + '/' + ths + ')</span>';
+    h += '<span>' + trend + '<span style="color:#556;margin-left:2px">' + rcAvg + 'ms</span></span></div>';
+    h += '<div style="font-size:10px;color:#445;margin-top:1px">' + String.fromCodePoint(0x1F550) + String.fromCodePoint(0xFE0F) + elas + String.fromCodePoint(0x524D) + '</div></div>';
+  }
+  document.getElementById('grd').innerHTML = h;
+  var g = d.cards.filter(function(x){return x.status==='green'}).length;
+  var y = d.cards.filter(function(x){return x.status==='yellow'}).length;
+  var r = d.cards.filter(function(x){return x.status==='red'}).length;
+  document.getElementById('st').innerHTML = String.fromCodePoint(0x1F7E2) + g + ' ' + String.fromCodePoint(0x1F7E1) + y + ' ' + String.fromCodePoint(0x1F534) + r;
+  var ts = g+y+r > 0 ? Math.round((g+(y*0.5))/Math.max(1,g+y+r)*100) : 0;
+  if (document.getElementById('al')) document.getElementById('al').innerHTML = String.fromCodePoint(0x1F3AF) + String.fromCodePoint(0x5065) + String.fromCodePoint(0x5EB7) + ts + '%';
+  _checkAndSpeak(d.cards);
+}
+function rf() {
+  fetch('/_hooks/monitor',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){_renderCards(d)});
+}
 function ra(){fetch('/_hooks/alerts',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){document.getElementById('ab').textContent=d.alerts.length;if(!d.alerts.length){document.getElementById('ap').innerHTML='<span style="color:#556">✅ 正常</span>'}else{document.getElementById('ap').innerHTML=d.alerts.map(function(a){return '<div style="font-size:10px;color:#aab;padding:1px 0">⚠ '+a.id+' '+a.type+'</div>'}).join('')}})}
 function rd(){fetch('/_hooks/dispatch',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){document.getElementById('sc').textContent=d.score;document.getElementById('md').textContent=d.mode;document.getElementById('dp').innerHTML=d.decisions.map(function(x){return '<div style="font-size:10px;color:#aab;margin:1px 0">'+(x.type==='ok'?'✅':'⚠')+' '+x.target+' → '+x.action+'</div>'}).join('')})}
-setInterval(function(){try{rf()}catch(e){}try{ra()}catch(e){}try{rd()}catch(e){}},4000);
-ld();rf();ra();rd();
+function rh(){fetch('/api/engine/heart',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){var s=d.state||{},rm=s.relationMetrics||{},v=s.emotionVector||{},lb=s.emotionLabel||{};document.getElementById('hlb').textContent=lb.label||'-';var h='<div style="color:#0dd">'+lb.label+'</div><div>关系:'+s.relationState+' |氛围:'+s.atmosphere+' |信任:'+(rm.trust||'')+'</div><div>裂痕:'+(rm.crack||'0')+' |默契:'+(rm.rapport||'0')+'</div>';var dh=d.desireHints||[];if(dh.length)h+='<div style="color:#f1c40f">欲望:'+dh.join(',')+'</div>';if(d.emergenceHint)h+='<div style="color:#e74c3c">涌现:'+d.emergenceHint+'</div>';document.getElementById('ht').innerHTML=h;drawRadar(v)})}
+function drawRadar(v){var c=document.getElementById('hc');if(!c||!c.getContext)return;var ctx=c.getContext('2d');var dims=[v.joy||0,v.affection||0,v.trust||0,v.intimacy||0,v.arousal||0,v.calm||0];var labels=['喜','爱','信','亲','醒','静'];var cx=80,cy=55,r=45;ctx.clearRect(0,0,160,100);ctx.strokeStyle='#333';ctx.lineWidth=0.5;for(var ring=1;ring<=3;ring++){ctx.beginPath();for(var i=0;i<6;i++){var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+r*ring/3*Math.cos(angle);var y=cy+r*ring/3*Math.sin(angle);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath();ctx.stroke()}ctx.fillStyle='rgba(0,212,212,0.08)';ctx.strokeStyle='#0dd';ctx.lineWidth=1.5;ctx.beginPath();for(var i=0;i<6;i++){var val=Math.min(1,dims[i]/50);var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+r*val*Math.cos(angle);var y=cy+r*val*Math.sin(angle);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath();ctx.fill();ctx.stroke();ctx.fillStyle='#556';ctx.font='8px sans-serif';ctx.textAlign='center';for(var i=0;i<6;i++){var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+(r+10)*Math.cos(angle);var y=cy+(r+10)*Math.sin(angle);ctx.fillText(labels[i],x,y)}}
+setInterval(function(){try{rf()}catch(e){}try{ra()}catch(e){}try{rd()}catch(e){}try{rh()}catch(e){}},4000);
+ld();rf();ra();rd();rh();
 </script>
+
+<div id="kb-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000">
+<div style="background:#141820;border-radius:12px;padding:20px;width:600px;margin:10vh auto;border:1px solid #333">
+  <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+    <span style="color:#00d4d4;font-size:16px;font-weight:700">&#x1f4da; 知识库</span>
+    <button onclick="kbClose()" style="background:rgba(255,50,50,0.07);border:1px solid #533;color:#e55;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">&#x2716;</button>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:10px">
+    <input id="kb-search" placeholder="&#x1f50d; 搜索..." style="flex:1;background:#0a0c10;border:1px solid #333;border-radius:6px;padding:6px 10px;color:#d0d8e0;font-size:12px;outline:none" oninput="kbLoad()">
+    <button onclick="kbAdd()" style="background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">&#x2795;</button>
+    <button onclick="document.getElementById('kf').click()" style="background:rgba(255,255,255,0.03);border:1px solid #333;color:#889;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">&#x1f4ce;</button>
+  </div>
+  <div id="kb-list" style="min-height:200px;max-height:60vh;overflow-y:auto;font-size:12px;color:#667"></div>
+</div>
+</div>
+<input type="file" id="kf" style="display:none" accept=".txt,.md,.pdf" onchange="kbUpload(this.files)">
+<script>
+var _kb=[];
+function kb(){document.getElementById('kb-overlay').style.display='block';kbLoad()}
+function kbClose(){document.getElementById('kb-overlay').style.display='none'}
+function kbLoad(){var q=document.getElementById('kb-search').value.trim();fetch('/api/knowledge?limit=100'+(q?'&search='+encodeURIComponent(q):'')).then(function(r){return r.json()}).then(function(d){_kb=d.items||[];var h='';for(var i=0;i<_kb.length;i++){h+='<div onclick="kbView(\''+_kb[i].id+'\')" style="padding:6px 8px;margin-bottom:4px;background:#0a0c10;border-radius:4px;cursor:pointer"><span style="color:#b0b8c0">'+( _kb[i].title||'')+'</span><br><span style="color:#556;font-size:10px">'+(_kb[i].content||'').substring(0,60)+'</span></div>'}document.getElementById('kb-list').innerHTML=h||'<div style="text-align:center;padding:40px;color:#445">空</div>'})}
+function kbView(id){fetch('/api/knowledge/'+id).then(function(r){return r.json()}).then(function(k){if(!k)return;document.getElementById('kb-list').innerHTML='<div style="margin-bottom:10px"><span style="color:#b0b8c0;font-size:15px;font-weight:600">'+(k.title||'')+'</span><button onclick="kbDel(\''+k.id+'\')" style="background:rgba(255,50,50,0.07);border:1px solid #533;color:#e55;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:10px;float:right">&#x1f5d1;</button></div><div style="padding:12px;background:#0d0f14;border-radius:6px;font-size:12px;line-height:1.6;color:#aab;max-height:300px;overflow-y:auto;white-space:pre-wrap">'+(k.content||'').substring(0,10000)+'</div><button onclick="kbLoad()" style="margin-top:8px;background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:11px">&#x2190; 返回</button>'})}
+function kbDel(id){if(!confirm('确认删除？'))return;fetch('/api/knowledge',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).then(function(r){r.ok?kbLoad():alert('失败')})}
+function kbAdd(){var t=prompt('标题：');if(!t)return;var c=prompt('内容：');if(!c)return;fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t,content:c})}).then(function(r){r.ok?kbLoad():alert('失败')})}
+function kbUpload(fs){for(var i=0;i<fs.length;i++){(function(f){var r=new FileReader();r.onload=function(e){fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:f.name.replace(/\.[^.]+$/,''),content:e.target.result})}).then(function(r2){if(r2.ok)kbLoad()})};r.readAsText(f)})(fs[i])}}
+</script>
+
 </body>
 </html>
