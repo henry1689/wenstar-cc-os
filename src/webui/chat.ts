@@ -1448,12 +1448,32 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         console.log('[Roleplay] 稳定性重注入: 完整画像已刷新');
       }
       
-      // 🔴 每轮强制注入年龄锚点（从画像中提取，防LLM随口改年龄）
-      if (_currentPortrait && _currentPortrait.includes('岁')) {
-        const _ageMatch = _currentPortrait.match(/(\d+)岁/);
-        if (_ageMatch && !knowledgeBaseText.includes('【年龄】')) {
-          knowledgeBaseText += '\n\n【年龄】你的年龄是' + _ageMatch[1] + '岁，不要说自己其他年龄。';
-        }
+      // 🔴 每轮强制注入年龄锚点（从多源获取，防LLM随口改年龄）
+      let _characterAge: string | null = null;
+      // 来源1: FG主库
+      if (ctx.m4) {
+        try {
+          const _fg = ctx.m4.getFamilyGraph();
+          if (_fg) {
+            const _profile = _fg.getPersonProfile(_currentRoleplay);
+            if (_profile && _profile.age) _characterAge = String(_profile.age);
+          }
+        } catch (_) {}
+      }
+      // 来源2: 画像
+      if (!_characterAge && _currentPortrait) {
+        const _am = _currentPortrait.match(/(\d+)岁/);
+        if (_am) _characterAge = _am[1];
+      }
+      // 来源3: 对话历史
+      if (!_characterAge) {
+        const _histText = ctx.conversationHistory.slice(-20).map(t => t.content).join(' ');
+        const _hm = _histText.match(new RegExp(_currentRoleplay + '(?:才|刚|今年|现在|已经)?(\\d{1,2})岁'));
+        if (_hm) _characterAge = _hm[1];
+      }
+      if (_characterAge && !knowledgeBaseText.includes('【年龄】')) {
+        knowledgeBaseText += '\n\n【年龄】你的年龄是' + _characterAge + '岁，不要说自己其他年龄。';
+        console.log('[Roleplay] 年龄锚点已注入: ' + _characterAge + '岁');
       }
 
       // 角色前缀丢失时重建（兜底 + 隐式扮演首次构建）
@@ -1507,9 +1527,11 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               }
             }
           }
-          // 🔴 代词「她」「他」触发：从上一轮用户消息中找最近的人名作为检索目标
-          const _allKinship = _rpEntities.every(e => /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公/.test(e));
-          if ((_rpEntities.length === 0 || _allKinship) && /[她他]/.test(message)) {
+          // 🔴 代词「她」「他」或亲属称呼触发：从历史提取真实人名
+          // 例：「姐姐」不是人名，需要往前找历史中谁被叫"姐姐"→找到「徐诗雨」
+          const _onlyKinship = _rpEntities.length > 0 &&
+            _rpEntities.every(e => /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公/.test(e));
+          if ((_rpEntities.length === 0 || _onlyKinship) && ( /[她他]/.test(message) || _onlyKinship)) {
             const _recentUser = ctx.conversationHistory.slice(-3).filter(t => t.role === 'user').map(t => t.content).join(' ');
             const _lastName = _recentUser.match(/[一-龥]{2,4}(?=[，。！？\s]|的|了|是|有|在|说)/g);
             if (_lastName && _lastName.length > 0) {
@@ -1563,17 +1585,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             }
           }
 
-          // 🔴 ④ 检索后反编造屏障：如果用户问了关于人的问题但全部检索为空，强制注入"不知道"
-          // 过滤掉亲属称呼（姐姐/妹妹等不是真实人名）
-          const _realNames = _rpEntities.filter(e => !/姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公|阿姨|叔叔/.test(e));
-          if (_realNames.length > 0) {
-            const _allEmpty = _realNames.every(function(e) {
-              return !knowledgeBaseText || !knowledgeBaseText.includes(e);
+          // 🔴 ④ 反编造屏障（全面重写）：只要用户问了关于人的问题，就强制限制编造
+          const _askedAboutPerson = /谁|名字|叫.*什么|在哪|做什么|什么样|年龄|多大|几岁/.test(message) ||
+            /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷/.test(message);
+          if (_rpEntities.length > 0 && _askedAboutPerson) {
+            // 第一级：检查是否有查询结果可用
+            const _hasData = _rpEntities.some(function(e) {
+              return knowledgeBaseText && knowledgeBaseText.includes(e);
             });
-            if (_allEmpty && /谁|名字|叫.*什么|在哪|做什么|什么样|年龄|多大|几岁/.test(message)) {
-              const _unknownGuard = '\n\n【⚠️ 反编造铁律】用户刚才问了你关于以下人物的信息：' + _realNames.join('、') + '。但你的设定里完全没有这些人的资料，你不知道他们是谁。请直接回答"我不清楚""没听说过"或"不知道"。绝对不能编造任何名字、关系、经历、外貌。宁可说不知道，不能说假话。';
-              knowledgeBaseText += _unknownGuard;
-              console.log('[Roleplay] ⚠️ 反编造屏障已触发: ' + _realNames.join(', '));
+            // 第二级：检查是否是亲属称呼但无真实人名
+            const _onlyRel = _rpEntities.every(e => /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公|阿姨|叔叔/.test(e));
+            if (!_hasData || _onlyRel) {
+              const _peopleList = _rpEntities.join('、');
+              const _guard = '\n\n【⚠️ 反编造铁律】用户问了关于"' + _peopleList + '"的信息。但你对此人一无所知，你不知道他/她叫什么名字、长什么样、做什么工作、多少岁。请直接回答"我不知道""我不清楚"或"没听说过"。绝对禁止编造任何信息。宁可说不知道，不能说假话。';
+              knowledgeBaseText += _guard;
+              console.log('[Roleplay] ⚠️ 反编造屏障已触发: ' + _peopleList);
             }
           }
         } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }
@@ -1971,6 +1997,19 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
     // 🏗️ 防复发第一层: 角色扮演运行时自检
     if (_currentRoleplay) {
       checkRoleplayHealth(reply, finalKnowledgeText, enrichedHistory, _currentRoleplay);
+      // 🔴 回答后交叉验证：用户问了具体人的信息，回复是否在设定范围内
+      try {
+        const _askAboutPerson = /谁|名字|叫.*什么|在哪|做什么|什么样|年龄|多大|几岁|姐姐|妹妹|哥哥|弟弟|妈妈|爸爸/.test(message);
+        if (_askAboutPerson && reply) {
+          const _hasKnownFacts = finalKnowledgeText.includes('【角色画像】') ||
+            finalKnowledgeText.includes('【关系】') ||
+            finalKnowledgeText.includes('【年龄】') ||
+            finalKnowledgeText.includes('【近况】');
+          if (!_hasKnownFacts && reply.length < 300) {
+            console.warn('[Roleplay] ⚠️ 用户问了人物信息但设定中无相关资料，LLM可能编造');
+          }
+        }
+      } catch (_) {}
     }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph

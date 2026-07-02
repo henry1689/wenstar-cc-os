@@ -96,9 +96,34 @@ export class FamilyGraphRoleBranch {
       relations: [],
     });
 
-    // 2. BFS 加载所有关联人物（深度1，只加载直系亲属，防止内存过大）
+    // 2. 🔴 从FG主库全量匹配：查找所有人物中 relation_to_user 提到该角色的人
+    //    （解决「徐诗雨→sibling_of→诗韵」这类以他人为起点的关系）
     const visited = new Set<string>([this.rootName]);
     const queue: string[] = [this.rootName];
+    try {
+      const _allFgNames = (this.fg as any).getAllPersonNames?.() || [];
+      for (const _fgName of _allFgNames) {
+        if (_fgName === this.rootName || _fgName.length < 2) continue;
+        const _profile = (this.fg as any).getPersonProfile(_fgName);
+        if (!_profile) continue;
+        const _rel = (_profile.relation_to_user || '').toLowerCase();
+        // 如果某人的 relation_to_user 包含角色名或姊妹类关键词
+        if (_rel.includes(this.rootName) || /妹妹|姐姐|女儿|儿子|老婆|妻子|妈妈|妈妈/.test(_rel)) {
+          if (!visited.has(_fgName)) {
+            visited.add(_fgName);
+            this.persons.set(_fgName, {
+              name: _fgName,
+              profile: _profile,
+              relations: [],
+            });
+            queue.push(_fgName);
+            console.log(`[FGRoleBranch] 从主FG反向匹配: 「${_fgName}」→${_profile.relation_to_user}`);
+          }
+        }
+      }
+    } catch (_){ /* 反向匹配失败不影响主流程 */ }
+
+    // 3. BFS 加载所有关联人物（深度1，只加载直系亲属，防止内存过大）
     const MAX_DEPTH = 1;
 
     for (let depth = 0; depth < MAX_DEPTH && queue.length > 0; depth++) {
@@ -428,7 +453,7 @@ export class FamilyGraphRoleBranch {
       parent_of:    ['父母', '孩子'],
       child_of:     ['孩子', '父母'],
       spouse_of:    ['配偶', '配偶'],
-      sibling_of:   ['兄弟姐妹', '兄弟姐妹'],
+      sibling_of:   ['姐姐', '妹妹'],  // 🔴 输出"姐姐"而非"兄弟姐妹"，让resolveKinship('姐姐')可匹配
       grandparent_of: ['(外)祖父母', '(外)孙子女'],
       grandchild_of:  ['(外)孙子女', '(外)祖父母'],
       sibling_in_law: ['姻亲兄弟姐妹', '姻亲兄弟姐妹'],

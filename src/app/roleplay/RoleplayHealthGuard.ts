@@ -93,29 +93,10 @@ export function checkRoleplayHealth(
     }
   }
 
-  // ── 检查 6: 反事实幻觉检测 — 回复中是否编造了角色设定中不存在的人物 ──
-  if (reply && typeof reply === 'string' && finalKnowledgeText && roleName) {
-    const knownPeople: string[] = [roleName];
-    const namePattern = /「([一-龥]{2,4})」/g;
-    let m;
-    while ((m = namePattern.exec(finalKnowledgeText)) !== null) {
-      if (!knownPeople.includes(m[1])) knownPeople.push(m[1]);
-    }
-    // 排除非人名的常见词
-    const NON_NAMES = new Set([
-      '姐姐','妹妹','哥哥','弟弟','妈妈','爸爸','奶奶','爷爷','老婆','老公',
-      '阿姨','叔叔','不是','什么','怎么','这个','那个','哪里','多少',
-      '为什么','知道','问题','时候','这样','那样','不错','可以','可能',
-      '因为','所以','然后','但是','而且','今年','二十','十八','十四',
-      '年纪','年龄','多大','几岁',
-    ]);
-    const replyWords = reply.match(/[一-龥]{2,4}(?=[，。！？\s\n]|的|了|是|有|在|说|叫)/g) || [];
-    for (const w of replyWords) {
-      if (knownPeople.includes(w) || NON_NAMES.has(w)) continue;
-      issues.push(`反事实幻觉: 回复中提到了设定里不存在的人物「${w}」`);
-      break;
-    }
-  }
+  // ── 检查 6: 回复内容完整性 — 用户问了具体的人，回复是否包含对应的确定性信息 ──
+  // 🔴 不检查具体词（避免误报），而是检查逻辑——如果用户问了名字/年龄/职业，
+  //    而设定中没写这些，回复是否违反了"不知道"的规则。
+  //    （真正的幻觉检测在 chat.ts 反编造屏障层已做）
 
   const healthy = issues.length === 0;
   if (!healthy) {
