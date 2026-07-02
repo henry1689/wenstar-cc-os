@@ -1508,7 +1508,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             }
           }
           // 🔴 代词「她」「他」触发：从上一轮用户消息中找最近的人名作为检索目标
-          if (_rpEntities.length === 0 && /[她他]/.test(message)) {
+          const _allKinship = _rpEntities.every(e => /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公/.test(e));
+          if ((_rpEntities.length === 0 || _allKinship) && /[她他]/.test(message)) {
             const _recentUser = ctx.conversationHistory.slice(-3).filter(t => t.role === 'user').map(t => t.content).join(' ');
             const _lastName = _recentUser.match(/[一-龥]{2,4}(?=[，。！？\s]|的|了|是|有|在|说)/g);
             if (_lastName && _lastName.length > 0) {
@@ -1563,14 +1564,16 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           }
 
           // 🔴 ④ 检索后反编造屏障：如果用户问了关于人的问题但全部检索为空，强制注入"不知道"
-          if (_rpEntities.length > 0) {
-            const _allEmpty = _rpEntities.every(function(e) {
+          // 过滤掉亲属称呼（姐姐/妹妹等不是真实人名）
+          const _realNames = _rpEntities.filter(e => !/姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公|阿姨|叔叔/.test(e));
+          if (_realNames.length > 0) {
+            const _allEmpty = _realNames.every(function(e) {
               return !knowledgeBaseText || !knowledgeBaseText.includes(e);
             });
             if (_allEmpty && /谁|名字|叫.*什么|在哪|做什么|什么样|年龄|多大|几岁/.test(message)) {
-              const _unknownGuard = '\n\n【⚠️ 反编造铁律】用户刚才问了你关于以下人物的信息：' + _rpEntities.join('、') + '。但你的设定里完全没有这些人的资料，你不知道他们是谁。请直接回答"我不清楚""没听说过"或"不知道"。绝对不能编造任何名字、关系、经历、外貌。宁可说不知道，不能说假话。';
+              const _unknownGuard = '\n\n【⚠️ 反编造铁律】用户刚才问了你关于以下人物的信息：' + _realNames.join('、') + '。但你的设定里完全没有这些人的资料，你不知道他们是谁。请直接回答"我不清楚""没听说过"或"不知道"。绝对不能编造任何名字、关系、经历、外貌。宁可说不知道，不能说假话。';
               knowledgeBaseText += _unknownGuard;
-              console.log('[Roleplay] ⚠️ 反编造屏障已触发: ' + _rpEntities.join(', '));
+              console.log('[Roleplay] ⚠️ 反编造屏障已触发: ' + _realNames.join(', '));
             }
           }
         } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }
