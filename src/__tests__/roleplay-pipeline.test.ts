@@ -21,7 +21,7 @@ import type { CollectedData } from '../app/roleplay/types.js';
 
 function makeEmptyData(overrides?: Partial<CollectedData>): CollectedData {
   return {
-    fg: { branch: null, treeText: '', rootProfile: null, familyMembers: ['徐诗雨'] },
+    fg: { branch: null, treeText: '', rootProfile: null, familyMembers: ['徐诗雨'], familyProfiles: {} },
     kb: [],
     history: [],
     portrait: null,
@@ -85,7 +85,7 @@ describe('角色扮演域管线', () => {
     it('不知道的人在 unknownEntities 中', () => {
       const data = makeEmptyData({
         context: { message: '陈都灵', entities: ['陈都灵'], kinshipTerms: [], pronounTarget: null, intent: 'ask_person' },
-        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [] },
+        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [], familyProfiles: {} },
       });
       const r = coverageReport(data);
       expect(r.unknownEntities).toContain('陈都灵');
@@ -94,7 +94,7 @@ describe('角色扮演域管线', () => {
     it('亲属称呼不进入 knownPersons', () => {
       const data = makeEmptyData({
         context: { message: '姐姐', entities: ['姐姐'], kinshipTerms: ['姐姐'], pronounTarget: null, intent: 'ask_relation' },
-        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [] },
+        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [], familyProfiles: {} },
       });
       const r = coverageReport(data);
       expect(r.knownPersons).not.toContain('姐姐');

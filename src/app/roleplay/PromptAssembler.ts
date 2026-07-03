@@ -51,9 +51,29 @@ export function assemblePrompt(input: AssembleInput): string {
     knownSection.push('【角色设定】\n' + kbBlock);
   }
 
-  // 用户消息中提到的已知人物
+  // 用户消息中提到的已知人物（含详细画像）
   if (coverage.knownPersons.length > 0) {
-    knownSection.push('【当前提及的人物】用户刚才提到了以下人物，他们在你的资料中：' + coverage.knownPersons.join('、') + '。请根据资料中的信息回答，资料中没有的就直接说不知道。');
+    const _personBlocks: string[] = [];
+    for (const _name of coverage.knownPersons) {
+      const _profile = data.fg.familyProfiles[_name];
+      if (_profile && Object.keys(_profile).length > 0) {
+        const _fields: string[] = [];
+        if (_profile.age) _fields.push('年龄：' + _profile.age);
+        if (_profile.occupation) _fields.push('职业：' + _profile.occupation);
+        if (_profile.relation) _fields.push('与你的关系：' + _profile.relation);
+        if (_profile.traits?.length) _fields.push('性格：' + _profile.traits.join('、'));
+        if (_profile.appearance) _fields.push('外貌：' + _profile.appearance);
+        if (_profile.description) _fields.push('描述：' + _profile.description.substring(0, 200));
+        if (_fields.length > 0) {
+          _personBlocks.push('【' + _name + '】在你的资料中有以下信息：\n' + _fields.join('\n'));
+        } else {
+          _personBlocks.push('【' + _name + '】在你的资料中有记录，但没有详细信息。如果被问到，说"这个我不太清楚"。');
+        }
+      } else {
+        _personBlocks.push('【' + _name + '】在你的资料中有记录，但没有详细信息。如果被问到，说"这个我不太清楚"。');
+      }
+    }
+    knownSection.push('用户刚才问到以下人物，你对他们知道以下信息：\n' + _personBlocks.join('\n\n'));
   }
 
   if (knownSection.length > 0) {

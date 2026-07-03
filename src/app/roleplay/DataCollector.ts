@@ -111,22 +111,46 @@ async function collectFG(
   let treeText = '';
   let rootProfile: Record<string, any> | null = null;
   let familyMembers: string[] = [];
+  const familyProfiles: Record<string, Record<string, any>> = {};
 
   if (currentRPBranch) {
     treeText = currentRPBranch.getFamilyTreeText?.() || '';
     familyMembers = currentRPBranch.getAllNames?.() || [];
   }
 
-  // 从主 FG 取角色本人画像
+  // 从主 FG 取角色本人 + 所有家族成员的画像
   try {
     const fg = ctx.m4.getFamilyGraph?.();
     if (fg) {
+      // 角色本人
       const p = fg.getPersonProfile?.(roleplay);
       if (p) rootProfile = p;
+
+      // 🔴 所有家族成员：加载 age/occupation/appearance/traits 等字段
+      for (const _name of familyMembers) {
+        if (_name === roleplay || _name === '我') continue;
+        try {
+          const _profile = fg.getPersonProfile?.(_name);
+          if (_profile) {
+            // 只保留有数据价值的字段
+            const _compact: Record<string, any> = {};
+            if (_profile.age) _compact.age = _profile.age;
+            if (_profile.occupation) _compact.occupation = _profile.occupation;
+            if (_profile.appearance) _compact.appearance = _profile.appearance;
+            if (_profile.traits?.length) _compact.traits = _profile.traits;
+            if (_profile.personality) _compact.personality = _profile.personality;
+            if (_profile.relation_to_user) _compact.relation = _profile.relation_to_user;
+            if (_profile.description) _compact.description = _profile.description;
+            if (Object.keys(_compact).length > 0) {
+              familyProfiles[_name] = _compact;
+            }
+          }
+        } catch (_) {}
+      }
     }
   } catch (_) {}
 
-  return { branch: currentRPBranch, treeText, rootProfile, familyMembers };
+  return { branch: currentRPBranch, treeText, rootProfile, familyMembers, familyProfiles };
 }
 
 // ── 知识库采集 ──

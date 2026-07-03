@@ -22,6 +22,8 @@ export interface CollectedData {
     treeText: string;
     rootProfile: Record<string, any> | null;
     familyMembers: string[];
+    /** 所有家族成员的 FG profile（含 age/occupation 等字段） */
+    familyProfiles: Record<string, Record<string, any>>;
   };
   kb: Array<{ title: string; content: string }>;
   history: Array<{ role: string; content: string }>;
