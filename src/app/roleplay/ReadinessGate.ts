@@ -1,65 +1,50 @@
 /**
- * ReadinessGate — 角色扮演域·数据就绪门（第二步）
+ * ReadinessGate — 数据覆盖报告
  *
- * 职责：在 LLM 生成之前，检查数据是否足够回答用户问题。
- * 如果不够，直接注入明确措辞，不让 LLM 自己决定要不要编造。
+ * 🔴 铁律：不做任何条件判断，不猜用户意图，不注入反编造。
+ *   只做一件事：汇总所有已知/未知的数据字段。
+ *   最终提示词中「已知信息」和「未知边界」永远同时存在，
+ *   不需要 ReadinessGate 来决定"要不要注入反编造"。
+ *
+ * 职责变化：
+ *   之前 → 判断"能不能回答" → 每个新场景加一个 if
+ *   现在 → 报告"有什么、没什么" → 零条件，PromptAssembler 无条件使用
  */
-import type { CollectedData, ReadinessDecision } from './types.js';
+import type { CollectedData, DataCoverageReport } from './types.js';
 
 /**
- * 数据就绪判定
- * 按用户意图分类，逐项检查数据是否完备。
+ * 生成数据覆盖报告
+ * 🔴 没有条件分支。没有意图分类。只有数据汇总。
  */
-export function checkReadiness(data: CollectedData): ReadinessDecision {
+export function coverageReport(data: CollectedData): DataCoverageReport {
+  const entities = data.context.entities;
+  const familyMembers = data.fg.familyMembers;
+
+  // 排除亲属称呼后的真实实体
+  const realEntities = entities.filter(e =>
+    !/姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公|阿姨|叔叔/.test(e)
+  );
+
+  // 这些实体中有哪些在 FG/KB 中真正有数据
+  const knownPersons = realEntities.filter(e =>
+    familyMembers.includes(e) ||
+    data.kb.some(k => k.title.includes(e) || k.content.includes(e)) ||
+    data.fg.treeText.includes(e)
+  );
+
+  // 汇总缺失字段
   const missingFields: string[] = [];
-  const constraints: string[] = [];
-  let antiFabricationGuard = '';
+  if (!data.knownFields.hasAge) missingFields.push('年龄');
+  if (!data.knownFields.hasAppearance) missingFields.push('外貌');
+  if (!data.knownFields.hasOccupation) missingFields.push('职业');
+  if (!data.knownFields.hasPersonality) missingFields.push('性格');
+  if (!data.knownFields.hasRelations) missingFields.push('家族关系');
 
-  const intent = data.context.intent;
-
-  switch (intent) {
-    case 'ask_person':
-      if (!data.knownFields.askedPersonFound) {
-        missingFields.push('askedPersonFound');
-        antiFabricationGuard = '【⚠️ 反编造铁律】用户问了你关于某个人的信息，但你对这个人一无所知——不知道他/她叫什么名字、长什么样、和你什么关系、做什么的。请直接回答"我不清楚""没听说过"或"记不起来了"。⚡ 绝对不能编造任何名字、关系、外貌、职业、经历。';
-      }
-      break;
-
-    case 'ask_age':
-      if (!data.knownFields.hasAge) {
-        missingFields.push('hasAge');
-        antiFabricationGuard = '【⚠️ 反编造铁律】用户问你的年龄，但你不知道自己多少岁。请直接回答"你没告诉过我，我记不太清了"或"你提醒我一下好不好？"。绝对不能编造任何数字。';
-      } else {
-        constraints.push('【回答要求】你知道自己的年龄，请根据设定中的年龄回答，不要说出其他年龄。');
-      }
-      break;
-
-    case 'ask_background':
-      if (!data.knownFields.hasPersonality && !data.knownFields.hasAppearance) {
-        missingFields.push('hasPersonality', 'hasAppearance');
-        antiFabricationGuard = '【⚠️ 反编造铁律】用户让你介绍自己，但你对自己的过去、家庭背景、成长经历、个人喜好完全不了解。你没有相关的记忆。请直接回答"我自己也记不太清了""你想听哪方面的"或"我的事你不是都知道吗"。⚡ 绝对不能编造任何具体的经历（小时候的故事、外婆家的院子、喜欢的花/歌/电影等）、性格描述、童年回忆。不知道就是不知道。';
-      }
-      break;
-
-    case 'ask_relation':
-      if (!data.knownFields.hasRelations && !data.knownFields.askedPersonFound) {
-        missingFields.push('hasRelations');
-        antiFabricationGuard = '【⚠️ 反编造铁律】用户问起某个人的关系，但你对此人没有了解。请直接回答"我不太清楚""没听说过这个人"或"记不起来了"。绝对不能编造关系、名字、故事。';
-      }
-      break;
-
-    case 'chat':
-      // 普通聊天不做约束
-      break;
-  }
-
-  const canAnswer = missingFields.length === 0;
-
-  if (antiFabricationGuard) {
-    console.log(`[ReadinessGate] ${intent} → 注入反编造 guard (缺失: ${missingFields.join(',')})`);
-  } else {
-    console.log(`[ReadinessGate] ${intent} → 通过 (missing=${missingFields.length})`);
-  }
-
-  return { canAnswer, missingFields, constraints, antiFabricationGuard };
+  return {
+    knownFields: { ...data.knownFields },
+    missingFields,
+    knownPersons,
+    unknownEntities: realEntities.filter(e => !knownPersons.includes(e)),
+    hasAnyData: Object.values(data.knownFields).some(v => v === true),
+  };
 }

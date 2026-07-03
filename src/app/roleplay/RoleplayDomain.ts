@@ -9,9 +9,9 @@
  *   - 所有角色扮演相关逻辑迁移至此域内
  *   - chat.ts 只保留入口检测和本函数的调用
  */
-import type { CollectedData, ReadinessDecision, PipelineOutput, DomainContext, CharacterClass, ValidationResult } from './types.js';
-import { collectData, classifyIntent } from './DataCollector.js';
-import { checkReadiness } from './ReadinessGate.js';
+import type { CollectedData, DataCoverageReport, PipelineOutput, DomainContext, CharacterClass, ValidationResult } from './types.js';
+import { collectData } from './DataCollector.js';
+import { coverageReport } from './ReadinessGate.js';
 import { assemblePrompt } from './PromptAssembler.js';
 import { validateReply } from './Validator.js';
 import { assembleCharacterPortrait, scanContextForCharacter } from './CharacterProfileScanner.js';
@@ -114,15 +114,15 @@ export async function runRoleplayPipeline(
     _cachedPortrait = portrait;
   }
 
-  // ═══ 第二步：就绪门判定 ═══
-  const readiness = checkReadiness(collectedData);
+  // ═══ 第二步：数据覆盖报告（无条件，不猜意图） ═══
+  const coverage = coverageReport(collectedData);
 
-  // ═══ 第三步：提示词装配 ═══
+  // ═══ 第三步：提示词装配（永远同时包含已知+未知） ═══
   const knowledgeBaseText = assemblePrompt({
     roleplay,
     portrait: _cachedPortrait,
     data: collectedData,
-    readiness,
+    coverage,
     styleInstruction: ctx.rpParamsSnapshot?.buildStyleInstruction?.(roleplay) || '',
   });
 
@@ -132,14 +132,14 @@ export async function runRoleplayPipeline(
   // ═══ 第五步：验证（在 chat.ts 中调用 validateReply） ═══
   const validation = { pass: true, issues: [], severity: 'pass' as const, fix: 'none' as const };
 
-  // 审计：记录管线时序（生成和验证的耗时在 chat.ts 中补全）
+  // 审计：记录管线时序
   _lastTimings = { collect: _t1 - _t0, readiness: 0, assemble: 0, generate: 0, validate: 0 };
 
   return {
     knowledgeBaseText,
     portrait: _cachedPortrait,
     collectedData,
-    readiness,
+    coverage,
     validation,
   };
 }
@@ -163,7 +163,7 @@ export async function afterGenerate(
   reply: string,
   storage: any,
   collectedData?: CollectedData,
-  readiness?: ReadinessDecision,
+  coverage?: DataCoverageReport,
   validation?: ValidationResult,
 ): Promise<void> {
   const roleplay = ctx.currentRoleplay;
@@ -194,11 +194,11 @@ export async function afterGenerate(
   } catch (_) {}
 
   // ── 审计记录 ──
-  if (collectedData && readiness) {
+  if (collectedData && coverage) {
     recordPipelineRun(
       roleplay, _activeSessionId, _seqCounter,
       message, reply,
-      _lastTimings, readiness,
+      _lastTimings, coverage,
       validation || { pass: true, issues: [], severity: 'pass' as const, fix: 'none' as const },
       collectedData,
     );

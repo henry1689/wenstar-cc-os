@@ -52,6 +52,26 @@ export interface ReadinessDecision {
   antiFabricationGuard: string;
 }
 
+/** 数据覆盖报告（替代 ReadinessDecision 的条件式判定） */
+export interface DataCoverageReport {
+  knownFields: {
+    hasAge: boolean;
+    hasRelations: boolean;
+    hasAppearance: boolean;
+    hasOccupation: boolean;
+    hasPersonality: boolean;
+    askedPersonFound: boolean;
+  };
+  /** 缺失字段列表（如 ['年龄', '外貌', '职业']） */
+  missingFields: string[];
+  /** 用户当前消息中提到的、且在 FG/KB 中有数据的真实人物 */
+  knownPersons: string[];
+  /** 用户当前消息中提到的、但在任何来源中均无数据的实体 */
+  unknownEntities: string[];
+  /** 是否有任何已知数据 */
+  hasAnyData: boolean;
+}
+
 // ─── 验证器输出 ───
 
 export interface ValidationResult {
@@ -67,7 +87,7 @@ export interface PipelineOutput {
   knowledgeBaseText: string;
   portrait: string;
   collectedData: CollectedData;
-  readiness: ReadinessDecision;
+  coverage: DataCoverageReport;
   validation: ValidationResult;
 }
 

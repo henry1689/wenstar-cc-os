@@ -52,10 +52,24 @@ export async function collectData(
   // ── 画像（如果有缓存就不重新构建） ──
   let portrait: string | null = null;
 
-  // ── 已知字段汇总（从实际会注入到提示词的内容中判定） ──
-  const _hasAgeInFg = fgData.rootProfile?.age ? true : /(\d+)岁/.test(fgData.treeText);
+  // ── 已知字段汇总 ──
+  // 🔴 年龄检查三源：FG.profile.age > 家族树文本 > 对话历史
+  const _ageInFg = fgData.rootProfile?.age ? true : /(\d+)岁/.test(fgData.treeText);
+  // 从对话历史中检查该角色的年龄（"诗韵才14岁""诗韵今年14"等）
+  let _ageInHistory = false;
+  if (!_ageInFg) {
+    const _histText = histData.map(h => h.content).join(' ');
+    try {
+      // 优先精确匹配：角色名+数字+岁
+      if (new RegExp(roleplay + '.*?(\\d{1,2})岁').test(_histText)) _ageInHistory = true;
+      // 其次宽泛匹配：上下文中只要出现角色名 + 任意"数字岁"组合
+      else if (/才(\d{1,2})岁|今年(\d{1,2})岁|已经(\d{1,2})岁|(\d{1,2})岁了/.test(_histText) && _histText.includes(roleplay)) {
+        _ageInHistory = true;
+      }
+    } catch (_) {}
+  }
   const knownFields = {
-    hasAge: _hasAgeInFg,
+    hasAge: _ageInFg || _ageInHistory,
     hasRelations: fgData.familyMembers.length > 0,
     hasAppearance: false,
     hasOccupation: false,

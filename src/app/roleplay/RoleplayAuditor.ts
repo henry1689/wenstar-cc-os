@@ -4,7 +4,7 @@
  * 职责：每轮角色扮演完整链路留痕，支持按角色/时间/问题类型回溯。
  *       定期统计编造率/人设漂移率，异常自动告警。
  */
-import type { CollectedData, ReadinessDecision, ValidationResult, PipelineOutput } from './types.js';
+import type { CollectedData, DataCoverageReport, ValidationResult } from './types.js';
 
 /** 单轮审计记录 */
 export interface AuditRecord {
@@ -120,7 +120,7 @@ export function recordPipelineRun(
   message: string,
   reply: string,
   timings: AuditRecord['timings'],
-  readiness: ReadinessDecision,
+  coverage: DataCoverageReport,
   validation: ValidationResult,
   data: CollectedData,
 ): void {
@@ -133,8 +133,8 @@ export function recordPipelineRun(
     llmReply: reply.substring(0, 500),
     timings,
     readiness: {
-      canAnswer: readiness.canAnswer,
-      missingFields: readiness.missingFields,
+      canAnswer: coverage.missingFields.length === 0,
+      missingFields: coverage.missingFields,
     },
     validation: {
       pass: validation.pass,

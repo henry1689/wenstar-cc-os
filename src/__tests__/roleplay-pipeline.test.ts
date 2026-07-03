@@ -1,23 +1,27 @@
 /**
- * 角色扮演域管线集成测试（第一阶段）
+ * 角色扮演域管线集成测试
  *
  * 覆盖：
- *   场景 1：用户有数据 → 就绪门通过
- *   场景 2：用户问年龄但无数据 → 就绪门注入约束
- *   场景 3：用户问不认识的人 → 就绪门注入反编造
- *   场景 4：普通聊天不涉及个人信息 → 就绪门通过（无约束）
+ *   场景 1：数据完整 → missingFields 为空
+ *   场景 2：年龄缺失 → missingFields 包含 '年龄'
+ *   场景 3：不认识的人 → unknownEntities 包含该人
+ *   场景 4：已知人物 → knownPersons 包含该人
+ *
+ * 🔴 铁律：不在 ReadinessGate 中做条件判断。
+ *   验证方向：数据覆盖报告是否正确，而非"有没有注入反编造"。
+ *   反编造在 PromptAssembler 层无条件执行——所有缺失字段自动生成未知边界。
  *
  * 运行：npx vitest run src/__tests__/roleplay-pipeline.test.ts
  */
 import { describe, it, expect } from 'vitest';
+import { coverageReport } from '../app/roleplay/ReadinessGate.js';
 import { classifyIntent } from '../app/roleplay/DataCollector.js';
-import { checkReadiness } from '../app/roleplay/ReadinessGate.js';
 import { getOrCreateTempProfile, clearAllTempProfiles, updateTempProfile, extractInfoPoints } from '../app/roleplay/RoleplayProfileManager.js';
 import type { CollectedData } from '../app/roleplay/types.js';
 
 function makeEmptyData(overrides?: Partial<CollectedData>): CollectedData {
   return {
-    fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [] },
+    fg: { branch: null, treeText: '', rootProfile: null, familyMembers: ['徐诗雨'] },
     kb: [],
     history: [],
     portrait: null,
@@ -26,7 +30,7 @@ function makeEmptyData(overrides?: Partial<CollectedData>): CollectedData {
       pronounTarget: null, intent: 'chat',
     },
     knownFields: {
-      hasAge: false, hasRelations: false, hasAppearance: false,
+      hasAge: false, hasRelations: true, hasAppearance: false,
       hasOccupation: false, hasPersonality: false, askedPersonFound: false,
     },
     ...overrides,
@@ -34,7 +38,7 @@ function makeEmptyData(overrides?: Partial<CollectedData>): CollectedData {
 }
 
 describe('角色扮演域管线', () => {
-  // ── 意图分类 ──
+  // ── 意图分类（保留，DataCollector 需要） ──
   describe('意图分类', () => {
     it('问人意图', () => {
       expect(classifyIntent('她叫什么名字')).toBe('ask_person');
@@ -52,98 +56,78 @@ describe('角色扮演域管线', () => {
     });
   });
 
-  // ── 就绪门 ──
-  describe('就绪门：问人', () => {
-    it('有数据时通过', () => {
+  // ── 数据覆盖报告 ──
+  describe('数据覆盖报告', () => {
+    it('有年龄时缺失列表不含年龄', () => {
       const data = makeEmptyData({
-        context: { message: '她叫什么', entities: ['徐诗雨'], kinshipTerms: [], pronounTarget: '徐诗雨', intent: 'ask_person' },
-        knownFields: { ...makeEmptyData().knownFields, askedPersonFound: true },
-      });
-      const d = checkReadiness(data);
-      expect(d.canAnswer).toBe(true);
-      expect(d.antiFabricationGuard).toBe('');
-    });
-
-    it('无数据时注入反编造', () => {
-      const data = makeEmptyData({
-        context: { message: '她叫什么', entities: [], kinshipTerms: [], pronounTarget: null, intent: 'ask_person' },
-        knownFields: { ...makeEmptyData().knownFields, askedPersonFound: false },
-      });
-      const d = checkReadiness(data);
-      expect(d.canAnswer).toBe(false);
-      expect(d.antiFabricationGuard).toContain('反编造铁律');
-    });
-  });
-
-  describe('就绪门：问年龄', () => {
-    it('有年龄时通过', () => {
-      const data = makeEmptyData({
-        context: { message: '你多大了', entities: [], kinshipTerms: [], pronounTarget: null, intent: 'ask_age' },
         knownFields: { ...makeEmptyData().knownFields, hasAge: true },
       });
-      const d = checkReadiness(data);
-      expect(d.canAnswer).toBe(true);
+      const r = coverageReport(data);
+      expect(r.missingFields).not.toContain('年龄');
     });
 
-    it('无年龄时注入约束', () => {
+    it('无年龄时缺失列表包含年龄', () => {
       const data = makeEmptyData({
-        context: { message: '你多大了', entities: [], kinshipTerms: [], pronounTarget: null, intent: 'ask_age' },
         knownFields: { ...makeEmptyData().knownFields, hasAge: false },
       });
-      const d = checkReadiness(data);
-      expect(d.canAnswer).toBe(false);
-      expect(d.antiFabricationGuard).toContain('反编造铁律');
+      const r = coverageReport(data);
+      expect(r.missingFields).toContain('年龄');
     });
-  });
 
-  describe('就绪门：普通聊天', () => {
-    it('无约束', () => {
+    it('知道的人物在 knownPersons 中', () => {
       const data = makeEmptyData({
-        context: { message: '今天天气真好', entities: [], kinshipTerms: [], pronounTarget: null, intent: 'chat' },
+        context: { message: '徐诗雨', entities: ['徐诗雨'], kinshipTerms: [], pronounTarget: null, intent: 'ask_person' },
       });
-      const d = checkReadiness(data);
-      expect(d.canAnswer).toBe(true);
-      expect(d.antiFabricationGuard).toBe('');
+      const r = coverageReport(data);
+      expect(r.knownPersons).toContain('徐诗雨');
+    });
+
+    it('不知道的人在 unknownEntities 中', () => {
+      const data = makeEmptyData({
+        context: { message: '陈都灵', entities: ['陈都灵'], kinshipTerms: [], pronounTarget: null, intent: 'ask_person' },
+        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [] },
+      });
+      const r = coverageReport(data);
+      expect(r.unknownEntities).toContain('陈都灵');
+    });
+
+    it('亲属称呼不进入 knownPersons', () => {
+      const data = makeEmptyData({
+        context: { message: '姐姐', entities: ['姐姐'], kinshipTerms: ['姐姐'], pronounTarget: null, intent: 'ask_relation' },
+        fg: { branch: null, treeText: '', rootProfile: null, familyMembers: [] },
+      });
+      const r = coverageReport(data);
+      expect(r.knownPersons).not.toContain('姐姐');
     });
   });
-});
 
-describe('三阶生长 ProfileManager', () => {
-  it('临时建档', () => {
-    clearAllTempProfiles();
-    const p = getOrCreateTempProfile('测试角色');
-    expect(p.name).toBe('测试角色');
-    expect(p.stage).toBe('probation');
-    expect(p.turnCount).toBe(0);
-    clearAllTempProfiles();
-  });
+  // ── 三阶生长 ──
+  describe('三阶生长 ProfileManager', () => {
+    it('临时建档', () => {
+      clearAllTempProfiles();
+      const p = getOrCreateTempProfile('测试角色');
+      expect(p.name).toBe('测试角色');
+      expect(p.stage).toBe('probation');
+      expect(p.turnCount).toBe(0);
+      clearAllTempProfiles();
+    });
 
-  it('信息点提取：年龄', () => {
-    clearAllTempProfiles();
-    const points = extractInfoPoints('诗韵', '诗韵才14岁', '', 1);
-    expect(points.length).toBeGreaterThanOrEqual(1);
-    expect(points[0].field).toBe('age');
-    expect(points[0].value).toBe('14岁');
-    clearAllTempProfiles();
-  });
+    it('信息点提取：年龄', () => {
+      clearAllTempProfiles();
+      const points = extractInfoPoints('诗韵', '诗韵才14岁', '', 1);
+      expect(points.length).toBeGreaterThanOrEqual(1);
+      expect(points[0].field).toBe('age');
+      expect(points[0].value).toBe('14岁');
+      clearAllTempProfiles();
+    });
 
-  it('更新档案增加轮次', () => {
-    clearAllTempProfiles();
-    const p = updateTempProfile('测试角色', '你好', '', 1);
-    expect(p.turnCount).toBe(1);
-    const p2 = updateTempProfile('测试角色', '今天天气好', '', 2);
-    expect(p2.turnCount).toBe(2);
-    clearAllTempProfiles();
-  });
-
-  it.skip('信息点提取：关系', () => {
-    clearAllTempProfiles();
-    const points = extractInfoPoints('诗韵', '诗韵是我妹妹', '', 1);
-    expect(points.length).toBeGreaterThanOrEqual(1);
-    if (points.length > 0) {
-      expect(points[0].field).toBe('relation');
-      expect(points[0].value).toBe('妹妹');
-    }
-    clearAllTempProfiles();
+    it('更新档案增加轮次', () => {
+      clearAllTempProfiles();
+      const p = updateTempProfile('测试角色', '你好', '', 1);
+      expect(p.turnCount).toBe(1);
+      const p2 = updateTempProfile('测试角色', '今天天气好', '', 2);
+      expect(p2.turnCount).toBe(2);
+      clearAllTempProfiles();
+    });
   });
 });
