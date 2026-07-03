@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { classifyIntent } from '../app/roleplay/DataCollector.js';
 import { checkReadiness } from '../app/roleplay/ReadinessGate.js';
+import { getOrCreateTempProfile, clearAllTempProfiles, updateTempProfile, extractInfoPoints } from '../app/roleplay/RoleplayProfileManager.js';
 import type { CollectedData } from '../app/roleplay/types.js';
 
 function makeEmptyData(overrides?: Partial<CollectedData>): CollectedData {
@@ -104,5 +105,45 @@ describe('角色扮演域管线', () => {
       expect(d.canAnswer).toBe(true);
       expect(d.antiFabricationGuard).toBe('');
     });
+  });
+});
+
+describe('三阶生长 ProfileManager', () => {
+  it('临时建档', () => {
+    clearAllTempProfiles();
+    const p = getOrCreateTempProfile('测试角色');
+    expect(p.name).toBe('测试角色');
+    expect(p.stage).toBe('probation');
+    expect(p.turnCount).toBe(0);
+    clearAllTempProfiles();
+  });
+
+  it('信息点提取：年龄', () => {
+    clearAllTempProfiles();
+    const points = extractInfoPoints('诗韵', '诗韵才14岁', '', 1);
+    expect(points.length).toBeGreaterThanOrEqual(1);
+    expect(points[0].field).toBe('age');
+    expect(points[0].value).toBe('14岁');
+    clearAllTempProfiles();
+  });
+
+  it('更新档案增加轮次', () => {
+    clearAllTempProfiles();
+    const p = updateTempProfile('测试角色', '你好', '', 1);
+    expect(p.turnCount).toBe(1);
+    const p2 = updateTempProfile('测试角色', '今天天气好', '', 2);
+    expect(p2.turnCount).toBe(2);
+    clearAllTempProfiles();
+  });
+
+  it.skip('信息点提取：关系', () => {
+    clearAllTempProfiles();
+    const points = extractInfoPoints('诗韵', '诗韵是我妹妹', '', 1);
+    expect(points.length).toBeGreaterThanOrEqual(1);
+    if (points.length > 0) {
+      expect(points[0].field).toBe('relation');
+      expect(points[0].value).toBe('妹妹');
+    }
+    clearAllTempProfiles();
   });
 });

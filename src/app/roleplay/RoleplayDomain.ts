@@ -16,11 +16,15 @@ import { assemblePrompt } from './PromptAssembler.js';
 import { validateReply } from './Validator.js';
 import { assembleCharacterPortrait, scanContextForCharacter } from './CharacterProfileScanner.js';
 import type { FamilyGraphRoleBranch } from '../alignment/FamilyGraphRoleBranch.js';
+import { syncRPConversation, generateRPId, type RPWriteInput } from './RoleplayMemorySync.js';
+import { updateTempProfile, tryPromoteProfile, getOrCreateTempProfile, getProfileSummary, clearAllTempProfiles, type FGProfileAPI } from './RoleplayProfileManager.js';
 
 // ─── 模块级缓存（跨轮次持久化） ───
 
 let _cachedPortrait: string | null = null;
 let _cachedRoleplay: string | null = null;
+let _activeSessionId: string | null = null;
+let _seqCounter = 0;
 
 /** 获取当前缓存状态（供 chat.ts 健康检查读取） */
 export function getDomainStatus(): { roleplay: string | null; hasPortrait: boolean } {
@@ -31,6 +35,13 @@ export function getDomainStatus(): { roleplay: string | null; hasPortrait: boole
 export function clearCache(): void {
   _cachedPortrait = null;
   _cachedRoleplay = null;
+  _activeSessionId = null;
+  _seqCounter = 0;
+}
+
+/** 获取当前会话 ID */
+export function getSessionId(): string | null {
+  return _activeSessionId;
 }
 
 /** 设置缓存（角色激活时从 chat.ts 传入已构建的画像） */
@@ -50,6 +61,11 @@ export async function runRoleplayPipeline(
 ): Promise<PipelineOutput> {
   const roleplay = ctx.currentRoleplay;
   _cachedRoleplay = roleplay;
+  if (!_activeSessionId) _activeSessionId = generateRPId();
+  _seqCounter++;
+
+  // 🏗️ 阶段2-2: 更新临时角色档案
+  updateTempProfile(roleplay, ctx.message, '', _seqCounter);
 
   // ═══ 第一步：数据采集 ═══
   const collectedData: CollectedData = await collectData(
@@ -116,4 +132,42 @@ export async function runRoleplayPipeline(
     readiness,
     validation,
   };
+}
+
+/**
+ * 生成后处理：记忆同步 + 转正尝试
+ * chat.ts 在获取 LLM 回复后调用此函数。
+ */
+export async function afterGenerate(
+  ctx: DomainContext,
+  message: string,
+  reply: string,
+  storage: any,
+): Promise<void> {
+  const roleplay = ctx.currentRoleplay;
+  if (!roleplay || !_activeSessionId) return;
+
+  // ── 同步记忆到三库 ──
+  try {
+    const input: RPWriteInput = {
+      roleplayId: _activeSessionId,
+      roleplayChar: roleplay,
+      seqPos: _seqCounter * 2,
+      message,
+      reply,
+    };
+    await syncRPConversation(storage, input);
+    console.log(`[RPMemory] 已同步: ${roleplay} seq=${_seqCounter * 2}`);
+  } catch (err) {
+    console.error('[RPMemory] 同步失败:', (err as Error).message);
+  }
+
+  // ── 更新临时档案（填充 reply 中的信息） ──
+  updateTempProfile(roleplay, message, reply, _seqCounter);
+
+  // ── 尝试转正 ──
+  try {
+    const fg = ctx.m4?.getFamilyGraph?.();
+    if (fg) await tryPromoteProfile(roleplay, fg as any);
+  } catch (_) {}
 }

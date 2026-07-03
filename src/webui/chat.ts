@@ -130,7 +130,7 @@ export function getRoleplayStatus(): { active: boolean; role: string | null; cla
 import { checkRoleplayHealth } from '../app/roleplay/RoleplayHealthGuard.js';
 
 // 🏗️ 角色扮演域统一入口
-import { runRoleplayPipeline, clearCache as clearRPCache, setCachedPortrait } from '../app/roleplay/RoleplayDomain.js';
+import { runRoleplayPipeline, clearCache as clearRPCache, setCachedPortrait, afterGenerate } from '../app/roleplay/RoleplayDomain.js';
 import type { DomainContext, CollectedData, CharacterClass } from '../app/roleplay/types.js';
 import { validateReply } from '../app/roleplay/Validator.js';
 
@@ -1902,6 +1902,23 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
           }
         } catch (_ve) { /* 验证失败不阻塞主线 */ }
       }
+      // 阶段2-1+2-2: 记忆同步 + 三阶生长
+      try {
+        const _rps = {
+          insertConversation: function(r: string, c: string, o?: any) { return ctx.conversationDB?.insertConversation(r, c, o); },
+          writeMemory: function(o: any) { return ctx.storage?.getSQLite?.()?.writeMemory?.(o) ?? false; },
+          queryAll: function(s: string, p?: any[]) { return ctx.storage?.getSQLite?.()?.queryAll?.(s, p) ?? []; },
+        };
+        const _dc2: any = {
+          roleplay: _currentRoleplay, characterClass: _currentCharacterClass,
+          message: message, dna: dna, knowledgeBaseText: knowledgeBaseText,
+          m4: ctx.m4, knowledgeBase: ctx.knowledgeBase,
+          conversationDB: ctx.conversationDB, conversationHistory: ctx.conversationHistory || [],
+          currentRPBranch: _currentRPBranch, rpParamsSnapshot: _rpParamsSnapshot,
+          currentRoleplay: _currentRoleplay,
+        };
+        await afterGenerate(_dc2, message, reply, _rps);
+      } catch (_ae) { /* 记忆同步不阻塞 */ }
     }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph
