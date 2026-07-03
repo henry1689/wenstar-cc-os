@@ -9,7 +9,7 @@
  *   - 所有角色扮演相关逻辑迁移至此域内
  *   - chat.ts 只保留入口检测和本函数的调用
  */
-import type { CollectedData, ReadinessDecision, PipelineOutput, DomainContext, CharacterClass } from './types.js';
+import type { CollectedData, ReadinessDecision, PipelineOutput, DomainContext, CharacterClass, ValidationResult } from './types.js';
 import { collectData, classifyIntent } from './DataCollector.js';
 import { checkReadiness } from './ReadinessGate.js';
 import { assemblePrompt } from './PromptAssembler.js';
@@ -18,6 +18,8 @@ import { assembleCharacterPortrait, scanContextForCharacter } from './CharacterP
 import type { FamilyGraphRoleBranch } from '../alignment/FamilyGraphRoleBranch.js';
 import { syncRPConversation, generateRPId, type RPWriteInput } from './RoleplayMemorySync.js';
 import { updateTempProfile, tryPromoteProfile, getOrCreateTempProfile, getProfileSummary, clearAllTempProfiles, type FGProfileAPI } from './RoleplayProfileManager.js';
+import { recordPipelineRun } from './RoleplayAuditor.js';
+import type { AuditRecord } from './RoleplayAuditor.js';
 
 // ─── 模块级缓存（跨轮次持久化） ───
 
@@ -60,6 +62,7 @@ export async function runRoleplayPipeline(
   currentRPBranch: FamilyGraphRoleBranch | null,
 ): Promise<PipelineOutput> {
   const roleplay = ctx.currentRoleplay;
+  const _t0 = Date.now();
   _cachedRoleplay = roleplay;
   if (!_activeSessionId) _activeSessionId = generateRPId();
   _seqCounter++;
@@ -121,9 +124,14 @@ export async function runRoleplayPipeline(
     styleInstruction: ctx.rpParamsSnapshot?.buildStyleInstruction?.(roleplay) || '',
   });
 
+  const _t1 = Date.now();
+
   // ═══ 第四步：LLM 生成（在 chat.ts 中执行，此处返回装配结果） ═══
   // ═══ 第五步：验证（在 chat.ts 中调用 validateReply） ═══
   const validation = { pass: true, issues: [], severity: 'pass' as const, fix: 'none' as const };
+
+  // 审计：记录管线时序（生成和验证的耗时在 chat.ts 中补全）
+  _lastTimings = { collect: _t1 - _t0, readiness: 0, assemble: 0, generate: 0, validate: 0 };
 
   return {
     knowledgeBaseText,
@@ -132,6 +140,15 @@ export async function runRoleplayPipeline(
     readiness,
     validation,
   };
+}
+
+/** 最近一次管线的时序（供 afterGenerate 补全） */
+let _lastTimings: AuditRecord['timings'] = { collect: 0, readiness: 0, assemble: 0, generate: 0, validate: 0 };
+
+/** 获取最近时序（chat.ts 在 LLM 生成后填写 generate/validate） */
+export function recordGenerateTiming(generateMs: number, validateMs: number): void {
+  _lastTimings.generate = generateMs;
+  _lastTimings.validate = validateMs;
 }
 
 /**
@@ -143,6 +160,9 @@ export async function afterGenerate(
   message: string,
   reply: string,
   storage: any,
+  collectedData?: CollectedData,
+  readiness?: ReadinessDecision,
+  validation?: ValidationResult,
 ): Promise<void> {
   const roleplay = ctx.currentRoleplay;
   if (!roleplay || !_activeSessionId) return;
@@ -170,4 +190,15 @@ export async function afterGenerate(
     const fg = ctx.m4?.getFamilyGraph?.();
     if (fg) await tryPromoteProfile(roleplay, fg as any);
   } catch (_) {}
+
+  // ── 审计记录 ──
+  if (collectedData && readiness) {
+    recordPipelineRun(
+      roleplay, _activeSessionId, _seqCounter,
+      message, reply,
+      _lastTimings, readiness,
+      validation || { pass: true, issues: [], severity: 'pass' as const, fix: 'none' as const },
+      collectedData,
+    );
+  }
 }

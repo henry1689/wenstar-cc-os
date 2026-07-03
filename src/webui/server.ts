@@ -248,6 +248,10 @@ const HOOK_DEFS = [
   {id:'H12',name:'M9·工作记忆·毕业',       th:15000},
   {id:'H13',name:'M6·自我演化·优先级',      th:300000},
   {id:'H14',name:'M4·记忆检索·多路融合',   th:15000},
+  // 🏗️ 阶段3-2: 角色扮演域语义探针
+  {id:'H15',name:'RP·角色编造率',          th:600000},  // 10分钟
+  {id:'H16',name:'RP·角色活跃数',          th:600000},  // 10分钟
+  {id:'H17',name:'RP·管线性能(平均耗时)',   th:600000},  // 10分钟
 ];
 for(const d of HOOK_DEFS) hookMonitor.set(d.id,{
   name:d.name,callCount:0,errorCount:0,totalDuration:0,

@@ -98,6 +98,7 @@ const _rpLoadedPersons = new Set<string>();
 
 // 🏗️ 角色扮演域管线结果缓存（供验证器使用）
 let _lastCollectedData: any = null;
+let _lastValidation: any = null;
 
 // S3-2: 从 guard-builder 导入角色路由和守卫
 import { flushDialogGroup, persistConversation, runRetrieval } from './chat/index.js';
@@ -1895,6 +1896,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
       if (_lastCollectedData) {
         try {
           const _vr = validateReply(reply, _lastCollectedData, _currentRoleplay);
+          _lastValidation = _vr;
           if (!_vr.pass) {
             const _msg = '[RoleplayValidator] ' + _vr.issues.join('; ') + ' severity=' + _vr.severity;
             if (_vr.severity === 'error') console.error(_msg);
@@ -1917,7 +1919,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
           currentRPBranch: _currentRPBranch, rpParamsSnapshot: _rpParamsSnapshot,
           currentRoleplay: _currentRoleplay,
         };
-        await afterGenerate(_dc2, message, reply, _rps);
+        await afterGenerate(_dc2, message, reply, _rps, _lastCollectedData, undefined, _lastValidation);
       } catch (_ae) { /* 记忆同步不阻塞 */ }
     }
 
