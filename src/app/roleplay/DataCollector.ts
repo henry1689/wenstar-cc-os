@@ -15,7 +15,7 @@ const COLLECT_TIMEOUT = 3000;
 export function classifyIntent(message: string): UserIntent {
   if (/谁|名字|叫.*什么|哪个人/.test(message)) return 'ask_person';
   if (/多大了|几岁|你多大|你几岁|年龄|年纪/.test(message)) return 'ask_age';
-  if (/说说你自己|你是什么样的人|你的故事|介绍一下你自己/.test(message)) return 'ask_background';
+  if (/说说你自己|讲讲你自己|你是什么样的人|你的故事|介绍一下你自己|说说你的事/.test(message)) return 'ask_background';
   if (/是谁|怎么样|在哪|做什么|什么样/.test(message)) return 'ask_relation';
   return 'chat';
 }
@@ -52,27 +52,22 @@ export async function collectData(
   // ── 画像（如果有缓存就不重新构建） ──
   let portrait: string | null = null;
 
-  // ── 已知字段汇总 ──
+  // ── 已知字段汇总（从实际会注入到提示词的内容中判定） ──
+  const _hasAgeInFg = fgData.rootProfile?.age ? true : /(\d+)岁/.test(fgData.treeText);
   const knownFields = {
-    hasAge: false,
+    hasAge: _hasAgeInFg,
     hasRelations: fgData.familyMembers.length > 0,
     hasAppearance: false,
     hasOccupation: false,
     hasPersonality: false,
-    askedPersonFound: entities.entities.length > 0,
+    askedPersonFound: false,
   };
 
-  // 从画像/历史/KB 中检测已知字段
-  const allText = [
-    fgData.treeText,
-    ...kbData.map(k => k.title + k.content),
-    ...histData.map(h => h.content),
-  ].join(' ');
-
-  if (/(\d+)岁/.test(allText)) knownFields.hasAge = true;
-  if (/外貌|长相|漂亮|可爱|清秀|身高|脸/.test(allText)) knownFields.hasAppearance = true;
-  if (/工作|职业|学生|老师|医生|公司/.test(allText)) knownFields.hasOccupation = true;
-  if (/性格|开朗|温柔|活泼|安静|脾气/.test(allText)) knownFields.hasPersonality = true;
+  // askedPersonFound：排除亲属称呼后，检查是否有实体在 FG/KB 中有实际数据
+  const _realEntities = entities.entities.filter(e => !/姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公|阿姨|叔叔/.test(e));
+  knownFields.askedPersonFound = _realEntities.some(e =>
+    fgData.familyMembers.includes(e) || kbData.some(k => k.title.includes(e) || k.content.includes(e))
+  );
 
   return {
     fg: fgData,

@@ -77,6 +77,8 @@ export async function runRoleplayPipeline(
 
   // ═══ 画像装配（仅首次，之后读取缓存） ═══
   if (!_cachedPortrait) {
+    // 🔴 上下文扫描必须传入，否则肖像画缺少未知边界区块
+    const _contextExtract = scanContextForCharacter(roleplay, ctx.conversationHistory || [], 30);
     let portrait = assembleCharacterPortrait(roleplay, {
       fgContext: collectedData.fg.treeText,
       kbContext: collectedData.kb.length > 0
@@ -85,7 +87,7 @@ export async function runRoleplayPipeline(
       historyContext: collectedData.history.length > 0
         ? collectedData.history.map(h => h.content).join('\n')
         : undefined,
-      contextExtract: undefined,
+      contextExtract: _contextExtract,
     });
 
     // 锁年龄

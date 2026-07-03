@@ -1488,6 +1488,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           currentRoleplay: _currentRoleplay,
         };
 
+        // 同步chat.ts缓存到域缓存，避免域管线重建无上下文扫描的肖像画
+        if (_currentPortrait) setCachedPortrait(_currentPortrait, _currentRoleplay);
         const _pipelineResult = await runRoleplayPipeline(_domainCtx, _currentRPBranch);
         knowledgeBaseText = _pipelineResult.knowledgeBaseText;
         _currentPortrait = _pipelineResult.portrait || _currentPortrait;
