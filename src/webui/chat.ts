@@ -1450,13 +1450,18 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       
       // 🔴 每轮强制注入年龄锚点（从多源获取，防LLM随口改年龄）
       let _characterAge: string | null = null;
-      // 来源1: FG主库
+      // 来源1: FG主库（age可能是数字或字符串）
       if (ctx.m4) {
         try {
           const _fg = ctx.m4.getFamilyGraph();
           if (_fg) {
             const _profile = _fg.getPersonProfile(_currentRoleplay);
-            if (_profile && _profile.age) _characterAge = String(_profile.age);
+            if (_profile) {
+              if (_profile.age) _characterAge = String(_profile.age);
+              else if (_profile.relation_to_user && /(\d+)岁/.test(_profile.relation_to_user)) {
+                _characterAge = _profile.relation_to_user.match(/(\d+)岁/)![1];
+              }
+            }
           }
         } catch (_) {}
       }
@@ -1465,11 +1470,23 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         const _am = _currentPortrait.match(/(\d+)岁/);
         if (_am) _characterAge = _am[1];
       }
-      // 来源3: 对话历史
+      // 来源3: 对话历史 — 精确匹配「诗韵XX岁」
       if (!_characterAge) {
-        const _histText = ctx.conversationHistory.slice(-20).map(t => t.content).join(' ');
+        const _histText = ctx.conversationHistory.slice(-30).map(t => t.content).join(' ');
         const _hm = _histText.match(new RegExp(_currentRoleplay + '(?:才|刚|今年|现在|已经)?(\\d{1,2})岁'));
         if (_hm) _characterAge = _hm[1];
+      }
+      // 来源4: 对话历史 — 宽泛匹配该角色被提及的任何年龄
+      if (!_characterAge) {
+        const _histText = ctx.conversationHistory.slice(-30).map(t => t.content).join(' ');
+        // 模式a: 角色名+才/刚/今年/现在+数字+岁（诗韵才14岁）
+        const _am1 = _histText.match(new RegExp(_currentRoleplay + '[，, ]?(?:你)?(?:才|刚|今年|现在|已经|只有)(\\d{1,2})岁'));
+        if (_am1) { _characterAge = _am1[1]; }
+        else {
+          // 模式b: 任何「才XX岁」且上下文中包含角色名
+          const _am2 = _histText.match(/(?:才|刚|今年|现在|已经|只有)(\d{1,2})岁/);
+          if (_am2 && _histText.includes(_currentRoleplay)) _characterAge = _am2[1];
+        }
       }
       if (_characterAge && !knowledgeBaseText.includes('【年龄】')) {
         knowledgeBaseText += '\n\n【年龄】你的年龄是' + _characterAge + '岁，不要说自己其他年龄。';
@@ -1532,14 +1549,14 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           const _onlyKinship = _rpEntities.length > 0 &&
             _rpEntities.every(e => /姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公/.test(e));
           if ((_rpEntities.length === 0 || _onlyKinship) && ( /[她他]/.test(message) || _onlyKinship)) {
-            const _recentUser = ctx.conversationHistory.slice(-3).filter(t => t.role === 'user').map(t => t.content).join(' ');
-            const _lastName = _recentUser.match(/[一-龥]{2,4}(?=[，。！？\s]|的|了|是|有|在|说)/g);
-            if (_lastName && _lastName.length > 0) {
-              const _last = _lastName[_lastName.length - 1];
-              if (_last !== _currentRoleplay && _last !== '我' && _last.length >= 2) {
-                _rpEntities.push(_last);
-                console.log('[Roleplay] 代词解析: 从历史提取「' + _last + '」');
-              }
+            const _recentUser = ctx.conversationHistory.slice(-5).filter(t => t.role === 'user').map(t => t.content).join(' ');
+            // 找第一个2-4字的人名（排除亲属称呼）
+            const _allMatches = _recentUser.match(/[一-龥]{2,4}(?=[，。！？\s]|的|了|是|有|在|说)/g) || [];
+            const _realName = _allMatches.find(n => n !== _currentRoleplay && n !== '我' && n.length >= 2 &&
+              !/姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|奶奶|爷爷|老婆|老公/.test(n));
+            if (_realName) {
+              _rpEntities.push(_realName);
+              console.log('[Roleplay] 代词解析: 从历史提取「' + _realName + '」');
             }
           }
 
