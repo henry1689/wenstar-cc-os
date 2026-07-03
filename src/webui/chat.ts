@@ -1394,12 +1394,33 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           ' 事件=' + contextExtract.events.length);
 
         // ── 装配完整角色画像（含已知事实 + 未知边界） ──
-        const portrait = assembleCharacterPortrait(character, {
+        let portrait = assembleCharacterPortrait(character, {
           fgContext,
           kbContext,
           historyContext: pastContext,
           contextExtract,
         });
+        // 🔴 锁年龄到缓存画像（从FG主库+上下文中获取，避免每轮被覆盖）
+        try {
+          const _realFg = (ctx.m4 as any)?._familyGraph || ctx.m4?.getFamilyGraph?.();
+          if (_realFg) {
+            const _pf = _realFg.getPersonProfile(character);
+            if (_pf?.age) {
+              portrait += '\n\n【年龄】' + character + '今年' + _pf.age + '岁。';
+            }
+          }
+        } catch (_) {}
+        if (!portrait.includes('【年龄】')) {
+          const _ht = ctx.conversationHistory.slice(-20).map((t: any) => t.content).join(' ');
+          const _hm = _ht.match(new RegExp(character + '.*?(\\d{1,2})岁'));
+          if (_hm) {
+            portrait += '\n\n【年龄】' + character + '今年' + _hm[1] + '岁。';
+          }
+        }
+        // 激活时如果还是没年龄，就加入反编造指令
+        if (!portrait.includes('【年龄】')) {
+          portrait += '\n\n【年龄】⚠️ 你没有关于自己年龄的信息。如果有人问年龄，说"你没告诉过我，我不确定"。绝对禁止编造年龄。';
+        }
         _currentPortrait = portrait; // 缓存供周期性重注入
 
         // ── 构建角色扮演指令（规则 + 画像 + 风格） ──
@@ -1447,51 +1468,6 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         _rpTurnCounter = 0;
         console.log('[Roleplay] 稳定性重注入: 完整画像已刷新');
       }
-      
-      // 🔴 每轮强制注入年龄锚点（从多源获取，防LLM随口改年龄）
-      let _characterAge: string | null = null;
-      // 来源1: FG主库（age可能是数字或字符串）
-      if (ctx.m4) {
-        try {
-          const _fg = ctx.m4.getFamilyGraph();
-          if (_fg) {
-            const _profile = _fg.getPersonProfile(_currentRoleplay);
-            if (_profile) {
-              if (_profile.age) _characterAge = String(_profile.age);
-              else if (_profile.relation_to_user && /(\d+)岁/.test(_profile.relation_to_user)) {
-                _characterAge = _profile.relation_to_user.match(/(\d+)岁/)![1];
-              }
-            }
-          }
-        } catch (_) {}
-      }
-      // 来源2: 画像
-      if (!_characterAge && _currentPortrait) {
-        const _am = _currentPortrait.match(/(\d+)岁/);
-        if (_am) _characterAge = _am[1];
-      }
-      // 来源3: 对话历史 — 精确匹配「诗韵XX岁」
-      if (!_characterAge) {
-        const _histText = ctx.conversationHistory.slice(-30).map(t => t.content).join(' ');
-        const _hm = _histText.match(new RegExp(_currentRoleplay + '(?:才|刚|今年|现在|已经)?(\\d{1,2})岁'));
-        if (_hm) _characterAge = _hm[1];
-      }
-      // 来源4: 对话历史 — 宽泛匹配该角色被提及的任何年龄
-      if (!_characterAge) {
-        const _histText = ctx.conversationHistory.slice(-30).map(t => t.content).join(' ');
-        // 模式a: 角色名+才/刚/今年/现在+数字+岁（诗韵才14岁）
-        const _am1 = _histText.match(new RegExp(_currentRoleplay + '[，, ]?(?:你)?(?:才|刚|今年|现在|已经|只有)(\\d{1,2})岁'));
-        if (_am1) { _characterAge = _am1[1]; }
-        else {
-          // 模式b: 任何「才XX岁」且上下文中包含角色名
-          const _am2 = _histText.match(/(?:才|刚|今年|现在|已经|只有)(\d{1,2})岁/);
-          if (_am2 && _histText.includes(_currentRoleplay)) _characterAge = _am2[1];
-        }
-      }
-      if (_characterAge && !knowledgeBaseText.includes('【年龄】')) {
-        knowledgeBaseText += '\n\n【年龄】你的年龄是' + _characterAge + '岁，不要说自己其他年龄。';
-        console.log('[Roleplay] 年龄锚点已注入: ' + _characterAge + '岁');
-      }
 
       // 角色前缀丢失时重建（兜底 + 隐式扮演首次构建）
       if (!knowledgeBaseText || !knowledgeBaseText.startsWith('【角色扮演】')) {
@@ -1507,13 +1483,50 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             _loadRPPastHistory(_currentRoleplay).catch(function() { return ''; }),
           ]);
           const ce = scanContextForCharacter(_currentRoleplay, ctx.conversationHistory || [], 30);
-          const portrait = assembleCharacterPortrait(_currentRoleplay, {
+          let portrait = assembleCharacterPortrait(_currentRoleplay, {
             fgContext: fc, kbContext: kc, historyContext: pc, contextExtract: ce,
           });
           _currentPortrait = portrait;
           knowledgeBaseText = buildRoleplayRules(_currentRoleplay, portrait);
           console.log('[Roleplay] 隐式扮演首轮构建完成: ' + _currentRoleplay);
         }
+      }
+
+      // 🔴 年龄锚点注入（放在 prefix-rebuild 之后，避免被 buildRoleplayRules 覆盖）
+      // 从 FG 主库取年龄（直接访问 m4 的原始 FG，不走分支的 getFamilyGraph）
+      let _characterAge: string | null = null;
+      if (!_characterAge) {
+        try {
+          const _mainFg = ctx.m4?.getFamilyGraph?.();
+          // 如果当前在分支模式下，getFamilyGraph 返回分支，需要直接访问主 FG
+          const _realFg = (ctx.m4 as any)?._familyGraph || _mainFg;
+          if (_realFg) {
+            const _profile = _realFg.getPersonProfile(_currentRoleplay);
+            if (_profile && _profile.age) _characterAge = String(_profile.age);
+          }
+        } catch (_) {}
+      }
+      // 从 _currentPortrait 取年龄
+      if (!_characterAge && _currentPortrait) {
+        const _am = _currentPortrait.match(/(\d+)岁/);
+        if (_am) _characterAge = _am[1];
+      }
+      // 从对话历史取年龄
+      if (!_characterAge) {
+        const _histText = ctx.conversationHistory.slice(-40).map(t => t.content).join(' ');
+        const _hm = _histText.match(new RegExp(_currentRoleplay + '.*?[' + '，, ]*(?:才|刚|今年|现在|已经|只有)?(\\d{1,2})岁'));
+        if (!_hm) {
+          const _wm = _histText.match(/(?:才|刚|今年|现在|已经|只有)(\d{1,2})岁/);
+          if (_wm && _histText.includes(_currentRoleplay)) _characterAge = _wm[1];
+        } else { _characterAge = _hm[1]; }
+      }
+      if (_characterAge && !knowledgeBaseText.includes('【年龄】')) {
+        knowledgeBaseText += '\n\n【年龄】你的年龄是' + _characterAge + '岁，不要说自己其他年龄。';
+        console.log('[Roleplay] 年龄锚点已注入: ' + _characterAge + '岁');
+      } else if (!_characterAge && !knowledgeBaseText.includes('【年龄】')) {
+        // 🔴 没有任何数据源能确定年龄——告诉LLM不知道，禁止编造
+        knowledgeBaseText += '\n\n【年龄】你不知道自己具体多少岁。⚠️ 用户没有告诉过你的年龄，绝对不能自己编造一个数字。如果有人问你"你多大了""你几岁"，回答"我也不知道，你没跟我说过"。';
+        console.log('[Roleplay] 年龄锚点: 无数据，已注入反编造指令');
       }
 
       // 每轮加载历史扮演对话 —— 保持上下文不中断
