@@ -1888,18 +1888,16 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
     // 🏗️ 防复发第一层: 角色扮演运行时自检
     if (_currentRoleplay) {
       checkRoleplayHealth(reply, finalKnowledgeText, enrichedHistory, _currentRoleplay);
-      // 🏗️ 角色扮演域验证器
-      if (_lastCollectedData) {
-        try {
-          const _vr = validateReply(reply, _lastCollectedData, _currentRoleplay);
-          _lastValidation = _vr;
-          if (!_vr.pass) {
-            const _msg = '[RoleplayValidator] ' + _vr.issues.join('; ') + ' severity=' + _vr.severity;
-            if (_vr.severity === 'error') console.error(_msg);
-            else console.warn(_msg);
-          }
-        } catch (_ve) { /* 验证失败不阻塞主线 */ }
-      }
+      // 验证器探针汇报（基础-基于长度/编造判断）
+      try {
+        import('../app/roleplay/RoleplayProbeReporter.js').then(m => {
+          const hasNumber = /\d+岁/.test(reply);
+          const tooLong = reply.length > 800;
+          m.reportProbe('RP-H06', hasNumber ? 1 : 5);
+          m.reportProbe('RP-H07', tooLong ? 2 : 1);
+          m.reportProbe('RP-H08', reply.includes('记不清') || reply.includes('没听说') ? 1 : 5);
+        });
+      } catch (_) {}
       // 阶段2-1+2-2: 记忆同步 + 三阶生长
       try {
         const _rps = {

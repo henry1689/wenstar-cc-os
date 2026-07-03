@@ -17,6 +17,7 @@ import { buildRoleplayRules } from './RoleplayPromptBuilder.js';
 import { syncRPConversation, generateRPId, type RPWriteInput } from './RoleplayMemorySync.js';
 import { updateTempProfile, tryPromoteProfile } from './RoleplayProfileManager.js';
 import { initSessionCache, setLayer1, setLayer2, hasLayer1, hasLayer2, clearCache as clearSessionCache } from './RoleplaySessionCache.js';
+import { reportProbe, reportMemoryRecall, reportRoleGrowth } from './RoleplayProbeReporter.js';
 
 // ─── 开关（约束7） — 默认关闭，环境变量开启
 const STRUCTURED_ENABLED = process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
@@ -69,18 +70,27 @@ export async function runRoleplayPipeline(
   }
   if (!hasLayer1() && data.layer1.identity) {
     setLayer1(data.layer1.identity);
+    reportProbe('RP-H02', 1);
   }
   if (!hasLayer2() && data.layer2.relations) {
     setLayer2(data.layer2.relations);
+    reportProbe('RP-H03', 1);
   }
 
+  reportProbe('RP-H04', data.layer3.goldMemories.length + data.layer3.diamondMemories.length);
+  reportProbe('RP-H05', data.layer4.kbEntries.length);
+
   // ═══ 四层装配 ═══
+  const _t0 = Date.now();
   const knowledgeBaseText = assemblePrompt({
     roleplay,
     portrait: data.layer1.identity || `你是${roleplay}`,
     data,
     styleInstruction: ctx.rpParamsSnapshot?.buildStyleInstruction?.(roleplay) || '',
   });
+
+  // 探针：装配总耗时
+  reportProbe('RP-H01', Date.now() - _t0);
 
   return knowledgeBaseText;
 }
@@ -106,4 +116,5 @@ export async function afterGenerate(
     await syncRPConversation(storage, input);
   } catch (_) {}
   updateTempProfile(roleplay, message, reply, _seqCounter);
+  reportProbe('RP-H09', _seqCounter);
 }

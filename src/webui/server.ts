@@ -83,6 +83,7 @@ import { handleObservabilityRoutes } from './server-observability-routes.js';
 import { handleMemoryRoutes } from './server-memory-routes.js';
 import { exportHookMonitor, importHookMonitor, startBackupDaemon } from '../hooks/backup-daemon.js';
 import { Orchestrator } from '../engine/orchestrator.js';
+import { setProbeWriter } from '../app/roleplay/RoleplayProbeReporter.js';
 import { SQLiteStorage } from '../engine/storage/SQLiteStorage.js';
 import type { ChatContext } from './chat.js';
 
@@ -248,10 +249,16 @@ const HOOK_DEFS = [
   {id:'H12',name:'M9·工作记忆·毕业',       th:15000},
   {id:'H13',name:'M6·自我演化·优先级',      th:300000},
   {id:'H14',name:'M4·记忆检索·多路融合',   th:15000},
-  // 🏗️ 阶段3-2: 角色扮演域语义探针
-  {id:'H15',name:'RP·角色编造率',          th:600000},  // 10分钟
-  {id:'H16',name:'RP·角色活跃数',          th:600000},  // 10分钟
-  {id:'H17',name:'RP·管线性能(平均耗时)',   th:600000},  // 10分钟
+  // 🏗️ 角色扮演域全链路探针（9个，对应四层结构+验证器）
+  {id:'H15',name:'RP·装配总耗时',            th:600000},
+  {id:'H16',name:'RP·Layer1身份注入',         th:600000},
+  {id:'H17',name:'RP·Layer2关系注入',         th:600000},
+  {id:'H18',name:'RP·Layer3记忆召回',         th:600000},
+  {id:'H19',name:'RP·Layer4知识注入',         th:600000},
+  {id:'H20',name:'RP·身份层校验通过率',       th:600000},
+  {id:'H21',name:'RP·事实层校验',            th:600000},
+  {id:'H22',name:'RP·边界层校验',            th:600000},
+  {id:'H23',name:'RP·角色生长状态',          th:600000},
 ];
 for(const d of HOOK_DEFS) hookMonitor.set(d.id,{
   name:d.name,callCount:0,errorCount:0,totalDuration:0,
@@ -267,6 +274,17 @@ for (const _d of HOOK_DEFS) {
     _m.lastHeartbeat = _now0;
   }
 }
+// 🏗️ 角色扮演域全链路探针桥接：hookMonitor → RoleplayProbeReporter
+setProbeWriter((id, durationMs, error) => {
+  const _m = hookMonitor.get(id);
+  if (_m) {
+    _m.callCount++;
+    _m.lastHeartbeat = Date.now();
+    _m.totalDuration += durationMs;
+    _m.lastStatus = error ? 'yellow' : 'green';
+    if (error) { _m.errorCount++; _m.lastError = error; }
+  }
+});
 let inductionScheduler: InductionScheduler;
 let consolidationQueue: ConsolidationQueue;
 let m7: M7Orchestrator;

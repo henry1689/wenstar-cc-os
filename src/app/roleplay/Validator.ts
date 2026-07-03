@@ -15,6 +15,7 @@
  *   pass    → 静默通过
  */
 import type { CollectedData, ValidationResult } from './types.js';
+import { reportProbe } from './RoleplayProbeReporter.js';
 
 /** 玉瑶自称模式 */
 const YUYAO_PATTERNS = [
