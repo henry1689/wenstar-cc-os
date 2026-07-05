@@ -18,6 +18,7 @@ import { clearSessionCache } from './RoleplaySessionCache.js';
 import { reportAssembly, reportValidation, reportGrowth } from './RoleplayProbeReporter.js';
 
 const STRUCTURED_ENABLED = process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
+console.log('[RoleplayDomain] 四层结构化装配: ' + (STRUCTURED_ENABLED ? '已开启' : '已关闭（旧逻辑）'));
 
 interface DomainState {
   roleplay: string | null;

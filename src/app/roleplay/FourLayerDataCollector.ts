@@ -35,6 +35,7 @@ export async function collectFourLayerData(
   const fg = ctx.m4?.getFamilyGraph?.();
   const fgAdapter = fg ? new FamilyGraphAdapter(fg, roleplayId) : null;
 
+  console.log('[Roleplay] 串行检索开始');
   // ═══ 串行5层检索 ═══
   let clueResult: FullClueResult | null = null;
   try {

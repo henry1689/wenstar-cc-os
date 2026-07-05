@@ -1403,7 +1403,25 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           ' 关系=' + contextExtract.relations.length +
           ' 事件=' + contextExtract.events.length);
 
-        // ── 装配完整角色画像（含已知事实 + 未知边界） ──
+        // 🧬 首条消息也走四层结构化管线
+        const _structuredEnabled = getDomainStatus().structured;
+        let knowledgeBaseText = '';
+        if (_structuredEnabled) {
+          try {
+            const _domainCtx: DomainContext = {
+              roleplay: character, characterClass: _currentCharacterClass as CharacterClass,
+              message, dna, knowledgeBaseText: '',
+              m4: ctx.m4, knowledgeBase: ctx.knowledgeBase, conversationDB: ctx.conversationDB,
+              conversationHistory: ctx.conversationHistory || [],
+              currentRPBranch: _currentRPBranch, rpParamsSnapshot: _rpParamsSnapshot, currentRoleplay: character,
+            };
+            knowledgeBaseText = await runRoleplayPipeline(_domainCtx, message, dna);
+          } catch (_e: any) {
+            console.error('[Roleplay] 首条四层管线异常，回退旧逻辑:', _e?.message);
+          }
+        }
+        if (!knowledgeBaseText) {
+        // ── 旧逻辑：装配完整角色画像（含已知事实 + 未知边界） ──
         let portrait = assembleCharacterPortrait(character, {
           fgContext,
           kbContext,
@@ -1438,6 +1456,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         // 🏗️ P1-5: 注入角色风格参数
         const _styleBlock = _rpParamsSnapshot?.buildStyleInstruction(character);
         if (_styleBlock) knowledgeBaseText += _styleBlock;
+        }  // 结束旧逻辑分支
 
         // 首次启动也做透传：检测当前消息中是否已提到相关人物
         try {
