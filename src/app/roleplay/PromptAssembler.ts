@@ -27,6 +27,9 @@ export function assemblePrompt(input: AssembleInput): string {
   // ─── 装配 ───
   const parts: string[] = [];
 
+  // 0. 🏷️ 角色扮演标记（下游M5/LLM检测此标记决定绕行策略+温度/推理参数）
+  parts.push('【角色扮演】你是' + roleplay + '，用' + roleplay + '的口吻回复。');
+
   // 1. 核心规则（最顶部，高优先级）
   parts.push(buildCoreRules(roleplay, data));
 

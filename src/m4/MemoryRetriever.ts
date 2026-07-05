@@ -320,7 +320,7 @@ export class MemoryRetriever {
           const tp = new EntityTopologyManager(sq);
           const rels = tp.queryRelatives(roleplay, 3, undefined, namespace || 'default');
           const seen = new Set<string>();
-          const lm = { mother:'母亲', father:'父亲', elder_sister:'姐姐', younger_sister:'妹妹', sister:'姐妹', brother:'兄弟', daughter:'女儿', son:'儿子', wife:'老婆', husband:'老公', aunt:'姑姑', cousin:'表亲', niece:'侄女' };
+          const lm = { mother:'母亲', father:'父亲', elder_sister:'姐姐', younger_sister:'妹妹', sister:'姐妹', brother:'兄弟', sibling:'兄弟姐妹', daughter:'女儿', son:'儿子', wife:'老婆', husband:'老公', aunt:'姑姑', cousin:'表亲', niece:'侄女' };
           for (const rel of rels) {
             const k = rel.relation_type + ':' + rel.target_entity_id;
             if (seen.has(k)) continue; seen.add(k);

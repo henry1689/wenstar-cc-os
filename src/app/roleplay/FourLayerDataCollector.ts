@@ -64,7 +64,7 @@ export async function collectFourLayerData(
 
   // ── Layer1: 核心身份 ──
   const selfProfile = fgAdapter?.getPersonProfile(roleplay) || null;
-  const layer1 = buildLayer1(roleplay, selfProfile);
+  console.log('[Roleplay] Layer1 selfProfile for ' + roleplay + ': hasProfile=' + (selfProfile?.hasProfile) + ' age=' + selfProfile?.age + ' raw=' + JSON.stringify(selfProfile).substring(0,200));
 
   // ── Layer2: 关系（来自FG + 拓扑） ──
   const relativeResult = await withTimeout(
@@ -128,13 +128,23 @@ function buildLayer1(roleplay: string, profile: PersonStructProfile | null): Lay
     if (profile?.occupation) facts.push('是' + profile?.occupation);
     lines.push(facts.join('，') + '。');
     if ((profile?.traits?.length ?? 0) > 0) lines.push('我的性格：' + profile.traits!.join('、') + '。');
-    if (profile?.appearance) lines.push('我的外貌：' + profile?.appearance + '。');
+    // 🔴 安全过滤：禁止色情/NSFW内容进入提示词污染LLM判断
+    const _safeAppearance = profile?.appearance ? filterNsfw(profile.appearance) : '';
+    if (_safeAppearance) lines.push('我的外貌：' + _safeAppearance + '。');
     if (profile?.birth) lines.push('我的生日：' + profile?.birth + '。');
-    if (profile?.description) lines.push('其他人对我的描述：' + profile?.description + '。');
+    const _safeDesc = profile?.description ? filterNsfw(profile.description) : '';
+    if (_safeDesc) lines.push('其他人对我的描述：' + _safeDesc + '。');
   } else {
     lines.push('我叫' + roleplay + '。');
   }
   return { roleplay, profile, knownFields, identityText: lines.join('\n') };
+}
+
+/** 🔴 过滤NSFW内容，防止色情信息通过profile字段进入LLM提示词 */
+function filterNsfw(text: string): string {
+  const nsfwPatterns = /开苞|喂饱|[插肏操](?![队手])|小姨子|性[感交爱欲|高潮|骚[货逼]|浪[货逼叫教着]|敏感[点带]|呻吟|叫床|肉棒|肉穴|淫[荡水语乱]|阴[蒂道唇核茎]/;
+  if (nsfwPatterns.test(text)) return '';
+  return text;
 }
 
 // ─── Layer2: 第一人称关系（含拓扑链路） ───
@@ -152,10 +162,29 @@ function buildLayer2(
     mother_of: '妈妈', father_of: '爸爸', spouse_of: '配偶',
     sibling_of: '姐妹/兄弟', child_of: '孩子', parent_of: '父母',
     aunt_of: '姑姑', cousin_of: '表亲', niece_of: '侄女',
+    elder_sister_of: '姐姐', younger_sister_of: '妹妹',
+    elder_brother_of: '哥哥', younger_brother_of: '弟弟',
   };
 
+  // 构建拓扑关系查找表：target→relation_label（用于覆盖FG的通用sibling_of）
+  const topoRelationMap = new Map<string, string>();
+  if (l3Topology) {
+    for (const t of l3Topology) {
+      if (t.rootId === roleplay && !topoRelationMap.has(t.targetId)) {
+        topoRelationMap.set(t.targetId, t.relation);
+      }
+    }
+  }
+
   for (const rel of relatives) {
-    const label = rel.relation ? (relLabel[rel.relation] || rel.relation) : (rel.relation_to_user || '亲人');
+    let label: string;
+    // 优先使用拓扑的具体关系（姐姐/妹妹代替模糊的姐妹/兄弟）
+    const topoLabel = topoRelationMap.get(rel.name);
+    if (topoLabel && (rel.relation === 'sibling_of' || !rel.relation)) {
+      label = topoLabel;
+    } else {
+      label = rel.relation ? (relLabel[rel.relation] || rel.relation) : (rel.relation_to_user || '亲人');
+    }
     let desc = label + '：' + rel.name;
     if (rel.age !== undefined) desc += '，' + rel.age + '岁';
     if (rel.occupation) desc += '，' + rel.occupation;

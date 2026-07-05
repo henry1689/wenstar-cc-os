@@ -531,7 +531,7 @@ ${profileText}
       spec.wordCountMin,
     );
     const temperature = level >= 2 || /感觉|感受|回忆|分享|记得|印象|讲.*故事|写.*小说/.test(rawInput) ? 1.0 : 0.9;
-    const _isRP = kb.includes('## 你是');
+    const _isRP = kb.includes('## 你是') || kb.includes('【角色扮演】');
     const _finalTemp = _isRP ? 0.4 : temperature;
     const _reasoningEffort = _isRP ? 'max' : undefined;
     const frequencyPenalty = level >= 2 ? 0.0 : 0.3;
