@@ -40,14 +40,24 @@ export async function collectFourLayerData(
   let clueResult: FullClueResult | null = null;
   try {
     if (ctx.storage) {
+      console.log('[Roleplay] 串行: ctx.storage OK, getSQLite=' + (typeof (ctx.storage as any).getSQLite));
       const { MemoryRetriever } = await import('../../m4/MemoryRetriever.js');
       const retriever = new MemoryRetriever(ctx.storage as any);
+      console.log('[Roleplay] 串行: MemoryRetriever created, calling retrieveFullClue...');
       clueResult = await withTimeout(
         retriever.retrieveFullClue(roleplay, message, null, true),
         null as any,
       );
+      console.log('[Roleplay] 串行: retrieveFullClue returned, clueResult=' + (clueResult ? 'ok' : 'null'));
+      if (clueResult) {
+        console.log('[Roleplay] 串行: layersUsed=' + clueResult.layersUsed.join(',') + ' hasValidRelation=' + clueResult.hasValidRelation + ' topoCount=' + clueResult.l3Topology.length + ' l2Sand=' + clueResult.l2Sand.length + ' l2Vault=' + clueResult.l2Vault.length + ' l2Diamond=' + clueResult.l2Diamond.length);
+      }
+    } else {
+      console.log('[Roleplay] 串行: ctx.storage is FALSY, skipping retrieval');
     }
-  } catch {}
+  } catch (e: any) {
+    console.log('[Roleplay] 串行: EXCEPTION: ' + (e?.message || 'unknown'));
+  }
   if (clueResult) {
     console.log('[Roleplay] 串行: layers=' + clueResult.layersUsed.join('-') + ' rel=' + clueResult.hasValidRelation + ' topo=' + clueResult.l3Topology.length);
   }

@@ -17,8 +17,11 @@ import { checkReadiness } from './ReadinessGate.js';
 import { clearSessionCache } from './RoleplaySessionCache.js';
 import { reportAssembly, reportValidation, reportGrowth } from './RoleplayProbeReporter.js';
 
-const STRUCTURED_ENABLED = process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
-console.log('[RoleplayDomain] 四层结构化装配: ' + (STRUCTURED_ENABLED ? '已开启' : '已关闭（旧逻辑）'));
+// 🔴 运行时检测：ESM 模块级代码在 .env 加载前执行，必须用函数而非常量
+function isStructuredEnabled(): boolean {
+  return process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
+}
+export { isStructuredEnabled };
 
 interface DomainState {
   roleplay: string | null;
@@ -29,7 +32,7 @@ interface DomainState {
 let _state: DomainState = { roleplay: null, sessionId: null, turnCounter: 0 };
 
 export function getDomainStatus() {
-  return { roleplay: _state.roleplay, structured: STRUCTURED_ENABLED, turns: _state.turnCounter };
+  return { roleplay: _state.roleplay, structured: isStructuredEnabled(), turns: _state.turnCounter };
 }
 
 export function clearCache(): void {
@@ -52,8 +55,10 @@ export async function runRoleplayPipeline(
   _state.roleplay = roleplay;
   _state.turnCounter++;
 
-  // 🔴 开关关闭时回退
-  if (!STRUCTURED_ENABLED) {
+  // 🔴 运行时检测（ESM 安全）
+  const _enabled = isStructuredEnabled();
+  console.log('[RoleplayDomain] runRoleplayPipeline: role=' + roleplay + ' structured=' + _enabled + ' env=' + process.env['ROLEPLAY_STRUCTURED_ENABLED']);
+  if (!_enabled) {
     return `【角色扮演】你是${roleplay}。用${roleplay}的口吻回复。`;
   }
 
@@ -100,7 +105,7 @@ export async function afterGenerate(
   storage: any,
 ): Promise<void> {
   const roleplay = ctx.currentRoleplay;
-  if (!roleplay || !STRUCTURED_ENABLED) return;
+  if (!roleplay || !isStructuredEnabled()) return;
 
   // 重新采集数据供校验（首轮已验证的Layer1+Layer2从缓存读取）
   try {

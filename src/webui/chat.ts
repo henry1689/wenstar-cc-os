@@ -131,7 +131,7 @@ export function getRoleplayStatus(): { active: boolean; role: string | null; cla
 import { checkRoleplayHealth } from '../app/roleplay-legacy/RoleplayHealthGuard.js';
 
 // 🏗️ 角色扮演域统一入口（四层结构化装配）
-import { runRoleplayPipeline, clearCache as clearRPCache, afterGenerate } from '../app/roleplay/RoleplayDomain.js';
+import { runRoleplayPipeline, clearCache as clearRPCache, afterGenerate, getDomainStatus } from '../app/roleplay/RoleplayDomain.js';
 import { validateReply } from '../app/roleplay/Validator.js';
 import type { DomainContext, CharacterClass } from '../app/roleplay/types.js';
 
@@ -329,6 +329,7 @@ function isDirectedEmotion(text: string): boolean {
 }
 
 export async function processChat(message: string, ctx: ChatContext): Promise<ChatResponse> {
+  console.log('[CHAT_ENTRY] _currentRoleplay=' + (_currentRoleplay || 'null') + ' msg=' + message.substring(0,30));
 
   try {
 	// 🎭 全局角色扮演检测（在函数入口处拦截）
@@ -1356,7 +1357,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             const _domainCtx: DomainContext = {
               roleplay: character, characterClass: _currentCharacterClass as CharacterClass,
               message, dna, knowledgeBaseText: '',
-              m4: ctx.m4, knowledgeBase: ctx.knowledgeBase, conversationDB: ctx.conversationDB,
+              m4: ctx.m4, knowledgeBase: ctx.knowledgeBase, storage: (ctx as any).storage || ctx.m4?.storage,
+              conversationDB: ctx.conversationDB,
               conversationHistory: ctx.conversationHistory || [],
               currentRPBranch: _currentRPBranch, rpParamsSnapshot: _rpParamsSnapshot, currentRoleplay: character,
             };
@@ -1408,6 +1410,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           knowledgeBaseText,
           m4: ctx.m4,
           knowledgeBase: ctx.knowledgeBase,
+          storage: (ctx as any).storage || ctx.m4?.storage,
           conversationDB: ctx.conversationDB,
           conversationHistory: ctx.conversationHistory || [],
           currentRPBranch: _currentRPBranch,
@@ -1831,6 +1834,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
           roleplay: _currentRoleplay, characterClass: _currentCharacterClass,
           message: message, dna: dna, knowledgeBaseText: knowledgeBaseText,
           m4: ctx.m4, knowledgeBase: ctx.knowledgeBase,
+          storage: (ctx as any).storage || ctx.m4?.storage,
           conversationDB: ctx.conversationDB, conversationHistory: ctx.conversationHistory || [],
           currentRPBranch: _currentRPBranch, rpParamsSnapshot: _rpParamsSnapshot,
           currentRoleplay: _currentRoleplay,

@@ -19,9 +19,11 @@ import { updateTempProfile, tryPromoteProfile } from './RoleplayProfileManager.j
 import { initSessionCache, setLayer1, setLayer2, hasLayer1, hasLayer2, clearCache as clearSessionCache } from './RoleplaySessionCache.js';
 import { reportProbe, reportMemoryRecall, reportRoleGrowth } from './RoleplayProbeReporter.js';
 
-// ─── 开关（约束7） — 默认关闭，环境变量开启
-const STRUCTURED_ENABLED = process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
-console.log(`[RoleplayDomain] 四层结构化装配: ${STRUCTURED_ENABLED ? '已开启' : '已关闭（旧逻辑）'}`);
+// ─── 开关（约束7） — 运行时检测
+function isStructuredEnabled(): boolean {
+  return process.env['ROLEPLAY_STRUCTURED_ENABLED'] === 'true';
+}
+export { isStructuredEnabled };
 
 // ─── 模块级状态 ───
 let _cachedRoleplay: string | null = null;
@@ -29,7 +31,7 @@ let _activeSessionId: string | null = null;
 let _seqCounter = 0;
 
 export function getDomainStatus() {
-  return { roleplay: _cachedRoleplay, structured: STRUCTURED_ENABLED };
+  return { roleplay: _cachedRoleplay, structured: isStructuredEnabled() };
 }
 export function clearCache(): void {
   _cachedRoleplay = null;

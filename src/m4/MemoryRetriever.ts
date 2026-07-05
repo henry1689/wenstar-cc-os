@@ -309,8 +309,8 @@ export class MemoryRetriever {
         for (const x of d || []) if (x.summary) r.l2Diamond.push(String(x.summary ?? "").substring(0, 200));
       }
     } catch (e) {}
-    const l2 = r.l2Sand.concat(r.l2Vault).concat(r.l2Diamond).join('');
-    if (/妈妈|爸爸|姐姐|妹妹|母亲|父亲/.test(l2)) { r.hasValidRelation = true; return r; }
+    // 🔴 修正：不因 L2 关键词提前截断 — L2 对话内容含"妈妈"不代表有实际关系数据
+    // 必须运行 L3 拓扑获取真实亲属关系
     if (enableTopology || /妈妈|爸爸|姐姐|妹妹|母亲|父亲/.test(message || '')) {
       layers.push('L3');
       try {
