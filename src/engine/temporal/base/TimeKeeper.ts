@@ -40,7 +40,7 @@ export class TimeKeeper {
       if (saved) {
         this.snapshot = saved;
         const jump = Date.now() - this.snapshot.lastTimestamp;
-        if (Math.abs(jump) > 3000) {
+        if (this.snapshot.lastTimestamp > 0 && Math.abs(jump) > 3000) {
           this.snapshot.timeJumpCount++;
           console.warn(`[TimeKeeper] 检测到系统时间跳变: ${Math.abs(jump)}ms`);
         }

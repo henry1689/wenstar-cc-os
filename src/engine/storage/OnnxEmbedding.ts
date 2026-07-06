@@ -6,6 +6,7 @@
  */
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import type { IEmbeddingEngine, EmbeddingResult, EmbeddingStatus } from './EmbeddingEngine.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,17 +22,23 @@ export class OnnxEmbeddingEngine implements IEmbeddingEngine {
   async warmup(): Promise<void> {
     if (this.status === 'ready') return;
     this.status = 'loading';
+    const modelPath = join(MODEL_DIR, 'model.onnx');
+    if (!existsSync(modelPath)) {
+      this.status = 'failed';
+      console.log('[OnnxEmbedding] 本地模型缺失，语义检索降级为关键词模式');
+      return;
+    }
     console.log('[OnnxEmbedding] 加载模型...');
     try {
       const ort = await import('onnxruntime-node');
-      this.session = await ort.InferenceSession.create(join(MODEL_DIR, 'model.onnx'));
+      this.session = await ort.InferenceSession.create(modelPath);
       const { AutoTokenizer } = await import('@huggingface/transformers');
       this.tokenizer = await AutoTokenizer.from_pretrained(MODEL_DIR);
       this.status = 'ready';
       console.log('[OnnxEmbedding] 就绪');
     } catch (err) {
       this.status = 'failed';
-      console.error('[OnnxEmbedding] 加载失败:', err);
+      console.warn('[OnnxEmbedding] 初始化失败，语义检索已降级:', (err as Error).message);
     }
   }
 

@@ -296,6 +296,31 @@ export class VectorAlignmentGuard {
     const totalMemories = this.getMemoriesCount!();
     const convHistoryLen = this.getConversationHistoryLen!();
 
+    // 冷启动空库：系统尚未产生对话/记忆，不应判为 broken
+    if (totalMemories === 0 && convHistoryLen === 0) {
+      const report: AlignmentReport = {
+        score: 100,
+        status: 'healthy',
+        checkpoints: [{
+          checkpoint: '冷启动基线',
+          passed: true,
+          score: 100,
+          detail: '当前无对话与记忆数据，按冷启动健康态处理',
+        }],
+        metrics: {
+          ...this.getEmptyMetrics(),
+          totalMemories: 0,
+          conversationHistoryLen: 0,
+        },
+        recommendations: ['系统处于冷启动状态，产生首轮对话后再评估对齐链路'],
+        timestamp: new Date().toISOString(),
+      };
+      this.lastFullCheck = Date.now();
+      this.cachedReport = report;
+      console.log('[AlignmentGuard] 📊 冷启动空库，按健康基线处理');
+      return report;
+    }
+
     // 检查点①：钙化等级分布（核心指标）
     let accessibleCount = 0;
     let totalReadable = 0;
@@ -362,16 +387,18 @@ export class VectorAlignmentGuard {
       const bdAll = sqlite.queryAll('SELECT COUNT(*) as c FROM black_diamond');
       const recallC = bdRecall[0]?.c || 0;
       const allC = bdAll[0]?.c || 0;
-      diamondRecallRate = allC > 0 ? recallC / allC : 0;
+      diamondRecallRate = allC > 0 ? recallC / allC : 1;
     } catch (e: any) { console.error('[VectorAlignmentGuard] error:', e?.message); }
     checkpoints.push({
       checkpoint: '黑钻召回率',
       passed: diamondRecallRate >= 0.3,
       score: Math.round(diamondRecallRate * 100),
-      detail: `已召回黑钻: ${Math.round(diamondRecallRate * 100)}%`,
+      detail: diamondRecallRate === 1
+        ? '暂无黑钻数据，跳过召回率惩罚'
+        : `已召回黑钻: ${Math.round(diamondRecallRate * 100)}%`,
       suggestion: diamondRecallRate < 0.3 ? '检查黑钻向量阈值是否过低，或黑钻摘要与用户查询不匹配' : undefined,
     });
-    if (diamondRecallRate < 0.3) {
+    if (diamondRecallRate < 0.3 && diamondRecallRate !== 1) {
       recommendations.push('🔧 黑钻召回率偏低，检查向量余弦阈值(当前0.3)是否需要进一步降低');
     }
 

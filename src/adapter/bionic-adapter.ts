@@ -79,7 +79,11 @@ export interface SongSheet {
 // ── HTTP 工具 ──
 
 /** 简化的 HTTP 请求（针对 Node.js fetch 做了兼容处理） */
-async function bionicFetch<T>(path: string, options?: { method?: string; body?: string }, timeout = 5000): Promise<T | null> {
+async function bionicFetch<T>(
+  path: string,
+  options?: { method?: string; body?: string; quiet?: boolean },
+  timeout = 5000,
+): Promise<T | null> {
   const bionicApi = ConfigService.get('BIONIC_API_URL', 'http://localhost:7200/api/v1');
   const url = `${bionicApi}${path}`;
   try {
@@ -94,12 +98,16 @@ async function bionicFetch<T>(path: string, options?: { method?: string; body?: 
     clearTimeout(timer);
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
-      console.warn(`[BionicAdapter] ${resp.status} ${url}: ${text.slice(0, 100)}`);
+      if (!options?.quiet) {
+        console.warn(`[BionicAdapter] ${resp.status} ${url}: ${text.slice(0, 100)}`);
+      }
       return null;
     }
     return await resp.json() as T;
   } catch (err) {
-    console.warn(`[BionicAdapter] 失败 ${url}:`, (err as Error).message);
+    if (!options?.quiet) {
+      console.warn(`[BionicAdapter] 失败 ${url}:`, (err as Error).message);
+    }
     return null;
   }
 }
@@ -107,10 +115,20 @@ async function bionicFetch<T>(path: string, options?: { method?: string; body?: 
 // ── 适配器核心 ──
 
 class BionicAdapter {
+  private healthCache: { ok: boolean; expiresAt: number } | null = null;
+
   /** 仿生智脑是否在线 */
   async health(): Promise<boolean> {
-    const r = await bionicFetch<any>('/health');
-    return r?.status === 'ok';
+    if (this.healthCache && this.healthCache.expiresAt > Date.now()) {
+      return this.healthCache.ok;
+    }
+    const r = await bionicFetch<any>('/health', { quiet: true }, 1500);
+    const ok = r?.status === 'ok';
+    this.healthCache = {
+      ok,
+      expiresAt: Date.now() + (ok ? 30_000 : 60_000),
+    };
+    return ok;
   }
 
   /** 检索相关记忆（同步，对话回复前调用，带 30 秒缓存） */
