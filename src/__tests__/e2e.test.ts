@@ -180,4 +180,18 @@ describe('E2E: 完整流水线 M1→M2→M3→M4→M5', () => {
 
     expect(reply).toBeTruthy();
   });
+
+  it('Case 8: 重复家族事实应沿 M4 链路晋升为正式档案字段', async () => {
+    for (let i = 0; i < 3; i++) {
+      const dna = encoder.encodeSingle('我姐姐叫霁月，她在深圳上班。');
+      await storage.write(dna, neutralPerception());
+      const decision = m3.decide(dna);
+      await m4.orchestrate(decision);
+    }
+
+    const profile = familyGraph.getPersonProfile('霁月');
+    expect(profile?.mention_count).toBeGreaterThanOrEqual(3);
+    expect(profile?.dossier?.contact?.workplace).toBe('深圳上班');
+    expect(profile?.pendingItems ?? []).toHaveLength(0);
+  });
 });

@@ -84,4 +84,44 @@ describe('FamilyGraph — 自动推断', () => {
     const summary = await graph.getFamilySummary();
     expect(summary.members.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('重复 pending 条目应自动晋升为正式档案字段', async () => {
+    await graph.integrateFromEntity(
+      [{ name: '姐姐', type: 'person', allele: '姐姐', phenotype: 'neutral', knowledge_type: 'family' }],
+      '我姐姐叫小雨'
+    );
+    await graph.addPendingItem('小雨', 'contact.workplace', '深圳上班', '来源1');
+    await graph.addPendingItem('小雨', 'contact.workplace', '深圳上班', '来源2');
+    await graph.addPendingItem('小雨', 'contact.workplace', '深圳上班', '来源3');
+
+    const profile = graph.getPersonProfile('小雨');
+    expect(profile?.dossier?.contact?.workplace).toBe('深圳上班');
+    expect(profile?.pendingItems ?? []).toHaveLength(0);
+  });
+
+  it('重复相同家族陈述也应累加观察并晋升档案字段', async () => {
+    const entities = [{ name: '姐姐', type: 'person', allele: '姐姐', phenotype: 'neutral', knowledge_type: 'family' }] as const;
+    await graph.integrateFromEntity([...entities], '我姐姐叫霁月，她在深圳上班。');
+    await graph.integrateFromEntity([...entities], '我姐姐叫霁月，她在深圳上班。');
+    await graph.integrateFromEntity([...entities], '我姐姐叫霁月，她在深圳上班。');
+
+    const profile = graph.getPersonProfile('霁月');
+    const summary = await graph.getFamilySummary();
+    const member = summary.members.find((item) => item.name === '霁月');
+    expect(profile?.mention_count).toBeGreaterThanOrEqual(3);
+    expect(profile?.dossier?.contact?.workplace).toBe('深圳上班');
+    expect(profile?.pendingItems ?? []).toHaveLength(0);
+    expect(member?.aliases ?? []).toEqual(['姐姐']);
+  });
+
+  it('历史脏别名在读取家庭摘要时也应去重', async () => {
+    await graph.addNode({ id: 'self', type: 'person', name: '我', aliases: ['我', '我自己'] });
+    await graph.addNode({ id: 'p1', type: 'person', name: '阿宁', aliases: ['姐姐', '姐姐'] });
+    await graph.addEdge({ id: 'e1', source_id: 'self', target_id: 'p1', relation: 'sibling_of' });
+    await graph.addEdge({ id: 'e2', source_id: 'p1', target_id: 'self', relation: 'sibling_of' });
+
+    const summary = await graph.getFamilySummary();
+    const member = summary.members.find((item) => item.name === '阿宁');
+    expect(member?.aliases ?? []).toEqual(['姐姐']);
+  });
 });

@@ -131,18 +131,14 @@ export class M4Orchestrator {
     // ── 2. 家族图谱 ──
     const activeFG = this.getFamilyGraph();
 
-    // P0-4: 无新增实体短路
+    // 即使实体集合不变，也要继续让 FG 吸收重复观察，避免档案提取/待确认累积被短路。
     const currentEntitySet = new Set(entities.filter(e => e.name !== '我' && e.name.length > 1).map(e => e.name));
     const hasNewEntities = [...currentEntitySet].some(e => !_lastEntitySet.has(e));
-    if (hasNewEntities || !_fgCache) {
-      await activeFG.integrateFromEntity(
-        decision.enhanced.entity_genes,
-        decision.enhanced.raw_input
-      );
-      _lastEntitySet = currentEntitySet;
-    } else {
-      console.log('[M4] FG 无新增实体，跳过推断');
-    }
+    await activeFG.integrateFromEntity(
+      decision.enhanced.entity_genes,
+      decision.enhanced.raw_input
+    );
+    _lastEntitySet = currentEntitySet;
 
     // P0-4b: FG 摘要 30s 缓存
     let familySummary: any, socialSummary: any;

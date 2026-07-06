@@ -270,6 +270,7 @@ interface PendingItem {
   source: string;           // 来源（对话摘要）
   timestamp: string;        // 创建时间
   confirmed: boolean;       // 是否已确认
+  occurrences?: number;     // 累计被重复观察到的次数
 }
 
 // ─── 亲属称谓 → 关系映射（自动推断核心词表）───
@@ -327,6 +328,7 @@ const REVERSE_RELATION: Record<string, string> = {
 };
 
 const KINSHIP_TERMS = Object.keys(KINSHIP_MAP).sort((a, b) => b.length - a.length);
+const PENDING_PROMOTION_THRESHOLD = 3;
 const SPECIFIC_KINSHIP_LABEL: Record<string, string> = {
   '妈妈': '妈妈', '妈': '妈妈', '母亲': '妈妈',
   '爸爸': '爸爸', '爸': '爸爸', '父亲': '爸爸',
@@ -369,7 +371,9 @@ function parseAliases(raw: unknown): string[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(String(raw));
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string' && item.trim()) : [];
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
+      : [];
   } catch {
     return [];
   }
@@ -482,13 +486,14 @@ export class FamilyGraph implements FamilyGraphInterface {
   }
 
   async addNode(node: GraphNode): Promise<void> {
+    const aliases = [...new Set((node.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))];
     this.run(
       'INSERT OR IGNORE INTO nodes (id, type, name, aliases, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
         node.id,
         node.type,
         node.name,
-        JSON.stringify(node.aliases ?? []),
+        JSON.stringify(aliases),
         JSON.stringify(node.properties ?? {}),
         new Date().toISOString(),
         new Date().toISOString(),
@@ -648,20 +653,110 @@ export class FamilyGraph implements FamilyGraphInterface {
       const key = normalizePendingKey(item.field, item.value);
       const existing = deduped.get(key);
       if (!existing) {
-        deduped.set(key, item);
+        deduped.set(key, { ...item, occurrences: item.occurrences || 1 });
         continue;
       }
-      const shouldReplace =
-        (!!item.confirmed && !existing.confirmed) ||
-        ((item.timestamp || '') > (existing.timestamp || ''));
-      if (shouldReplace) {
-        deduped.set(key, {
-          ...item,
-          source: item.source || existing.source,
-        });
+      const merged: PendingItem = {
+        ...existing,
+        ...item,
+        confirmed: !!existing.confirmed || !!item.confirmed,
+        occurrences: (existing.occurrences || 1) + (item.occurrences || 1),
+      };
+      if ((existing.timestamp || '') > (item.timestamp || '')) {
+        merged.timestamp = existing.timestamp;
+        merged.source = existing.source || item.source;
+      } else {
+        merged.timestamp = item.timestamp;
+        merged.source = item.source || existing.source;
       }
+      deduped.set(key, merged);
     }
     return [...deduped.values()].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  }
+
+  private ensureDossier(profile: Partial<PersonProfile>): PersonDossier {
+    if (!profile.dossier) {
+      profile.dossier = this.buildDossierFromFlat(profile, profile);
+    }
+    return profile.dossier;
+  }
+
+  private setIntersectionField(dossier: PersonDossier, key: 'metWhen' | 'workTogether' | 'lifeIntersection' | 'emotionalAssessment' | 'interestRelation', value: string): boolean {
+    dossier.relationMap.intersections = dossier.relationMap.intersections || {};
+    const current = dossier.relationMap.intersections[key];
+    if (current && current !== value) return false;
+    dossier.relationMap.intersections[key] = value;
+    return true;
+  }
+
+  private promotePendingItems(profile: Partial<PersonProfile>): void {
+    if (!profile.pendingItems || profile.pendingItems.length === 0) return;
+    const keep: PendingItem[] = [];
+    const dossier = this.ensureDossier(profile);
+
+    for (const item of profile.pendingItems) {
+      const occurrences = item.occurrences || 1;
+      if (item.confirmed || occurrences < PENDING_PROMOTION_THRESHOLD) {
+        keep.push(item);
+        continue;
+      }
+
+      let promoted = false;
+      switch (item.field) {
+        case 'contact.workplace':
+          if (!dossier.contact.workplace || dossier.contact.workplace === item.value) {
+            dossier.contact.workplace = item.value;
+            promoted = true;
+          }
+          break;
+        case 'relationMap.relationToUser':
+          if (!profile.relation_to_user || profile.relation_to_user === item.value) {
+            profile.relation_to_user = item.value;
+            dossier.relationMap.relationToUser = item.value;
+            promoted = true;
+          }
+          break;
+        case 'basicInfo.birthYear': {
+          const year = Number.parseInt(item.value, 10);
+          if (Number.isFinite(year) && (!dossier.basicInfo.birthYear || dossier.basicInfo.birthYear === year)) {
+            dossier.basicInfo.birthYear = year;
+            promoted = true;
+          }
+          break;
+        }
+        case 'contact.wechat':
+          if (!dossier.contact.wechat || dossier.contact.wechat === item.value) {
+            dossier.contact.wechat = item.value;
+            promoted = true;
+          }
+          break;
+        case 'health.condition':
+          if (!dossier.health.condition || dossier.health.condition === item.value) {
+            dossier.health.condition = item.value;
+            promoted = true;
+          }
+          break;
+        case 'relationMap.intersections.metWhen':
+          promoted = this.setIntersectionField(dossier, 'metWhen', item.value);
+          break;
+        case 'relationMap.intersections.workTogether':
+          promoted = this.setIntersectionField(dossier, 'workTogether', item.value);
+          break;
+        case 'relationMap.intersections.lifeIntersection':
+          promoted = this.setIntersectionField(dossier, 'lifeIntersection', item.value);
+          break;
+        case 'relationMap.intersections.emotionalAssessment':
+          promoted = this.setIntersectionField(dossier, 'emotionalAssessment', item.value);
+          break;
+        case 'relationMap.intersections.interestRelation':
+          promoted = this.setIntersectionField(dossier, 'interestRelation', item.value);
+          break;
+      }
+
+      if (!promoted) keep.push(item);
+    }
+
+    profile.pendingItems = keep;
   }
 
   private extractNamedKinshipMentions(rawInput: string): Array<{ kinship: string; name: string }> {
@@ -745,15 +840,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.markDirty(true);
   }
 
-  private _lastEntityHash: string | null = null;
-
   async integrateFromEntity(entities: EntityGene[], rawInput: string, selfName?: string): Promise<InferenceResult> {
-    // P1: entity_genes 无变化时跳过
-    const _hash = entities.map(e => e.name + e.type).sort().join('|');
-    if (_hash === this._lastEntityHash) {
-      return { nodes_created: 0, edges_created: 0, details: ['skip: no change'] };
-    }
-    this._lastEntityHash = _hash;
     const details: string[] = [];
     let nodesCreated = 0;
     let edgesCreated = 0;
@@ -792,7 +879,7 @@ export class FamilyGraph implements FamilyGraphInterface {
         const relation = KINSHIP_MAP[kinshipWord];
         const isSenior = SENIOR_KINSHIP.has(kinshipWord);
         const canonicalName = namedKinship.get(kinshipWord) || person.name;
-        const aliasCandidates = canonicalName === person.name ? [] : [person.name, kinshipWord];
+        const aliasCandidates = canonicalName === person.name ? [] : [...new Set([person.name, kinshipWord].filter(Boolean))];
         const relationLabel = SPECIFIC_KINSHIP_LABEL[kinshipWord] || this.describeRelation(relation);
 
         // 创建或查找该人名的节点
@@ -820,6 +907,7 @@ export class FamilyGraph implements FamilyGraphInterface {
           }
           await this.updatePersonProfile(canonicalName, { relation_to_user: relationLabel } as any);
         }
+        await this.extractProfileFromText(canonicalName, rawInput);
 
         // 长辈称谓反转方向：用户说"我妈妈"→ 妈妈--[mother_of]-->我 + 我--[child_of]-->妈妈
         // 而非 我--[mother_of]-->妈妈（那意味着我是妈妈的妈）
@@ -881,7 +969,9 @@ export class FamilyGraph implements FamilyGraphInterface {
           await this.updatePersonProfile(person.name, {} as any);
         } else {
           _pid = _ex[0].id;
+          await this.updatePersonProfile(person.name, {} as any);
         }
+        await this.extractProfileFromText(person.name, rawInput);
         const _ee = this.query('SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?', [userId, _pid, 'acquaintance_of']);
         if (_ee.length === 0) {
           await this.addEdge({ id: uid(), source_id: userId, target_id: _pid, relation: 'acquaintance_of' });
@@ -1326,7 +1416,7 @@ export class FamilyGraph implements FamilyGraphInterface {
         members.push({
           name: node.name,
           relation_to_user: profile?.relation_to_user || this.describeRelation(familyEdge.relation),
-          aliases: JSON.parse(node.aliases ?? '[]'),
+          aliases: parseAliases(node.aliases),
         });
       }
       if (node.type === 'place') {
@@ -1519,6 +1609,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (!merged.dossier) {
       merged.dossier = this.buildDossierFromFlat(merged, existing as any);
     }
+    this.promotePendingItems(merged);
     // 如有新的 flat 字段更新，同步到 dossier
     if (updates.appearance && merged.dossier.imageTraits) {
       merged.dossier.imageTraits.looks = merged.dossier.imageTraits.looks || updates.appearance;
@@ -1729,16 +1820,20 @@ export class FamilyGraph implements FamilyGraphInterface {
    * v1.1: 添加待确认条目（30 天 TTL）
    */
   async addPendingItem(personName: string, field: string, value: string, source: string): Promise<void> {
-    const props = this.query('SELECT properties FROM nodes WHERE name = ? AND type = ?', [personName, 'person']);
-    if (props.length === 0) return;
-    const parsed = props[0].properties ? JSON.parse(props[0].properties) : {};
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return;
+    const parsed = node.properties ? JSON.parse(node.properties) : {};
     const pending: PendingItem = {
       field, value, source: source.substring(0, 80),
-      timestamp: new Date().toISOString(), confirmed: false,
+      timestamp: new Date().toISOString(), confirmed: false, occurrences: 1,
     };
     parsed.pendingItems = this.dedupePendingItems([...(parsed.pendingItems || []), pending]);
-    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE name = ? AND type = ?',
-      [JSON.stringify(parsed), new Date().toISOString(), personName, 'person']);
+    this.promotePendingItems(parsed);
+    if (parsed.dossier) {
+      parsed.completeness = this.calcProfileCompleteness(parsed as PersonProfile);
+    }
+    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
+      [JSON.stringify(parsed), new Date().toISOString(), node.id]);
     this.markDirty();
   }
 
@@ -2687,7 +2782,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       id: row.nid ?? row.id,
       type: row.ntype ?? row.type,
       name: row.nname ?? row.name,
-      aliases: row.aliases ? JSON.parse(row.aliases) : undefined,
+      aliases: row.aliases ? parseAliases(row.aliases) : undefined,
       properties: row.properties ? JSON.parse(row.properties) : undefined,
     };
   }
