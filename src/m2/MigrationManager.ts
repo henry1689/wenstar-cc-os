@@ -52,6 +52,42 @@ const MIGRATIONS: Migration[] = [
       try { db.run("CREATE INDEX IF NOT EXISTS idx_black_diamond_dna_root_id ON black_diamond(dna_root_id)"); } catch {}
     },
   },
+  // v3: 时空环境规则引擎 — 时序事件 + 气象数据
+  {
+    version: 3,
+    description: '新增 temporal_events / ambient_weather_context 表',
+    apply: (db: any) => {
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS temporal_events (
+          event_id TEXT PRIMARY KEY, belong_entity_id TEXT NOT NULL,
+          event_type TEXT NOT NULL, parent_event_id TEXT DEFAULT NULL,
+          event_raw_text TEXT NOT NULL, start_ts INTEGER NOT NULL,
+          end_ts INTEGER DEFAULT NULL, cycle_ms INTEGER DEFAULT 0,
+          max_nest_level TINYINT DEFAULT 3, is_cyclic BOOLEAN DEFAULT 0,
+          source_mode TEXT DEFAULT 'chat_llm', source_url TEXT DEFAULT NULL,
+          dna_root_id TEXT NOT NULL, status TEXT DEFAULT 'running',
+          create_at INTEGER NOT NULL
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_temporal_events_entity_status ON temporal_events(belong_entity_id, status)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_temporal_events_end_ts ON temporal_events(end_ts)");
+      } catch (e) { console.warn('[Migration] temporal_events 表创建失败:', e); }
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS ambient_weather_context (
+          weather_id TEXT PRIMARY KEY, belong_area TEXT NOT NULL,
+          weather_type TEXT NOT NULL, temperature_low INTEGER,
+          temperature_high INTEGER, weather_desc TEXT,
+          alert_info TEXT DEFAULT NULL, minute_precip TEXT DEFAULT NULL,
+          start_ts INTEGER NOT NULL, end_ts INTEGER DEFAULT NULL,
+          source_mode TEXT DEFAULT 'qweather_api',
+          source_url TEXT DEFAULT NULL, api_last_update_ts INTEGER DEFAULT 0,
+          dna_root_id TEXT NOT NULL, status TEXT DEFAULT 'effective',
+          create_at INTEGER NOT NULL
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_ambient_weather_time ON ambient_weather_context(start_ts, end_ts)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_ambient_weather_source ON ambient_weather_context(source_mode)");
+      } catch (e) { console.warn('[Migration] ambient_weather_context 表创建失败:', e); }
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════

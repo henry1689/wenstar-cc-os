@@ -132,23 +132,13 @@ function buildLayer1(roleplay: string, profile: PersonStructProfile | null): Lay
     if (profile?.occupation) facts.push('是' + profile?.occupation);
     lines.push(facts.join('，') + '。');
     if ((profile?.traits?.length ?? 0) > 0) lines.push('我的性格：' + profile.traits!.join('、') + '。');
-    // 🔴 安全过滤：禁止色情/NSFW内容进入提示词污染LLM判断
-    const _safeAppearance = profile?.appearance ? filterNsfw(profile.appearance) : '';
-    if (_safeAppearance) lines.push('我的外貌：' + _safeAppearance + '。');
+    if (profile?.appearance) lines.push('我的外貌：' + profile?.appearance + '。');
     if (profile?.birth) lines.push('我的生日：' + profile?.birth + '。');
-    const _safeDesc = profile?.description ? filterNsfw(profile.description) : '';
-    if (_safeDesc) lines.push('其他人对我的描述：' + _safeDesc + '。');
+    if (profile?.description) lines.push('其他人对我的描述：' + profile?.description + '。');
   } else {
     lines.push('我叫' + roleplay + '。');
   }
   return { roleplay, profile, knownFields, identityText: lines.join('\n') };
-}
-
-/** 🔴 过滤NSFW内容，防止色情信息通过profile字段进入LLM提示词 */
-function filterNsfw(text: string): string {
-  const nsfwPatterns = /开苞|喂饱|[插肏操](?![队手])|小姨子|性[感交爱欲|高潮|骚[货逼]|浪[货逼叫教着]|敏感[点带]|呻吟|叫床|肉棒|肉穴|淫[荡水语乱]|阴[蒂道唇核茎]/;
-  if (nsfwPatterns.test(text)) return '';
-  return text;
 }
 
 // ─── Layer2: 第一人称关系（含拓扑链路） ───

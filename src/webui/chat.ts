@@ -540,7 +540,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               if (_body) _updates.body_features = _body;
               if (_desc) _updates.description = _desc;
               if (Object.keys(_updates).length > 0) {
-                _fgX.updatePersonProfile(_n, _updates as any);
+                // 📜 写操作用真实FG（绕过角色扮演分支），读操作用_fgX保留角色视角
+                const _realFg = ctx.m4?.getRealFamilyGraph?.() || _fgX;
+                _realFg.updatePersonProfile(_n, _updates as any);
                 console.log('[PersonProfile] 已更新 ' + _n + ' 的档案');
               }
               // P1-2: 外貌特征提取为附属实体（支持反向检索）
@@ -653,7 +655,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             }
 
             if (Object.keys(updates).length > 0) {
-              graph.updatePersonProfile(p.name, updates as any);
+              const _realFg = ctx.m4?.getRealFamilyGraph?.() || graph;
+              _realFg.updatePersonProfile(p.name, updates as any);
               console.log('[Profile] 更新画像:', p.name, Object.keys(updates).join(','));
             }
           }
@@ -1718,14 +1721,12 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
 	  enrichedWithGuard = enrichedWithGuard.filter(function(t: any) {
 	    if (t.role !== 'assistant') return true;
 	    const _c = t.content || '';
-	    // 📜 更广泛的角色扮演回复检测（覆盖诗韵/诗雨/梓铭等所有角色风格）
-    const _hasRPIntro = /^（[^）]*）/.test(_c.trim());  // 角色扮演的（）场景描写开头
-    const _isRPVoice = /（[^）]*水珠|浴缸|锁骨|趴在|发梢|睫毛|水汽|软软|歪了歪头|眨巴|拨弄/.test(_c) ||  // 诗韵风格
-      /叫你.*爸爸|叫你.*叔叔|回来[了]?[吧吗]?[。！]|给你做[了]?|给你买[了]?/.test(_c);
-    const _rpPattern = _hasRPIntro || _isRPVoice ||
-      /^(（[^）]*）)*[叔爸梓铭姨婶舅哥姐妹妹弟]/.test(_c) ||
-      (_c.includes('爸爸') && _c.includes('你回来')) ||
-      (_c.includes('叔叔') && !_c.includes('叔叔说'));
+		    // 📜 角色扮演回复检测 — 过滤退出后残留的扮演风格回复
+		    const _rpPattern =
+		      /^(（[^）]*）)*[叔爸梓铭姨婶舅姐妹妹弟]/.test(_c) ||
+		      (_c.includes('爸爸') && _c.includes('你回来')) ||
+		      (_c.includes('叔叔') && !_c.includes('叔叔说')) ||
+		      /叫你.*爸爸|叫你.*叔叔|回来[了]?[吧吗]?[。！]|给你做[了]?|给你买[了]?/.test(_c);
 	    if (_rpPattern) {
 	      console.log('[Roleplay] 🗑️ 过滤角色扮演回复');
 	      return false;

@@ -225,6 +225,16 @@ export class FamilyGraphRoleBranch {
     return null;
   }
 
+  /** 📜 转发到主FG（供chat.ts FG兜底匹配使用） */
+  getAllPersonNames(): string[] {
+    try { return ((this.fg as any).getAllPersonNames?.() || []); } catch { return []; }
+  }
+
+  /** 📜 转发到主FG（供entity extraction写入） */
+  updatePersonProfile(name: string, updates: any): void {
+    try { (this.fg as any).updatePersonProfile?.(name, updates); } catch { /* 不阻塞 */ }
+  }
+
   /**
    * 获取某人从角色视角看的关系描述
    * 例如「熊梓铭」视角看「熊勇」→ "爸爸"
@@ -337,6 +347,10 @@ export class FamilyGraphRoleBranch {
         nodesCreated++;
         details.push(`新建分支节点: ${name}`);
         console.log(`[FGRoleBranch] 新建角色「${this.rootName}」的新关系人「${name}」`);
+        // 写透到主FG（确保新人物持久化到数据库，退出角色后不丢失）
+        try {
+          (this.fg as any).integrateSocialRelation(name, 'acquaintance_of', rawInput);
+        } catch (_e) { /* 不阻塞 */ }
       }
     }
 

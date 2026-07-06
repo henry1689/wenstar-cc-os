@@ -20,6 +20,16 @@ export { TemporalContextAggregator } from './TemporalContextAggregator.js';
 export { TemporalGovernor } from './TemporalGovernor.js';
 export type { TemporalContextOutput } from './TemporalGovernor.js';
 
+// ── 时空规则引擎（v3） ──
+export { NLPEventExtractor } from './NLPEventExtractor.js';
+export type { ExtractedEvent } from './NLPEventExtractor.js';
+export { TemporalEventArchive } from './TemporalEventArchive.js';
+export type { TemporalEvent } from './TemporalEventArchive.js';
+export { EventTimerScheduler } from './EventTimerScheduler.js';
+export { AmbientWeatherContext } from './AmbientWeatherContext.js';
+export { snapshotTemporalEvents, recordEventViolation } from './temporal_event_hook.js';
+export { snapshotWeatherStatus, recordWeatherApiError } from './ambient_weather_hook.js';
+
 // ── 配置 ──
 export * from './TemporalConfig.js';
 
