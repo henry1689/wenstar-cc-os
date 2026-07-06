@@ -326,6 +326,8 @@ const REVERSE_RELATION: Record<string, string> = {
   close_to: 'close_to',
 };
 
+const KINSHIP_TERMS = Object.keys(KINSHIP_MAP).sort((a, b) => b.length - a.length);
+
 // ─── v2.0 商业组织关系映射（人物↔组织、组织↔组织） ───
 const ORG_MAP: Record<string, string> = {
   '公司': 'org_of', '企业': 'org_of', '工厂': 'org_of',
@@ -352,6 +354,24 @@ function uid(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).substring(2, 8);
   return `${ts}-${rand}`;
+}
+
+function parseAliases(raw: unknown): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string' && item.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isLikelyPlaceName(value: string): boolean {
+  return /^(北京|上海|深圳|广州|杭州|苏州|成都|武汉|南京|天津|重庆|西安|长沙|青岛|厦门|宁波|无锡|佛山|东莞|珠海|绍兴|福州|合肥|昆明|郑州|济南|沈阳|大连|南昌|嘉兴|常州)$/.test(value);
+}
+
+function isInvalidProfileSnippet(value: string): boolean {
+  return /^(叫|什么|哪|哪里|哪儿|谁)/.test(value) || /什么|哪上班|哪里上班|是谁/.test(value);
 }
 
 /**
@@ -576,6 +596,111 @@ export class FamilyGraph implements FamilyGraphInterface {
     return null;
   }
 
+  private findPersonNodeByNameOrAlias(name: string): any | null {
+    const exact = this.query('SELECT id, name, aliases, properties FROM nodes WHERE name = ? AND type = ?', [name, 'person']);
+    if (exact.length > 0) return exact[0];
+    const aliasHit = this.query('SELECT id, name, aliases, properties FROM nodes WHERE type = ? AND aliases LIKE ?', ['person', `%"${name}"%`]);
+    return aliasHit.length > 0 ? aliasHit[0] : null;
+  }
+
+  private async ensurePersonAliases(nodeId: string, aliases: string[]): Promise<void> {
+    if (aliases.length === 0) return;
+    const rows = this.query('SELECT aliases FROM nodes WHERE id = ?', [nodeId]);
+    if (rows.length === 0) return;
+    const existing = new Set(parseAliases(rows[0].aliases));
+    let changed = false;
+    for (const alias of aliases) {
+      const normalized = alias.trim();
+      if (!normalized || existing.has(normalized)) continue;
+      existing.add(normalized);
+      changed = true;
+    }
+    if (!changed) return;
+    this.run('UPDATE nodes SET aliases = ?, updated_at = ? WHERE id = ?', [
+      JSON.stringify([...existing]),
+      new Date().toISOString(),
+      nodeId,
+    ]);
+    this.markDirty(true);
+  }
+
+  private extractNamedKinshipMentions(rawInput: string): Array<{ kinship: string; name: string }> {
+    const mentions: Array<{ kinship: string; name: string }> = [];
+    for (const kinship of KINSHIP_TERMS) {
+      const match = rawInput.match(new RegExp(`我${kinship}叫([^，。！？\\s]{2,12})`));
+      const candidate = match?.[1]?.trim();
+      if (!candidate) continue;
+      if (!validatePersonName(candidate)) continue;
+      mentions.push({ kinship, name: candidate });
+    }
+    return mentions;
+  }
+
+  private mergePersonProfiles(targetName: string, targetRaw: any, sourceName: string, sourceRaw: any): Partial<PersonProfile> {
+    const targetProfile: Partial<PersonProfile> = targetRaw?.properties ? JSON.parse(targetRaw.properties) : {};
+    const sourceProfile: Partial<PersonProfile> = sourceRaw?.properties ? JSON.parse(sourceRaw.properties) : {};
+    const merged: Partial<PersonProfile> = { ...sourceProfile, ...targetProfile };
+
+    merged.name = targetName;
+    merged.relation_to_user = targetProfile.relation_to_user || sourceProfile.relation_to_user || '';
+    merged.first_mentioned = targetProfile.first_mentioned || sourceProfile.first_mentioned;
+    merged.last_mentioned = targetProfile.last_mentioned || sourceProfile.last_mentioned || new Date().toISOString();
+    merged.mention_count = (targetProfile.mention_count || 0) + (sourceProfile.mention_count || 0);
+    if (merged.dossier?.relationMap) {
+      merged.dossier.relationMap.relationToUser = merged.relation_to_user || merged.dossier.relationMap.relationToUser || '';
+    }
+    return merged;
+  }
+
+  private async mergePersonNodes(targetName: string, sourceName: string, extraAliases: string[] = []): Promise<void> {
+    if (targetName === sourceName) return;
+    const targetNode = this.findPersonNodeByNameOrAlias(targetName);
+    const sourceNode = this.findPersonNodeByNameOrAlias(sourceName);
+    if (!targetNode || !sourceNode || targetNode.id === sourceNode.id) {
+      if (targetNode) await this.ensurePersonAliases(targetNode.id, [sourceName, ...extraAliases].filter((alias) => alias !== targetName));
+      return;
+    }
+
+    const targetAliases = parseAliases(targetNode.aliases);
+    const sourceAliases = parseAliases(sourceNode.aliases);
+    await this.ensurePersonAliases(targetNode.id, [sourceName, ...sourceAliases, ...targetAliases, ...extraAliases].filter((alias) => alias !== targetName));
+
+    const mergedProfile = this.mergePersonProfiles(targetName, targetNode, sourceName, sourceNode);
+    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?', [
+      JSON.stringify(mergedProfile),
+      new Date().toISOString(),
+      targetNode.id,
+    ]);
+
+    const sourceEdges = this.query('SELECT id, source_id, target_id, relation, properties FROM edges WHERE source_id = ? OR target_id = ?', [sourceNode.id, sourceNode.id]);
+    for (const edge of sourceEdges) {
+      const newSource = edge.source_id === sourceNode.id ? targetNode.id : edge.source_id;
+      const newTarget = edge.target_id === sourceNode.id ? targetNode.id : edge.target_id;
+      if (newSource === newTarget) {
+        this.run('DELETE FROM edges WHERE id = ?', [edge.id]);
+        continue;
+      }
+      const duplicate = this.query(
+        'SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ? AND id != ?',
+        [newSource, newTarget, edge.relation, edge.id]
+      );
+      if (duplicate.length > 0) {
+        this.run('DELETE FROM edges WHERE id = ?', [edge.id]);
+      } else {
+        this.run('UPDATE edges SET source_id = ?, target_id = ?, updated_at = ? WHERE id = ?', [
+          newSource,
+          newTarget,
+          new Date().toISOString(),
+          edge.id,
+        ]);
+      }
+    }
+
+    this.run('DELETE FROM nodes WHERE id = ?', [sourceNode.id]);
+    if (this.userNodeId === sourceNode.id) this.userNodeId = targetNode.id;
+    this.markDirty(true);
+  }
+
   private _lastEntityHash: string | null = null;
 
   async integrateFromEntity(entities: EntityGene[], rawInput: string, selfName?: string): Promise<InferenceResult> {
@@ -611,6 +736,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     // 扫描 entity_genes，检测亲属称谓 + 人名的组合
     const persons = entities.filter((e) => e.type === 'person');
     const places = entities.filter((e) => e.type === 'place');
+    const namedKinship = new Map(this.extractNamedKinshipMentions(rawInput).map((item) => [item.kinship, item.name]));
 
     // 🔴 长辈称谓列表（说话者是晚辈，关系方向需反转）
     const SENIOR_KINSHIP = new Set(['妈妈','妈','母亲','爸爸','爸','父亲','爷爷','奶奶','外公','外婆','祖父','祖母']);
@@ -621,23 +747,33 @@ export class FamilyGraph implements FamilyGraphInterface {
       if (kinshipWord) {
         const relation = KINSHIP_MAP[kinshipWord];
         const isSenior = SENIOR_KINSHIP.has(kinshipWord);
+        const canonicalName = namedKinship.get(kinshipWord) || person.name;
+        const aliasCandidates = canonicalName === person.name ? [] : [person.name, kinshipWord];
 
         // 创建或查找该人名的节点
-        const existing = this.query('SELECT id FROM nodes WHERE name = ?', [person.name]);
+        const existing = this.findPersonNodeByNameOrAlias(canonicalName);
         let personId: string;
-        if (existing.length === 0) {
+        if (!existing) {
           personId = uid();
           await this.addNode({
             id: personId,
             type: 'person',
-            name: person.name,
+            name: canonicalName,
+            aliases: aliasCandidates,
           });
           nodesCreated++;
-          details.push(`创建节点: ${person.name} (${kinshipWord})`);
+          details.push(`创建节点: ${canonicalName} (${kinshipWord})`);
           // P1: 自动创建人物画像
-          await this.updatePersonProfile(person.name, { relation_to_user: this.describeRelation(relation) } as any);
+          await this.updatePersonProfile(canonicalName, { relation_to_user: this.describeRelation(relation) } as any);
         } else {
-          personId = existing[0].id;
+          personId = existing.id;
+          await this.ensurePersonAliases(personId, aliasCandidates);
+          if (canonicalName !== person.name) {
+            await this.mergePersonNodes(canonicalName, person.name, [kinshipWord]);
+            const merged = this.findPersonNodeByNameOrAlias(canonicalName);
+            if (merged?.id) personId = merged.id;
+          }
+          await this.updatePersonProfile(canonicalName, { relation_to_user: this.describeRelation(relation) } as any);
         }
 
         // 长辈称谓反转方向：用户说"我妈妈"→ 妈妈--[mother_of]-->我 + 我--[child_of]-->妈妈
@@ -658,8 +794,8 @@ export class FamilyGraph implements FamilyGraphInterface {
             relation,
           });
           edgesCreated++;
-          const fromName = isSenior ? person.name : userName;
-          const toName = isSenior ? userName : person.name;
+          const fromName = isSenior ? canonicalName : userName;
+          const toName = isSenior ? userName : canonicalName;
           details.push(`创建边: ${fromName} --${relation}--> ${toName}`);
 
           // 自动创建反向边
@@ -678,14 +814,14 @@ export class FamilyGraph implements FamilyGraphInterface {
                 relation: reverseRel,
               });
               edgesCreated++;
-              const revFrom = isSenior ? userName : person.name;
-              const revTo = isSenior ? person.name : userName;
+              const revFrom = isSenior ? userName : canonicalName;
+              const revTo = isSenior ? canonicalName : userName;
               details.push(`创建反向边: ${revFrom} --${reverseRel}--> ${revTo}`);
             }
           }
         } else {
-          const existFrom = isSenior ? person.name : userName;
-          const existTo = isSenior ? userName : person.name;
+          const existFrom = isSenior ? canonicalName : userName;
+          const existTo = isSenior ? userName : canonicalName;
           details.push(`边已存在: ${existFrom} --${relation}--> ${existTo}`);
         }
       } else {
@@ -1203,6 +1339,8 @@ export class FamilyGraph implements FamilyGraphInterface {
   /** 标记脏数据（500ms聚合落盘，平衡IO与可靠性） */
   private markDirty(immediate = false): void {
     this._dirty = true;
+    this._familyCache = null;
+    this._socialCache = null;
     if (immediate) { this.flush(); return; }
     if (!this._saveTimer) {
       this._saveTimer = setTimeout(() => this.flush(), 500);
@@ -1237,12 +1375,11 @@ export class FamilyGraph implements FamilyGraphInterface {
    * 获取人物画像
    */
   getPersonProfile(personName: string): PersonProfile | null {
-    const nodes = this.query('SELECT id, properties, aliases FROM nodes WHERE name = ? AND type = ?', [personName, 'person']);
-    if (nodes.length === 0) return null;
-    const node = nodes[0];
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return null;
     const props: Partial<PersonProfile> = node.properties ? JSON.parse(node.properties) : {};
     const result = {
-      name: personName,
+      name: node.name,
       relation_to_user: '',
       last_mentioned: '',
       mention_count: 0,
@@ -1250,9 +1387,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     } as PersonProfile;
     // 📜 信息权威铁律 · 等级S: 记录age字段是否有效
     if (result.age !== undefined && result.age !== null) {
-      console.log('[FG:S] getPersonProfile(' + personName + ') age=' + result.age + ' (SOURCE: nodes.properties)');
+      console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=' + result.age + ' (SOURCE: nodes.properties)');
     } else {
-      console.log('[FG:S] getPersonProfile(' + personName + ') age=MISSING');
+      console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=MISSING');
     }
     return result;
   }
@@ -1285,12 +1422,12 @@ export class FamilyGraph implements FamilyGraphInterface {
    * v1.1: 支持 dossier 6 模块结构化更新 + pending 待确认机制
    */
   async updatePersonProfile(personName: string, updates: Partial<PersonProfile>): Promise<void> {
-    const nodes = this.query('SELECT id, properties, aliases FROM nodes WHERE name = ? AND type = ?', [personName, 'person']);
-    if (nodes.length === 0) return;
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return;
 
-    const existing: Partial<PersonProfile> = nodes[0].properties ? JSON.parse(nodes[0].properties) : {};
+    const existing: Partial<PersonProfile> = node.properties ? JSON.parse(node.properties) : {};
     const merged: PersonProfile = {
-      name: personName,
+      name: node.name,
       relation_to_user: existing.relation_to_user || '',
       last_mentioned: new Date().toISOString(),
       mention_count: (existing.mention_count || 0) + 1,
@@ -1298,6 +1435,21 @@ export class FamilyGraph implements FamilyGraphInterface {
       ...updates,
     };
     merged.mention_count = (existing.mention_count || 0) + 1;
+
+    if (merged.appearance && isInvalidProfileSnippet(merged.appearance)) {
+      delete merged.appearance;
+    }
+    if (merged.occupation && (isInvalidProfileSnippet(merged.occupation) || isLikelyPlaceName(merged.occupation))) {
+      delete merged.occupation;
+    }
+    if (merged.pendingItems) {
+      merged.pendingItems = merged.pendingItems.filter((item) => {
+        if (!item?.value) return false;
+        if (item.field === 'appearance' && isInvalidProfileSnippet(item.value)) return false;
+        if (item.field === 'contact.workplace' && isInvalidProfileSnippet(item.value)) return false;
+        return true;
+      });
+    }
 
     // SP2-3: 冲突检测 — 检查关键描述字段矛盾
     const _conflictFields = ['appearance', 'body_features', 'description', 'occupation'];
@@ -1357,7 +1509,7 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     merged.completeness = this.calcProfileCompleteness(merged);
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
-      [JSON.stringify(merged), new Date().toISOString(), nodes[0].id]);
+      [JSON.stringify(merged), new Date().toISOString(), node.id]);
     this.markDirty(true);
   }
 
@@ -1586,8 +1738,8 @@ export class FamilyGraph implements FamilyGraphInterface {
     let extracted = 0;
 
     // 1. 提取职业/身份（高置信度模式：包含"是"的声明句）
-    const occupationMatch = conversationText.match(new RegExp(`${personName}(?:是|做|从事|在.+?担任)([^，。！？]{2,20}(?:工作|一职|岗位|职位|老师|医生|工程师|经理|主管|员)?)`));
-    if (occupationMatch && !profile.occupation) {
+    const occupationMatch = conversationText.match(new RegExp(`${personName}(?:是|做|从事|在.+?担任)([^，。！？]{2,20}(?:工作|一职|岗位|职位|老师|医生|工程师|经理|主管|员))`));
+    if (occupationMatch && !profile.occupation && !isInvalidProfileSnippet(occupationMatch[1])) {
       const occupation = occupationMatch[1].substring(0, 30);
       await this.updatePersonProfile(personName, { occupation } as any);
       extracted++;
@@ -1713,7 +1865,7 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     // 9. 提取工作单位/地点
     const workplaceMatch = conversationText.match(new RegExp(`${personName}.*?(?:在|任职于|工作于|在.*上班)([^，。！？]{2,20})`));
-    if (workplaceMatch) {
+    if (workplaceMatch && !isInvalidProfileSnippet(workplaceMatch[1])) {
       const workplace = workplaceMatch[1].substring(0, 20);
       await this.addPendingItem(personName, 'contact.workplace', workplace, conversationText.substring(0, 80));
       extracted++;

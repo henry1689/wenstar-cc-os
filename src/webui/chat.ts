@@ -718,7 +718,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           // 关系关键词提取
           const relMap: Record<string, string> = { '同事':'同事','同学':'同学','朋友':'朋友','室友':'室友','老板':'老板','上司':'上司','领导':'领导','客户':'客户','合伙人':'合伙人','邻居':'邻居','老师':'老师','医生':'医生','顾问':'顾问','下属':'下属' };
           // 职业关键词提取
-          const occHints = [/做(\S+)的/, /在(\S+)上班/, /在(\S+)工作/, /开(\S+)店/, /干(\S+)的/, /(\S+)工程师/, /(\S+)老师/, /(\S+)医生/];
+          const occHints = [/做([^，。！？\s]{2,12})的/, /开([^，。！？\s]{2,12})店/, /干([^，。！？\s]{2,12})的/, /([^，。！？\s]{2,12}工程师)/, /([^，。！？\s]{2,12}老师)/, /([^，。！？\s]{2,12}医生)/];
           // 特征关键词
           const traitMap: Record<string, string[]> = { '开朗':['开朗','爱笑','大方'],'幽默':['幽默','搞笑','逗'],'热心':['热心','帮忙','帮了'],'温柔':['温柔','体贴','细心'],'能干':['能干','厉害','强'],'靠谱':['靠谱','可靠','放心'],'有趣':['有趣','好玩','有意思'],'老实':['老实','本分','踏实'] };
 
@@ -736,7 +736,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             // 提取职业
             for (const re of occHints) {
               const m = message.match(re);
-              if (m && m[1]) { updates.occupation = m[1]; break; }
+              if (m && m[1] && !/什么|哪|哪里|哪儿/.test(m[1])) { updates.occupation = m[1]; break; }
             }
 
             // 提取特征
