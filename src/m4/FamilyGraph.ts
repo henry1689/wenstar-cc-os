@@ -387,6 +387,10 @@ function isSpecificRelationLabel(value?: string): boolean {
   return !!value && /^(妈妈|爸爸|姐姐|妹妹|哥哥|弟弟|老公|老婆|爷爷|奶奶|外公|外婆|儿子|女儿|孩子|孙子|孙女)$/.test(value);
 }
 
+function normalizePendingKey(field: string, value: string): string {
+  return `${field}::${value.trim().replace(/\s+/g, ' ')}`;
+}
+
 /**
  * FamilyGraph — SQLite 图结构家族知识库
  *
@@ -635,6 +639,29 @@ export class FamilyGraph implements FamilyGraphInterface {
       nodeId,
     ]);
     this.markDirty(true);
+  }
+
+  private dedupePendingItems(items: PendingItem[]): PendingItem[] {
+    const deduped = new Map<string, PendingItem>();
+    for (const item of items) {
+      if (!item?.field || !item?.value) continue;
+      const key = normalizePendingKey(item.field, item.value);
+      const existing = deduped.get(key);
+      if (!existing) {
+        deduped.set(key, item);
+        continue;
+      }
+      const shouldReplace =
+        (!!item.confirmed && !existing.confirmed) ||
+        ((item.timestamp || '') > (existing.timestamp || ''));
+      if (shouldReplace) {
+        deduped.set(key, {
+          ...item,
+          source: item.source || existing.source,
+        });
+      }
+    }
+    return [...deduped.values()].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
   }
 
   private extractNamedKinshipMentions(rawInput: string): Array<{ kinship: string; name: string }> {
@@ -1462,12 +1489,12 @@ export class FamilyGraph implements FamilyGraphInterface {
       delete merged.occupation;
     }
     if (merged.pendingItems) {
-      merged.pendingItems = merged.pendingItems.filter((item) => {
+      merged.pendingItems = this.dedupePendingItems(merged.pendingItems.filter((item) => {
         if (!item?.value) return false;
         if (item.field === 'appearance' && isInvalidProfileSnippet(item.value)) return false;
         if (item.field === 'contact.workplace' && isInvalidProfileSnippet(item.value)) return false;
         return true;
-      });
+      }));
     }
 
     // SP2-3: 冲突检测 — 检查关键描述字段矛盾
@@ -1709,7 +1736,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       field, value, source: source.substring(0, 80),
       timestamp: new Date().toISOString(), confirmed: false,
     };
-    parsed.pendingItems = [...(parsed.pendingItems || []), pending];
+    parsed.pendingItems = this.dedupePendingItems([...(parsed.pendingItems || []), pending]);
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE name = ? AND type = ?',
       [JSON.stringify(parsed), new Date().toISOString(), personName, 'person']);
     this.markDirty();
