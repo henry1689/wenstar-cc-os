@@ -190,7 +190,7 @@ describe('E2E: 完整流水线 M1→M2→M3→M4→M5', () => {
     }
 
     const profile = familyGraph.getPersonProfile('霁月');
-    expect(profile?.mention_count).toBeGreaterThanOrEqual(3);
+    expect(profile?.mention_count).toBe(3);
     expect(profile?.dossier?.contact?.workplace).toBe('深圳上班');
     expect(profile?.pendingItems ?? []).toHaveLength(0);
   });

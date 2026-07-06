@@ -637,7 +637,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               if (Object.keys(_updates).length > 0) {
                 // 📜 写操作用真实FG（绕过角色扮演分支），读操作用_fgX保留角色视角
                 const _realFg = ctx.m4?.getRealFamilyGraph?.() || _fgX;
-                _realFg.updatePersonProfile(_n, _updates as any);
+                _realFg.updatePersonProfile(_n, _updates as any, { countMention: false });
                 console.log('[PersonProfile] 已更新 ' + _n + ' 的档案');
               }
               // P1-2: 外貌特征提取为附属实体（支持反向检索）
@@ -751,7 +751,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
             if (Object.keys(updates).length > 0) {
               const _realFg = ctx.m4?.getRealFamilyGraph?.() || graph;
-              _realFg.updatePersonProfile(p.name, updates as any);
+              _realFg.updatePersonProfile(p.name, updates as any, { countMention: false });
               console.log('[Profile] 更新画像:', p.name, Object.keys(updates).join(','));
             }
           }

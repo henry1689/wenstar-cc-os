@@ -273,6 +273,10 @@ interface PendingItem {
   occurrences?: number;     // 累计被重复观察到的次数
 }
 
+interface UpdatePersonProfileOptions {
+  countMention?: boolean;
+}
+
 // ─── 亲属称谓 → 关系映射（自动推断核心词表）───
 // Ref: M4-design-v1.md §3.5
 const KINSHIP_MAP: Record<string, string> = {
@@ -775,6 +779,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     const targetProfile: Partial<PersonProfile> = targetRaw?.properties ? JSON.parse(targetRaw.properties) : {};
     const sourceProfile: Partial<PersonProfile> = sourceRaw?.properties ? JSON.parse(sourceRaw.properties) : {};
     const merged: Partial<PersonProfile> = { ...sourceProfile, ...targetProfile };
+    const sourceIsKinshipPlaceholder = KINSHIP_TERMS.includes(sourceName) && sourceName !== targetName;
 
     merged.name = targetName;
     merged.relation_to_user = isSpecificRelationLabel(targetProfile.relation_to_user)
@@ -782,9 +787,9 @@ export class FamilyGraph implements FamilyGraphInterface {
       : isSpecificRelationLabel(sourceProfile.relation_to_user)
         ? sourceProfile.relation_to_user
         : targetProfile.relation_to_user || sourceProfile.relation_to_user || '';
-    merged.first_mentioned = targetProfile.first_mentioned || sourceProfile.first_mentioned;
-    merged.last_mentioned = targetProfile.last_mentioned || sourceProfile.last_mentioned || new Date().toISOString();
-    merged.mention_count = (targetProfile.mention_count || 0) + (sourceProfile.mention_count || 0);
+    merged.first_mentioned = targetProfile.first_mentioned || (sourceIsKinshipPlaceholder ? undefined : sourceProfile.first_mentioned);
+    merged.last_mentioned = targetProfile.last_mentioned || (sourceIsKinshipPlaceholder ? undefined : sourceProfile.last_mentioned) || new Date().toISOString();
+    merged.mention_count = (targetProfile.mention_count || 0) + (sourceIsKinshipPlaceholder ? 0 : (sourceProfile.mention_count || 0));
     if (merged.dossier?.relationMap) {
       merged.dossier.relationMap.relationToUser = merged.relation_to_user || merged.dossier.relationMap.relationToUser || '';
     }
@@ -895,8 +900,6 @@ export class FamilyGraph implements FamilyGraphInterface {
           });
           nodesCreated++;
           details.push(`创建节点: ${canonicalName} (${kinshipWord})`);
-          // P1: 自动创建人物画像
-          await this.updatePersonProfile(canonicalName, { relation_to_user: relationLabel } as any);
         } else {
           personId = existing.id;
           await this.ensurePersonAliases(personId, aliasCandidates);
@@ -905,8 +908,9 @@ export class FamilyGraph implements FamilyGraphInterface {
             const merged = this.findPersonNodeByNameOrAlias(canonicalName);
             if (merged?.id) personId = merged.id;
           }
-          await this.updatePersonProfile(canonicalName, { relation_to_user: relationLabel } as any);
         }
+        await this.updatePersonProfile(canonicalName, {} as any, { countMention: true });
+        await this.updatePersonProfile(canonicalName, { relation_to_user: relationLabel } as any, { countMention: false });
         await this.extractProfileFromText(canonicalName, rawInput);
 
         // 长辈称谓反转方向：用户说"我妈妈"→ 妈妈--[mother_of]-->我 + 我--[child_of]-->妈妈
@@ -966,11 +970,10 @@ export class FamilyGraph implements FamilyGraphInterface {
           await this.addNode({ id: _pid, type: 'person', name: person.name });
           nodesCreated++;
           details.push('创建社交节点: ' + person.name);
-          await this.updatePersonProfile(person.name, {} as any);
         } else {
           _pid = _ex[0].id;
-          await this.updatePersonProfile(person.name, {} as any);
         }
+        await this.updatePersonProfile(person.name, {} as any, { countMention: true });
         await this.extractProfileFromText(person.name, rawInput);
         const _ee = this.query('SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?', [userId, _pid, 'acquaintance_of']);
         if (_ee.length === 0) {
@@ -1130,11 +1133,10 @@ export class FamilyGraph implements FamilyGraphInterface {
       await this.addNode({ id: personId, type: 'person', name: personName });
       nodesCreated++;
       details.push(`创建社交节点: ${personName}`);
-      // P1: 自动创建人物画像
-      await this.updatePersonProfile(personName, {} as any);
     } else {
       personId = existing[0].id;
     }
+    await this.updatePersonProfile(personName, {} as any, { countMention: true });
 
     // 🔴 家族边拦截：如果此人已有家族关系边，跳过社交边（防止"老公"同时有 spouse_of 和 acquaintance_of）
     if (relationType === 'acquaintance_of') {
@@ -1557,20 +1559,24 @@ export class FamilyGraph implements FamilyGraphInterface {
    * SP2-3: 新增冲突检测 — 检测到关键字段矛盾时保留双版本+标记冲突
    * v1.1: 支持 dossier 6 模块结构化更新 + pending 待确认机制
    */
-  async updatePersonProfile(personName: string, updates: Partial<PersonProfile>): Promise<void> {
+  async updatePersonProfile(personName: string, updates: Partial<PersonProfile>, options?: UpdatePersonProfileOptions): Promise<void> {
     const node = this.findPersonNodeByNameOrAlias(personName);
     if (!node) return;
 
     const existing: Partial<PersonProfile> = node.properties ? JSON.parse(node.properties) : {};
+    const shouldCountMention = options?.countMention ?? !Object.prototype.hasOwnProperty.call(updates, 'mention_count');
+    const nextMentionCount = typeof updates.mention_count === 'number'
+      ? updates.mention_count
+      : (existing.mention_count || 0) + (shouldCountMention ? 1 : 0);
     const merged: PersonProfile = {
       name: node.name,
       relation_to_user: existing.relation_to_user || '',
       last_mentioned: new Date().toISOString(),
-      mention_count: (existing.mention_count || 0) + 1,
+      mention_count: nextMentionCount,
       ...existing,
       ...updates,
     };
-    merged.mention_count = (existing.mention_count || 0) + 1;
+    merged.mention_count = nextMentionCount;
 
     if (merged.appearance && isInvalidProfileSnippet(merged.appearance)) {
       delete merged.appearance;
@@ -1882,7 +1888,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     const occupationMatch = conversationText.match(new RegExp(`${personName}(?:是|做|从事|在.+?担任)([^，。！？]{2,20}(?:工作|一职|岗位|职位|老师|医生|工程师|经理|主管|员))`));
     if (occupationMatch && !profile.occupation && !isInvalidProfileSnippet(occupationMatch[1])) {
       const occupation = occupationMatch[1].substring(0, 30);
-      await this.updatePersonProfile(personName, { occupation } as any);
+      await this.updatePersonProfile(personName, { occupation } as any, { countMention: false });
       extracted++;
     }
 
@@ -1917,7 +1923,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
     if (newTraits.length > 0) {
       const merged = [...(profile.traits || []), ...newTraits];
-      await this.updatePersonProfile(personName, { traits: merged } as any);
+      await this.updatePersonProfile(personName, { traits: merged } as any, { countMention: false });
       extracted += newTraits.length;
     }
 
@@ -1926,7 +1932,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (relationNoteMatch && relationNoteMatch[1]) {
       const note = relationNoteMatch[1].substring(0, 30);
       if (!profile.relation_to_user) {
-        await this.updatePersonProfile(personName, { relation_to_user: note } as any);
+        await this.updatePersonProfile(personName, { relation_to_user: note } as any, { countMention: false });
         extracted++;
       } else if (profile.relation_to_user !== note) {
         await this.addPendingItem(personName, 'relationMap.relationToUser', note, conversationText.substring(0, 80));
@@ -1947,7 +1953,7 @@ export class FamilyGraph implements FamilyGraphInterface {
           const interest = detailMatch[1].substring(0, 15);
           if (!(profile.interests || []).includes(interest) && interest.length >= 2) {
             const merged = [...(profile.interests || []), interest];
-            await this.updatePersonProfile(personName, { interests: merged } as any);
+            await this.updatePersonProfile(personName, { interests: merged } as any, { countMention: false });
             extracted++;
           }
         }
@@ -1959,7 +1965,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (appearanceMatch && appearanceMatch[1].length >= 3) {
       const desc = appearanceMatch[1].substring(0, 40);
       if (!profile.appearance && !profile.dossier?.imageTraits?.looks) {
-        await this.updatePersonProfile(personName, { appearance: desc } as any);
+        await this.updatePersonProfile(personName, { appearance: desc } as any, { countMention: false });
         extracted++;
       } else if (profile.appearance && profile.appearance !== desc) {
         await this.addPendingItem(personName, 'appearance', desc, conversationText.substring(0, 80));
@@ -1976,7 +1982,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       if (profile.dossier?.contact?.phone !== phone) {
         const dossier = this.getFullProfile(personName) || this.buildDossierFromFlat(profile, {});
         dossier.contact.phone = phone;
-        await this.updatePersonProfile(personName, {} as any);
+        await this.updatePersonProfile(personName, {} as any, { countMention: false });
         extracted++;
       }
     }

@@ -108,7 +108,7 @@ describe('FamilyGraph — 自动推断', () => {
     const profile = graph.getPersonProfile('霁月');
     const summary = await graph.getFamilySummary();
     const member = summary.members.find((item) => item.name === '霁月');
-    expect(profile?.mention_count).toBeGreaterThanOrEqual(3);
+    expect(profile?.mention_count).toBe(3);
     expect(profile?.dossier?.contact?.workplace).toBe('深圳上班');
     expect(profile?.pendingItems ?? []).toHaveLength(0);
     expect(member?.aliases ?? []).toEqual(['姐姐']);
@@ -123,5 +123,27 @@ describe('FamilyGraph — 自动推断', () => {
     const summary = await graph.getFamilySummary();
     const member = summary.members.find((item) => item.name === '阿宁');
     expect(member?.aliases ?? []).toEqual(['姐姐']);
+  });
+
+  it('泛称占位节点合并实名人物时不应继承旧 mention_count', async () => {
+    await graph.addNode({
+      id: 'placeholder',
+      type: 'person',
+      name: '姐姐',
+      properties: {
+        name: '姐姐',
+        relation_to_user: '姐姐',
+        last_mentioned: '2026-07-01T00:00:00.000Z',
+        mention_count: 4,
+      } as any,
+    });
+
+    await graph.integrateFromEntity(
+      [{ name: '姐姐', type: 'person', allele: '姐姐', phenotype: 'neutral', knowledge_type: 'family' }],
+      '我姐姐叫秋宁，她在苏州上班。'
+    );
+
+    const profile = graph.getPersonProfile('秋宁');
+    expect(profile?.mention_count).toBe(1);
   });
 });

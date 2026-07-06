@@ -46,8 +46,7 @@ export async function executePostProcess(input: PostProcessInput): Promise<void>
       for (const pg of personGenes) {
         fg.updatePersonProfile(pg.name, {
           last_mentioned: new Date().toISOString(),
-          mention_count: (fg.getPersonProfile(pg.name)?.mention_count || 0) + 1,
-        } as any);
+        } as any, { countMention: false });
       }
     }
   } catch (err) {
