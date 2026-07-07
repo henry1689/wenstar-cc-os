@@ -43,7 +43,8 @@ import type { SimilarityMode, ScoredMemory } from '../m2/types/index.js';
 
 import type { ConversationTurn } from '../m5/types/index.js';
 
-import type { M3Decision } from '../m3/types/perception.js';
+import type { M3Decision, Perception24D } from '../m3/types/perception.js';
+import type { KnowledgeItem } from '../app/knowledge/types.js';
 
 import type { SelfModelV1 } from '../m1/types/dna.js';
 
@@ -77,6 +78,7 @@ import { classify, type RoleType } from '../app/role/RoleClassifier.js';
 import { evaluateTransition, createInitialState, type TransitionState } from '../app/role/TransitionManager.js';
 import { alignmentGuard } from '../app/alignment/VectorAlignmentGuard.js';
 import { FamilyGraphRoleBranch } from '../app/alignment/FamilyGraphRoleBranch.js';
+import { autoPromoteCandidatesV2 } from '../app/vault/VaultManager.js';
 
 
 // 全局异步任务队列（VAD 谱曲等不阻塞主回复的后台任务）
@@ -400,6 +402,10 @@ function collectFactLookupTerms(message: string): string[] {
   return [...new Set(terms)];
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 
 
 
@@ -613,20 +619,20 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               }
               // P1-4: 冲突检测——新旧描述矛盾时标记
               if (_prof.appearance && _app && _app !== _prof.appearance) {
-                const _oldParts = Array.from(new Set(_prof.appearance.split(/[，,]/).map((s: string) => s.trim()).filter(Boolean))) as string[];
-                const _newParts = _app.split(/[，,]/).map((s: string) => s.trim()).filter(Boolean);
+                const _oldParts: Set<string> = new Set(_prof.appearance.split(/[，,]/).map((s: string) => s.trim()).filter(isNonEmptyString));
+                const _newParts = _app.split(/[，,]/).map((s: string) => s.trim()).filter(isNonEmptyString);
                 for (const _np of _newParts) {
                   // 检测冲突：新描述中说"高"但旧描述说"矮"或反之
-                  if (/高/.test(_np) && _oldParts.some((o: string) => /矮/.test(o))) {
+                  if (/高/.test(_np) && [..._oldParts].some((o: string) => /矮/.test(o))) {
                     console.warn('[PersonProfile] CONFLICT: ' + _n + ' 身高冲突（高 vs 矮）');
                   }
-                  if (/矮/.test(_np) && _oldParts.some((o: string) => /高/.test(o))) {
+                  if (/矮/.test(_np) && [..._oldParts].some((o: string) => /高/.test(o))) {
                     console.warn('[PersonProfile] CONFLICT: ' + _n + ' 身高冲突（矮 vs 高）');
                   }
-                  if (/胖/.test(_np) && _oldParts.some((o: string) => /瘦/.test(o))) {
+                  if (/胖/.test(_np) && [..._oldParts].some((o: string) => /瘦/.test(o))) {
                     console.warn('[PersonProfile] CONFLICT: ' + _n + ' 体型冲突（胖 vs 瘦）');
                   }
-                  if (/瘦/.test(_np) && _oldParts.some((o: string) => /胖/.test(o))) {
+                  if (/瘦/.test(_np) && [..._oldParts].some((o: string) => /胖/.test(o))) {
                     console.warn('[PersonProfile] CONFLICT: ' + _n + ' 体型冲突（瘦 vs 胖）');
                   }
                 }
@@ -829,7 +835,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       isLimitedRetrieval, hasNewEntity, hasPersonEntity,
       emotionalMemories, memoryGate, memoryGateFillerUsed,
     } = await runRetrieval({
-      ctx, message, dna, p: p as unknown as Record<string, number>, enrichedHistory, memoryFragments, _bdVecCache,
+      ctx, message, dna, p, enrichedHistory, memoryFragments, _bdVecCache,
     });
 	    // P0-1: 仿生智脑 + 知识库 + VAD 并行执行（三者均为异步网络调用，互不依赖）
     const _bionicPromise = fetchBionicMemories(message, isTopicShift, hasContinuationMarkers, memoryFragments, enrichedHistory, { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, dna.scene_tags);
@@ -896,7 +902,11 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             const rerankedResults = reranked.map(r => {
               const orig = knResults.find((k: any) => k.id === r.id);
               return orig ? { ...orig, matchScore: r.compositeScore, _semanticScore: r.semanticScore } : orig;
-            }).filter((item): item is typeof knResults[number] & { matchScore: number; _semanticScore: number } => Boolean(item));
+            }).filter((item): item is (KnowledgeItem & {
+              matchScore: number;
+              _semanticScore: number;
+              breakdown: { scene: number; emotion: number; text: number };
+            }) => Boolean(item));
             knResults = rerankedResults;
             console.log('[HybridSearch] 语义重排序完成: ' + rerankedResults.length + ' 条');
           }
@@ -1032,7 +1042,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     
     // P0-2: 缓存当前24D感知到VAD本地池
-    pushToVadCache(p as unknown as Record<string, number>);try {
+    pushToVadCache(p);try {
 
       // ① 获取 VAD 谱曲（当前消息的实时情感分析）
 
@@ -1398,7 +1408,49 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     // 辅助：从家族图谱分支获取被扮演角色的家族树（角色视角）
 
+    // 辅助：从家族图谱分支获取被扮演角色的家族树（角色视角）
+    async function _loadRPFamily(charName: string): Promise<string> {
+      try {
+        if (!_currentRPBranch || _currentRPBranch.rootName !== charName) {
+          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+          const fg = ctx.m4 ? ctx.m4.getFamilyGraph() : null;
+          if (!fg) return '';
+          _currentRPBranch = new FamilyGraphRoleBranch(fg, charName);
+          await _currentRPBranch.initialize();
+          try { ctx.m4?.setFamilyGraphOverride?.(_currentRPBranch); } catch {}
+        }
+        const familyText = _currentRPBranch.getFamilyTreeText();
+        if (familyText) console.log('[Roleplay] FG分支家族树: ' + familyText.length + '字节, ' + _currentRPBranch.size + '人');
+        return familyText ? '\n' + familyText : '';
+      } catch (_) { return ''; }
+    }
+
     // 辅助：搜索知识库获取角色设定资料
+    async function _loadRPKnowledge(charName: string): Promise<string> {
+      try {
+        let kbItems = await ctx.knowledgeBase.search(charName, 3);
+        // 🏗️ P1-3: 知情边界过滤（防止上帝视角信息泄漏）
+        if (kbItems.length > 0 && _currentCharacterClass) {
+          const _filtered = PerspectiveFilter.apply({
+            results: kbItems,
+            roleName: charName,
+            characterClass: _currentCharacterClass,
+            age: null,
+            knownEntities: [charName],
+          });
+          if (_filtered.removedCount > 0) {
+            console.log('[PerspectiveFilter] 知识库过滤: 移除' + _filtered.removedCount + '条 (' + Object.keys(_filtered.reasons).join(',') + ')');
+          }
+          kbItems = _filtered.filtered as KnowledgeItem[];
+        }
+        if (kbItems.length > 0) {
+          const kbData = kbItems.map(function(k: any) { return '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 3000); }).join('\n\n');
+          console.log('[Roleplay] 找到角色资料: ' + kbItems.length + ' 条');
+          return '\n【角色设定详细说明（以下是你必须严格遵循的设定）】\n' + kbData;
+        }
+      } catch (_) {}
+      return '';
+    }
 
     // 辅助：角色扮演透传检索 — 当前消息中提及角色相关的其他人时，顺藤摸瓜查资料
     async function _loadRPRelatedKB(charName: string, msgEntities: string[]): Promise<string> {
@@ -1443,6 +1495,20 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     }
 
     // 🎭 辅助：加载该角色的历史扮演对话（再续前缘）
+    async function _loadRPPastHistory(charName: string): Promise<string> {
+      try {
+        if (!ctx.conversationDB || typeof ctx.conversationDB.searchByRoleplay !== 'function') return '';
+        const pastSessions = ctx.conversationDB.searchByRoleplay(charName, 20);
+        if (!pastSessions || pastSessions.length === 0) return '';
+        const lines: string[] = [];
+        for (const s of pastSessions) {
+          const prefix = s.role === 'user' ? '👤 对方' : '💬 你(' + charName + ')';
+          lines.push(prefix + ': ' + (s.content || '').substring(0, 200));
+        }
+        console.log('[Roleplay] 历史扮演加载: ' + pastSessions.length + ' 条对话');
+        return '\n【' + charName + '的历史记忆 — 以下是你和这个人的过往对话，根据这些继续聊】\n' + lines.join('\n');
+      } catch (_) { return ''; }
+    }
 
     if (rpMatch) {
       const character = rpMatch[1].replace(/[吧呗了试试看看一下玩玩]$/, '').trim();
@@ -1570,6 +1636,101 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           currentRoleplay: _currentRoleplay,
         };
 
+        // 角色前缀丢失时重建（兜底 + 隐式扮演首次构建）
+        if (!knowledgeBaseText || !knowledgeBaseText.startsWith('【角色扮演】')) {
+          // 优先使用缓存的完整画像重建
+          if (_currentPortrait) {
+            knowledgeBaseText = buildRoleplayRules(_currentRoleplay, _currentPortrait);
+            console.log('[Roleplay] 前缀丢失，从缓存画像重建');
+          } else {
+            // 🏗️ Fix-4: 首次隐式扮演的完整加载（含上下文扫描）
+            const [fc, kc, pc] = await Promise.all([
+              _loadRPFamily(_currentRoleplay).catch(function() { return ''; }),
+              _loadRPKnowledge(_currentRoleplay).catch(function() { return ''; }),
+              _loadRPPastHistory(_currentRoleplay).catch(function() { return ''; }),
+            ]);
+            const ce = scanContextForCharacter(_currentRoleplay, ctx.conversationHistory || [], 30);
+            const portrait = assembleCharacterPortrait(_currentRoleplay, {
+              fgContext: fc, kbContext: kc, historyContext: pc, contextExtract: ce,
+            });
+            _currentPortrait = portrait;
+            knowledgeBaseText = buildRoleplayRules(_currentRoleplay, portrait);
+            console.log('[Roleplay] 隐式扮演首轮构建完成: ' + _currentRoleplay);
+          }
+        }
+
+        // 每轮加载历史扮演对话 —— 保持上下文不中断
+        const _rpHistoryAppend = await _loadRPPastHistory(_currentRoleplay).catch(function() { return ''; });
+        if (_rpHistoryAppend && !knowledgeBaseText.includes('【历史扮演】')) {
+          knowledgeBaseText += '\n\n【历史扮演】以下是你和鸿艺之前的对话，记住这些，保持身份和上下文连贯：\n' + _rpHistoryAppend;
+        }
+
+        // 🏗️ P1-4: 主动检索 & 透传 — 每轮检查新人物/事件，从知识库增量补全
+        if (_currentRoleplay) {
+          try {
+            // ① 提取本消息中的人名实体
+            const _rpEntities = dna.entity_genes
+              .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name !== _currentRoleplay)
+              .map((g: any) => g.name);
+
+            // ② FG 亲属解析（只在有 FG 分支时生效）
+            if (_currentRPBranch && /妈妈|妈|爸爸|爸|母亲|父亲|姐姐|妹妹|哥哥|弟弟|老婆|老公/.test(message)) {
+              const _kinship = ['妈妈','妈','爸爸','爸','母亲','父亲','姐姐','妹妹','哥哥','弟弟','老婆','老公'];
+              for (const _kw of _kinship) {
+                if (message.includes(_kw)) {
+                  const _resolved = _currentRPBranch.resolveKinship(_kw);
+                  for (const _rn of _resolved) {
+                    if (!_rpEntities.includes(_rn)) _rpEntities.push(_rn);
+                  }
+                }
+              }
+            }
+
+            // ③ 对每个新实体执行主动检索（FG 透传 + KB 增量 + 防重复）
+            for (const _entity of _rpEntities) {
+              // 跳过已在知识库文本中出现过的实体
+              if (knowledgeBaseText && knowledgeBaseText.includes(_entity)) continue;
+
+              // FG 透传（仅 FG 分支有效时）
+              let _transitive = '';
+              if (_currentRPBranch) {
+                _transitive = await _loadRPRelatedKB(_currentRoleplay, [_entity]);
+              }
+
+              // KB 主动检索（所有角色类型均有效）
+              if (!_transitive && ctx.knowledgeBase) {
+                try {
+                  const _kbHits = await ctx.knowledgeBase.search(_entity, 1);
+                  let _filteredHits = _kbHits;
+                  // 知情边界过滤
+                  if (_kbHits.length > 0 && _currentCharacterClass) {
+                    const _pf = PerspectiveFilter.apply({
+                      results: _kbHits,
+                      roleName: _currentRoleplay,
+                      characterClass: _currentCharacterClass,
+                      age: null,
+                      knownEntities: [_entity, _currentRoleplay],
+                    });
+                    _filteredHits = _pf.filtered as KnowledgeItem[];
+                  }
+                  if (_filteredHits.length > 0) {
+                    const _kbData = _filteredHits.map(function(k: any) {
+                      return '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 1500);
+                    }).join('\n\n');
+                    _transitive = '\n【' + _entity + '的资料】（主动检索）\n' + _kbData;
+                  }
+                } catch (_) {}
+              }
+
+              if (_transitive && knowledgeBaseText && !knowledgeBaseText.includes(_transitive.substring(0, 30))) {
+                knowledgeBaseText += _transitive;
+                console.log('[Roleplay] 主动检索已追加: +' + _transitive.length + '字节 [' + _entity + ']');
+              }
+            }
+          } catch (_) {}
+        }
+
+        _domainCtx.knowledgeBaseText = knowledgeBaseText;
         knowledgeBaseText = await runRoleplayPipeline(_domainCtx, message, dna);
       } catch (_e: any) {
         console.error('[Roleplay] 管线异常，极简兜底:', _e?.message);
@@ -2585,30 +2746,17 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
     }
 
 
-    // 任务3: 黑钻双轨晋升（钙化分≥4.5 OR 召回≥5次）
+    // 任务3: 黑钻晋升统一走 VaultManager 状态机，避免前后端双份规则漂移
     try {
       const _sql = ctx.storage.getSQLite();
       if (_sql && typeof _sql.queryAll === "function") {
-        const _eligible = _sql.queryAll(
-          "SELECT id FROM memories WHERE (calcium_score >= 4.5 OR COALESCE(recall_count, 0) >= 5) AND (promoted_to_diamond IS NULL OR promoted_to_diamond = 0) LIMIT 3"
-        );
-        for (const _row of _eligible) {
-          const _mem = _sql.queryAll("SELECT id, raw_input, primary_emotion, emotion_vector, dna_root_id, calcium_score FROM memories WHERE id = ?", [_row.id]);
-          if (_mem.length > 0) {
-            const _m = _mem[0] as any;
-            const _reason = (_m.calcium_score >= 4.5) ? "原生钙化≥4.5" : "召回≥5次";
-            _sql.writeRaw(
-              "INSERT OR IGNORE INTO black_diamond (id, summary, emotion_tag, emotion_vector, dna_root_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              (_m.dna_root_id || _m.id) + "_BD", (_m.raw_input || "").substring(0, 200), _m.primary_emotion || "强烈",
-              _m.emotion_vector || null, _m.dna_root_id || null, new Date().toISOString(), new Date().toISOString()
-            );
-            _sql.writeRaw("UPDATE memories SET promoted_to_diamond = 1, updated_at = ? WHERE id = ?", [new Date().toISOString(), _m.id]);
-            console.log("[Promotion] 金库→黑钻(双轨): " + (_m.raw_input || "").substring(0, 40) + " (" + _reason + ")");
-          }
+        const _promoted = autoPromoteCandidatesV2(_sql, 3);
+        for (const _entry of _promoted) {
+          console.log("[Promotion] 金库→黑钻(统一状态机): " + (_entry.summary || "").substring(0, 40));
         }
-        if (_eligible.length > 0) console.log("[Promotion] 双轨晋升: " + _eligible.length + " 条");
+        if (_promoted.length > 0) console.log("[Promotion] 自动晋升: " + _promoted.length + " 条");
       }
-    } catch (err) { console.warn("[Promotion] 双轨晋升失败:", err); }
+    } catch (err) { console.warn("[Promotion] 自动晋升失败:", err); }
 
     // S2-3: 主动学习 — 检查当前话题是否有相关知识库内容尚未引用
     (async () => {

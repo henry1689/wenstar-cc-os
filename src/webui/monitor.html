@@ -1,128 +1,1348 @@
 <!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>太虚境监控</title></head>
-<body style="margin:0;background:#0d0f14;color:#d0d8e0;font-family:sans-serif;height:100vh;display:flex;flex-direction:column">
-<div id="app" style="display:flex;flex:1;min-height:0">
-<div style="flex:3;display:flex;flex-direction:column;padding:10px;background:#141820">
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:#00d4d4;font-size:15px;font-weight:700">&#x26A1; 太虚境监控</span><span style="font-size:11px;color:#556" id="st">{{STATS}}</span></div>
-  <div id="grd" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;flex:2;overflow-y:auto;align-content:start">{{CARDS}}</div>
-  <div style="display:flex;gap:10px;padding-top:6px;flex:1;min-height:0">
-    <div style="flex:1;background:#0f1118;border-radius:4px;padding:6px">
-      <div style="color:#f1c40f;font-size:11px;font-weight:600">&#x26A0; 异常汇总 <span id="ab" style="font-weight:400;color:#556">0</span></div>
-      <div id="ap" style="font-size:10px;color:#667">{{ALERTS}}</div>
-    </div>
-    <div style="flex:1;background:#0f1118;border-radius:4px;padding:6px">
-      <div style="color:#889;font-size:11px;font-weight:600">&#x1F4E1; 调度总台</div>
-      <div style="font-size:10px;color:#667">评分:<span id="sc">{{SCORE}}</span> 模式:<span id="md">{{MODE}}</span></div>
-      <div id="dp" style="font-size:10px;color:#667"></div>
-    </div>
-    <div style="flex:0.8;background:#0f1118;border-radius:4px;padding:6px;min-width:170px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span style="color:#0dd;font-size:11px;font-weight:600">&#x1F3A0; Heart</span>
-        <span id="hlb" style="font-size:9px;color:#556">-</span>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>太虚境 Command Center</title>
+  <style>
+    :root {
+      --bg: #08111f;
+      --bg-alt: #0d1a2b;
+      --panel: rgba(10, 23, 38, 0.82);
+      --panel-strong: rgba(7, 18, 30, 0.96);
+      --line: rgba(145, 187, 255, 0.12);
+      --text: #edf5ff;
+      --muted: #8ea4c2;
+      --cyan: #58d6ff;
+      --green: #5ef4bc;
+      --amber: #ffcc5c;
+      --rose: #ff6f91;
+      --shadow: 0 22px 60px rgba(1, 10, 20, 0.42);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(88, 214, 255, 0.14), transparent 26%),
+        radial-gradient(circle at top right, rgba(255, 111, 145, 0.12), transparent 24%),
+        linear-gradient(180deg, #06101a 0%, #091526 52%, #07111d 100%);
+      color: var(--text);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      opacity: 0.28;
+    }
+
+    .shell {
+      position: relative;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 24px;
+      padding: 24px;
+    }
+
+    .sidebar, .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 24px;
+      height: calc(100vh - 48px);
+      border-radius: 24px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      background:
+        linear-gradient(180deg, rgba(11, 27, 43, 0.96), rgba(8, 18, 30, 0.92)),
+        var(--panel);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: #04121f;
+      background: linear-gradient(135deg, var(--cyan), #baf1ff);
+    }
+
+    .eyebrow,
+    .section-label,
+    .stat-label {
+      margin: 0 0 6px;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .brand h1,
+    .hero h2,
+    .panel h3 {
+      margin: 0;
+    }
+
+    .nav {
+      display: grid;
+      gap: 10px;
+    }
+
+    .nav-item {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: #bfd1ea;
+      border-radius: 14px;
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 15px;
+    }
+
+    .nav-item.active,
+    .nav-item:hover {
+      background: rgba(88, 214, 255, 0.12);
+      color: var(--text);
+    }
+
+    .sidebar-card {
+      border-radius: 18px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .status-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      color: #dce8f7;
+      font-size: 14px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .dot.live { background: var(--green); box-shadow: 0 0 18px rgba(94, 244, 188, 0.8); }
+    .dot.warn { background: var(--amber); box-shadow: 0 0 18px rgba(255, 204, 92, 0.75); }
+    .dot.idle { background: #7d8da8; }
+
+    .sidebar-copy, .hero-copy {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .content {
+      display: grid;
+      gap: 22px;
+    }
+
+    .panel {
+      border-radius: 24px;
+      padding: 22px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: center;
+      background:
+        radial-gradient(circle at right center, rgba(88, 214, 255, 0.15), transparent 28%),
+        linear-gradient(135deg, rgba(9, 23, 36, 0.98), rgba(11, 30, 46, 0.92));
+    }
+
+    .hero h2 {
+      max-width: 760px;
+      font-size: clamp(28px, 3.2vw, 46px);
+      line-height: 1.06;
+      letter-spacing: -0.03em;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 12px 16px;
+      font-size: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      background: transparent;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .pill.solid {
+      background: linear-gradient(135deg, var(--cyan), #6ff1ff);
+      color: #05111e;
+      border-color: transparent;
+      font-weight: 700;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .stat {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat::after {
+      content: "";
+      position: absolute;
+      inset: auto -40px -70px auto;
+      width: 140px;
+      height: 140px;
+      border-radius: 999px;
+      opacity: 0.16;
+    }
+
+    .accent-cyan::after { background: var(--cyan); }
+    .accent-green::after { background: var(--green); }
+    .accent-amber::after { background: var(--amber); }
+    .accent-rose::after { background: var(--rose); }
+
+    .stat-value {
+      font-size: clamp(34px, 4vw, 52px);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-trend {
+      margin: 10px 0 0;
+      font-size: 14px;
+      color: #b6c7df;
+    }
+
+    .stat-trend.up { color: var(--green); }
+    .stat-trend.down { color: var(--amber); }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.82fr);
+      gap: 18px;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      display: inline-block;
+      border-radius: 999px;
+      margin-right: 6px;
+    }
+
+    .swatch.cyan { background: var(--cyan); }
+    .swatch.amber { background: var(--amber); }
+
+    .chart-panel { min-height: 380px; }
+    .chart-stage { width: 100%; height: 292px; }
+    #traffic-chart { width: 100%; height: 100%; }
+
+    .rail-panel,
+    .event-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .action-card {
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .action-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .action-top strong {
+      font-size: 16px;
+      display: block;
+      margin-top: 4px;
+    }
+
+    .health-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 72px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .health-badge.healthy {
+      color: var(--green);
+      border-color: rgba(94, 244, 188, 0.36);
+      background: rgba(94, 244, 188, 0.08);
+    }
+
+    .health-badge.watch {
+      color: var(--amber);
+      border-color: rgba(255, 204, 92, 0.3);
+      background: rgba(255, 204, 92, 0.08);
+    }
+
+    .health-badge.risk {
+      color: var(--rose);
+      border-color: rgba(255, 111, 145, 0.32);
+      background: rgba(255, 111, 145, 0.08);
+    }
+
+    .action-metrics {
+      display: flex;
+      gap: 12px;
+      color: #d8e6f8;
+      font-size: 13px;
+      flex-wrap: wrap;
+    }
+
+    .action-reasons {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .action-reasons li {
+      margin-bottom: 4px;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: auto;
+    }
+
+    .action-button {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      background: rgba(88, 214, 255, 0.12);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .action-button:hover {
+      background: rgba(88, 214, 255, 0.2);
+    }
+
+    .action-button[disabled] {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    .action-status {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .memory-queue {
+      display: grid;
+      gap: 14px;
+    }
+
+    .memory-row {
+      border-radius: 18px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      display: grid;
+      gap: 10px;
+    }
+
+    .memory-row-top,
+    .memory-row-meta,
+    .memory-row-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .memory-row-title {
+      margin: 0;
+      color: #e6f0fb;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    .memory-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #d7e5f7;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .memory-row-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .rail-list {
+      display: grid;
+      gap: 18px;
+    }
+
+    .rail-meta {
+      display: flex;
+      justify-content: space-between;
+      color: #d9e8f7;
+      margin-bottom: 8px;
+    }
+
+    .rail {
+      height: 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    .rail span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--cyan), #79f8d5);
+    }
+
+    .mini-metrics {
+      margin-top: auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .mini-metrics > div,
+    .health-list > div {
+      border-radius: 18px;
+      padding: 14px;
+      background: var(--panel-strong);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .mini-metrics p,
+    .health-list p {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .mini-metrics strong,
+    .health-list strong {
+      font-size: 26px;
+      letter-spacing: -0.03em;
+    }
+
+    .table-panel { min-height: 380px; }
+    .table-wrap { overflow: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 14px 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    td { color: #dde8f8; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .badge.ok { color: var(--green); }
+    .badge.warn { color: var(--amber); }
+    .badge.down { color: var(--rose); }
+
+    .event-list, .hook-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .event-list li,
+    .hook-list li {
+      padding: 14px 14px 14px 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      position: relative;
+    }
+
+    .event-list li::before,
+    .hook-list li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 16px;
+      bottom: 16px;
+      width: 4px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, var(--cyan), var(--rose));
+    }
+
+    .event-time {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hook-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .hook-card {
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .hook-top,
+    .hook-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hook-id {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+    }
+
+    .hook-name {
+      color: #b7cae3;
+      font-size: 13px;
+      margin-top: 6px;
+      min-height: 36px;
+    }
+
+    .hook-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .hook-dot.green { background: var(--green); box-shadow: 0 0 18px rgba(94, 244, 188, 0.7); }
+    .hook-dot.yellow { background: var(--amber); box-shadow: 0 0 18px rgba(255, 204, 92, 0.65); }
+    .hook-dot.red { background: var(--rose); box-shadow: 0 0 18px rgba(255, 111, 145, 0.7); }
+    .hook-dot.gray { background: #53657c; }
+
+    .hook-threshold { color: var(--muted); font-size: 12px; }
+    .hook-meta { margin-top: 10px; font-size: 12px; color: #cfe0f5; }
+    .hook-sub { margin-top: 8px; color: var(--muted); font-size: 12px; }
+
+    .health-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1160px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { position: relative; top: 0; height: auto; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .main-grid { grid-template-columns: 1fr; }
+      .hook-grid { grid-template-columns: 1fr; }
+      .action-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 720px) {
+      .shell { padding: 16px; gap: 16px; }
+      .hero { flex-direction: column; align-items: flex-start; }
+      .stats-grid, .health-list { grid-template-columns: 1fr; }
+      .panel, .sidebar { border-radius: 20px; padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">W</div>
+        <div>
+          <p class="eyebrow">Taixujing</p>
+          <h1>Command Center</h1>
+        </div>
       </div>
-      <div id="hp" style="font-size:10px;color:#667;line-height:1.4">
-        <canvas id="hc" width="160" height="100" style="width:100%;height:80px;display:block;margin-bottom:2px"></canvas>
-        <div id="ht"></div>
-      </div>
-    </div>
-  </div>
-</div>
-<div style="flex:1.1;display:flex;flex-direction:column;min-width:260px;background:#0d0f14;border-left:1px solid #222">
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #222">
-    <span style="color:#00d4d4;font-size:14px;font-weight:600">&#x1F4A0; 玉瑶</span>
-    <div><button onclick="clr()" style="background:none;border:1px solid #333;color:#556;width:24px;height:22px;border-radius:4px;cursor:pointer;font-size:11px" title="清除">&#x1F5D1;</button>
-    <button onclick="rst()" style="background:none;border:1px solid #333;color:#556;width:24px;height:22px;border-radius:4px;cursor:pointer;font-size:11px" title="重置">&#x21BA;</button></div>
-  </div>
-  <div id="ms" style="flex:1;overflow-y:auto;padding:8px 12px;font-size:12px;line-height:1.5"><div style="color:#667">你好，我是玉瑶。&#x1F4A0;</div></div>
-  <div style="flex-shrink:0;padding:8px 12px;border-top:1px solid #222">
-    <div style="display:flex;gap:5px"><textarea id="inp" rows="1" style="flex:1;background:#0a0c10;border:1px solid #333;border-radius:6px;padding:6px 10px;color:#d0d8e0;font-size:12px;outline:none;resize:none;font-family:inherit;min-height:30px;max-height:80px" placeholder="对玉瑶说..." onkeydown="if(event.key=='Enter'&&!event.shiftKey){event.preventDefault();snd()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px'"></textarea>
-    <button onclick="snd()" style="background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:11px;font-weight:600">发送</button></div>
-    <div style="display:flex;gap:4px;margin-top:4px;font-size:11px;color:#445;align-items:center">
-      <span style="cursor:pointer" onclick="document.getElementById('fu').click()">&#x1F4CE;</span><input type="file" id="fu" style="display:none" multiple onchange="uf(this.files)">
-      <button onclick="kb()" style="background:none;border:none;color:#445;cursor:pointer;font-size:11px;padding:0" title="知识库管理">&#x1F4DA;</button>
-      <span onclick="mic()" id="mb" style="cursor:pointer">&#x1F3A4;</span>
-      <span onclick="tt()" id="tb" style="cursor:pointer"><span id="tb" style="display:none">&#x1F507;</span>#x1F50A;</span>
-      <span style="flex:1;text-align:right;font-size:10px" id="slb">就绪</span>
-    </div>
-  </div>
-</div>
-</div>
-<script>
-var tts=true;
-function tt(){tts=!tts;document.getElementById('tb').textContent=tts?'🔊':'🔇'}
-function clr(){document.getElementById('ms').innerHTML='';_m=[];sv()}
-function rst(){fetch('/api/reset',{method:'POST'})}
-var _m=[];var SK='wc_v3';
-function sv(){try{localStorage.setItem(SK,JSON.stringify(_m))}catch(e){}}
-function ld(){try{var d=localStorage.getItem(SK);if(d){_m=JSON.parse(d);var p=document.getElementById('ms');p.innerHTML='';for(var i=0;i<_m.length;i++){p.innerHTML+='<div style="padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word'+( _m[i].r==='u'?';text-align:right;background:rgba(100,180,255,0.22)':';background:rgba(255,255,150,0.22)')+'"'+(_m[i].rp?' rp="1"':'')+'>'+( _m[i].rp?'[角色扮演] ':'')+_m[i].c+'<div style="font-size:9px;color:#445;margin-top:3px">'+_m[i].t+'</div></div>'}}}catch(e){}}
 
-function ad(r,c){var _t=new Date().toLocaleTimeString();var d=document.getElementById('ms');var sty=r==='u'?';text-align:right;background:rgba(100,180,255,0.22)':';background:rgba(255,255,150,0.22)';d.innerHTML+='<div style="padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word'+sty+'">'+c+'<div style="font-size:9px;color:#445;margin-top:3px">'+_t+'</div></div>';d.scrollTop=d.scrollHeight;_m.push({r:r,c:c,t:_t});sv()}
-var _ap=null;
-function snd(){var i=document.getElementById('inp'),m=i.value.trim();if(!m)return;if(tts&&_ap&&!_ap.paused){try{_ap.pause();_ap=null}catch(e){}}i.value='';i.style.height='30px';ad('u',m);document.getElementById('slb').textContent='...';var _ms=document.getElementById('ms');var _b=document.createElement('div');_b.style.cssText='padding:8px 12px;border-radius:8px;margin-bottom:6px;max-width:98%;word-break:break-word;background:rgba(255,255,150,0.22)';_ms.appendChild(_b);var es=new EventSource('/api/chat/stream?message='+encodeURIComponent(m));es.onmessage=function(e){var d;try{d=JSON.parse(e.data)}catch{return};if(d.type==='text'){_b.innerHTML+=d.content.replace(/\n/g,'<br>');_ms.scrollTop=_ms.scrollHeight}else if(d.type==='done'){es.close();var _ft=d.content||'';document.getElementById('slb').textContent='就绪';ra();rd();rh();var _t=new Date().toLocaleTimeString();_m.push({r:'a',c:_ft,t:_t});sv();if(tts&&_ft){try{if(_ap){_ap.pause()} _ap=new Audio(d.audio_url);_ap.play()}catch(e){}}}};es.onerror=function(){es.close();document.getElementById('slb').textContent='错误'}}
-var rc=null;
-function mic(){if(rc){rc.stop();rc=null;document.getElementById('mb').style.color='#556';return}var SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){ad('a','语音不支持');return}rc=new SR();rc.lang='zh-CN';rc.interimResults=false;rc.onresult=function(e){document.getElementById('inp').value=e.results[e.results.length-1][0].transcript;rc=null;document.getElementById('mb').style.color='#556'};rc.onerror=function(){rc=null;document.getElementById('mb').style.color='#556'};rc.start();document.getElementById('mb').style.color='#2ecc71'}
-function uf(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','\u{1F4CE} '+f.name);var r=new FileReader();r.onload=function(e){ad('a','已读取')};r.readAsText(f)})(fs[i])}}
-function uk(fs){for(var i=0;i<fs.length;i++){(function(f){ad('u','\u{1F4DA} '+f.name);var r=new FileReader();r.onload=function(e){fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:f.name.replace(/\.[^.]+$/,''),content:e.target.result})}).then(function(r2){r2.ok?ad('a','已存入'):ad('a','失败')})};r.readAsText(f)})(fs[i])}}
-function _renderCards(d) {
-  var h = '';
-  for (var i = 0; i < d.cards.length; i++) {
-    var c = d.cards[i];
-    var cl = c.status === 'green' ? '#2ecc71' : c.status === 'yellow' ? '#f1c40f' : c.status === 'red' ? '#e74c3c' : '#333';
-    var ths = (c.thresholdMs||0) >= 60000 ? ((c.thresholdMs||0)/60000).toFixed(0)+'m' : ((c.thresholdMs||0)/1000).toFixed(0)+'s';
-    var elas = (c.elapsedMs||0) >= 60000 ? ((c.elapsedMs||0)/60000).toFixed(1)+'m' : ((c.elapsedMs||0)/1000).toFixed(0)+'s';
-    var errRate = c.errorRate || 0;
-    var errCl = errRate > 10 ? 'color:#e74c3c' : errRate > 3 ? 'color:#f1c40f' : 'color:#556';
-    var avgD = c.avgDuration || 0;
-    h += '<div style="background:#0a0c10;border:1px solid #222;border-radius:8px;padding:6px 10px;font-size:12px">';
-    h += '<div style="display:flex;justify-content:space-between;align-items:center"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+cl+';margin-right:4px;vertical-align:middle"></span><b>'+c.id+'</b><span style="color:#889;margin-left:4px;font-size:11px">'+c.name+'</span></span><span style="color:#556;font-size:10px">'+ths+'</span></div>';
-    h += '<div style="display:flex;justify-content:space-between;font-size:10px;margin-top:2px;color:#889"><span>'+ (c.callCount||0)+'x</span><span style="'+errCl+'">'+(c.errorCount||0)+'err</span><span>'+avgD+'ms</span><span>'+elas+'</span></div></div>';
-  }
-  document.getElementById('grd').innerHTML = h;
-  var g = d.cards.filter(function(x){return x.status==='green'}).length;
-  var y = d.cards.filter(function(x){return x.status==='yellow'}).length;
-  var r = d.cards.filter(function(x){return x.status==='red'}).length;
-  var total = g+y+r;
-  document.getElementById('st').innerHTML = 'g'+g+' y'+y+' r'+r;
-  var ts = total > 0 ? Math.round((g+(y*0.5))/total*100) : 0;
-  if (document.getElementById('al')) document.getElementById('al').innerHTML = 'health'+ts+'%';
+      <nav class="nav">
+        <button class="nav-item active">Overview</button>
+        <button class="nav-item">Hooks</button>
+        <button class="nav-item">Heart</button>
+        <button class="nav-item">Modules</button>
+        <button class="nav-item">Health</button>
+      </nav>
 
-}function rf() {
-  fetch('/_hooks/monitor',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){_renderCards(d)});
-}
-function ra(){fetch('/_hooks/alerts',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){document.getElementById('ab').textContent=d.alerts.length;if(!d.alerts.length){document.getElementById('ap').innerHTML='<span style="color:#556">✅ 正常</span>'}else{document.getElementById('ap').innerHTML=d.alerts.map(function(a){return '<div style="font-size:10px;color:#aab;padding:1px 0">⚠ '+a.id+' '+a.type+'</div>'}).join('')}})}
-function rd(){fetch('/_hooks/dispatch',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){document.getElementById('sc').textContent=d.score;document.getElementById('md').textContent=d.mode;document.getElementById('dp').innerHTML=d.decisions.map(function(x){return '<div style="font-size:10px;color:#aab;margin:1px 0">'+(x.type==='ok'?'✅':'⚠')+' '+x.target+' → '+x.action+'</div>'}).join('')})}
-function rh(){fetch('/api/engine/heart',{cache:'no-cache'}).then(function(r){return r.json()}).then(function(d){var s=d.state||{},rm=s.relationMetrics||{},v=s.emotionVector||{},lb=s.emotionLabel||{};document.getElementById('hlb').textContent=lb.label||'-';var h='<div style="color:#0dd">'+lb.label+'</div><div>关系:'+s.relationState+' |氛围:'+s.atmosphere+' |信任:'+(rm.trust||'')+'</div><div>裂痕:'+(rm.crack||'0')+' |默契:'+(rm.rapport||'0')+'</div>';var dh=d.desireHints||[];if(dh.length)h+='<div style="color:#f1c40f">欲望:'+dh.join(',')+'</div>';if(d.emergenceHint)h+='<div style="color:#e74c3c">涌现:'+d.emergenceHint+'</div>';document.getElementById('ht').innerHTML=h;drawRadar(v)})}
-function drawRadar(v){var c=document.getElementById('hc');if(!c||!c.getContext)return;var ctx=c.getContext('2d');var dims=[v.joy||0,v.affection||0,v.trust||0,v.intimacy||0,v.arousal||0,v.calm||0];var labels=['喜','爱','信','亲','醒','静'];var cx=80,cy=55,r=45;ctx.clearRect(0,0,160,100);ctx.strokeStyle='#333';ctx.lineWidth=0.5;for(var ring=1;ring<=3;ring++){ctx.beginPath();for(var i=0;i<6;i++){var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+r*ring/3*Math.cos(angle);var y=cy+r*ring/3*Math.sin(angle);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath();ctx.stroke()}ctx.fillStyle='rgba(0,212,212,0.08)';ctx.strokeStyle='#0dd';ctx.lineWidth=1.5;ctx.beginPath();for(var i=0;i<6;i++){var val=Math.min(1,dims[i]/50);var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+r*val*Math.cos(angle);var y=cy+r*val*Math.sin(angle);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath();ctx.fill();ctx.stroke();ctx.fillStyle='#556';ctx.font='8px sans-serif';ctx.textAlign='center';for(var i=0;i<6;i++){var angle=Math.PI*2*i/6-Math.PI/2;var x=cx+(r+10)*Math.cos(angle);var y=cy+(r+10)*Math.sin(angle);ctx.fillText(labels[i],x,y)}}
-setInterval(function(){try{rf()}catch(e){}try{ra()}catch(e){}try{rd()}catch(e){}try{rh()}catch(e){}},4000);
-ld();rf();ra();rd();rh();
-</script>
+      <section class="sidebar-card">
+        <p class="section-label">Run State</p>
+        <div class="status-line"><span class="dot live"></span><span id="run-health">健康数据加载中</span></div>
+        <div class="status-line"><span class="dot warn"></span><span id="run-mode">调度模式加载中</span></div>
+        <div class="status-line"><span class="dot idle"></span><span id="run-heart">Heart 状态加载中</span></div>
+      </section>
 
-<div id="kb-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000">
-<div style="background:#141820;border-radius:12px;padding:20px;width:600px;margin:10vh auto;border:1px solid #333">
-  <div style="display:flex;justify-content:space-between;margin-bottom:12px">
-    <span style="color:#00d4d4;font-size:16px;font-weight:700">&#x1f4da; 知识库</span>
-    <button onclick="kbClose()" style="background:rgba(255,50,50,0.07);border:1px solid #533;color:#e55;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">&#x2716;</button>
+      <section class="sidebar-card">
+        <p class="section-label">Quick Facts</p>
+        <p class="sidebar-copy" id="sidebar-copy">
+          正在汇总 hooks、health、dispatch、heart、modules 这几条观测链路。
+        </p>
+      </section>
+
+      <section class="sidebar-card">
+        <p class="section-label">Entry Points</p>
+        <div class="status-line"><span class="dot live"></span><span><code>/api/health</code></span></div>
+        <div class="status-line"><span class="dot live"></span><span><code>/api/status</code></span></div>
+        <div class="status-line"><span class="dot live"></span><span><code>/_hooks/monitor</code></span></div>
+      </section>
+    </aside>
+
+    <main class="content">
+      <header class="hero panel">
+        <div>
+          <p class="eyebrow">Observability Surface</p>
+          <h2>Wenstar TS runtime monitor for hooks, heart, memory, and dispatch</h2>
+          <p class="hero-copy">
+            这不是静态装饰页。它直接读取 Wenstar 现有 TypeScript WebUI 暴露的 hooks、health、status、heart 和 modules 接口，
+            用一个更适合运维判断的面来展示当前运行态。
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="pill" id="refresh-now">立即刷新</button>
+          <a class="pill solid" href="/" target="_self">返回主界面</a>
+        </div>
+      </header>
+
+      <section class="stats-grid">
+        <article class="stat panel accent-cyan">
+          <p class="stat-label">Hook Health</p>
+          <div class="stat-value" id="score-value">--</div>
+          <p class="stat-trend" id="score-trend">等待调度评分</p>
+        </article>
+
+        <article class="stat panel accent-green">
+          <p class="stat-label">Conversation Turns</p>
+          <div class="stat-value" id="turns-value">--</div>
+          <p class="stat-trend" id="turns-trend">等待状态数据</p>
+        </article>
+
+        <article class="stat panel accent-amber">
+          <p class="stat-label">Memory Landmarks</p>
+          <div class="stat-value" id="landmarks-value">--</div>
+          <p class="stat-trend" id="landmarks-trend">等待健康数据</p>
+        </article>
+
+        <article class="stat panel accent-rose">
+          <p class="stat-label">Heart Label</p>
+          <div class="stat-value" id="heart-value">--</div>
+          <p class="stat-trend" id="heart-trend">等待 Heart 数据</p>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <article class="panel chart-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Traffic Shape</p>
+              <h3>健康评分与告警数量随时间变化</h3>
+            </div>
+            <div class="legend">
+              <span><i class="swatch cyan"></i>Health score</span>
+              <span><i class="swatch amber"></i>Alerts</span>
+            </div>
+          </div>
+          <div class="chart-stage">
+            <svg id="traffic-chart" viewBox="0 0 760 260" preserveAspectRatio="none"></svg>
+          </div>
+          <p class="footer-note" id="chart-note">
+            正在积累最近几轮采样，用于观察 hooks 健康度和异常数量是否正在恶化还是回稳。
+          </p>
+        </article>
+
+        <article class="panel rail-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Runtime Mix</p>
+              <h3>模块负载与关系态摘要</h3>
+            </div>
+          </div>
+
+          <div class="rail-list">
+            <div class="rail-item">
+              <div class="rail-meta">
+                <span>M7 logs</span>
+                <span id="rail-m7-label">--</span>
+              </div>
+              <div class="rail"><span id="rail-m7-fill" style="width:0%"></span></div>
+            </div>
+
+            <div class="rail-item">
+              <div class="rail-meta">
+                <span>M8 scars</span>
+                <span id="rail-m8-label">--</span>
+              </div>
+              <div class="rail"><span id="rail-m8-fill" style="width:0%"></span></div>
+            </div>
+
+            <div class="rail-item">
+              <div class="rail-meta">
+                <span>Trust</span>
+                <span id="rail-trust-label">--</span>
+              </div>
+              <div class="rail"><span id="rail-trust-fill" style="width:0%"></span></div>
+            </div>
+          </div>
+
+          <div class="mini-metrics">
+            <div>
+              <p>Queue mode</p>
+              <strong id="queue-mode">--</strong>
+            </div>
+            <div>
+              <p>Storage records</p>
+              <strong id="storage-records">--</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel table-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Hook Monitor</p>
+              <h3>14 点位当前状态</h3>
+            </div>
+          </div>
+          <div class="hook-grid" id="hook-grid"></div>
+        </article>
+
+        <article class="panel event-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Operator Feed</p>
+              <h3>告警、调度与心态摘要</h3>
+            </div>
+          </div>
+          <ul class="event-list" id="event-list"></ul>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Memory Architecture</p>
+            <h3>线程覆盖、生命周期和知识卫生</h3>
+          </div>
+        </div>
+        <div class="health-list">
+          <div>
+            <p>Thread coverage</p>
+            <strong id="thread-coverage">--</strong>
+          </div>
+          <div>
+            <p>Active lifecycle</p>
+            <strong id="active-lifecycle">--</strong>
+          </div>
+          <div>
+            <p>Knowledge classified</p>
+            <strong id="knowledge-classified">--</strong>
+          </div>
+          <div>
+            <p>Promotion backlog</p>
+            <strong id="promotion-backlog">--</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Vault Operations</p>
+            <h3>三库健康分与建议动作</h3>
+          </div>
+        </div>
+        <div class="action-grid" id="vault-action-grid"></div>
+        <p class="action-status" id="vault-action-status">等待 command center 下发三库建议动作。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Memory Queue</p>
+            <h3>单条记忆操作队列</h3>
+          </div>
+        </div>
+        <div class="memory-queue" id="memory-queue"></div>
+      </section>
+    </main>
   </div>
-  <div style="display:flex;gap:6px;margin-bottom:10px">
-    <input id="kb-search" placeholder="&#x1f50d; 搜索..." style="flex:1;background:#0a0c10;border:1px solid #333;border-radius:6px;padding:6px 10px;color:#d0d8e0;font-size:12px;outline:none" oninput="kbLoad()">
-    <button onclick="kbAdd()" style="background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">&#x2795;</button>
-    <button onclick="document.getElementById('kf').click()" style="background:rgba(255,255,255,0.03);border:1px solid #333;color:#889;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">&#x1f4ce;</button>
-  </div>
-  <div id="kb-list" style="min-height:200px;max-height:60vh;overflow-y:auto;font-size:12px;color:#667"></div>
-</div>
-</div>
-<input type="file" id="kf" style="display:none" accept=".txt,.md,.pdf" onchange="kbUpload(this.files)">
-<script>
-var _kb=[];
-function kb(){document.getElementById('kb-overlay').style.display='block';kbLoad()}
-function kbClose(){document.getElementById('kb-overlay').style.display='none'}
-function kbLoad(){var q=document.getElementById('kb-search').value.trim();fetch('/api/knowledge?limit=100'+(q?'&search='+encodeURIComponent(q):'')).then(function(r){return r.json()}).then(function(d){_kb=d.items||[];var h='';for(var i=0;i<_kb.length;i++){h+='<div onclick="kbView(\''+_kb[i].id+'\')" style="padding:6px 8px;margin-bottom:4px;background:#0a0c10;border-radius:4px;cursor:pointer"><span style="color:#b0b8c0">'+( _kb[i].title||'')+'</span><br><span style="color:#556;font-size:10px">'+(_kb[i].content||'').substring(0,60)+'</span></div>'}document.getElementById('kb-list').innerHTML=h||'<div style="text-align:center;padding:40px;color:#445">空</div>'})}
-function kbView(id){fetch('/api/knowledge/'+id).then(function(r){return r.json()}).then(function(k){if(!k)return;document.getElementById('kb-list').innerHTML='<div style="margin-bottom:10px"><span style="color:#b0b8c0;font-size:15px;font-weight:600">'+(k.title||'')+'</span><button onclick="kbDel(\''+k.id+'\')" style="background:rgba(255,50,50,0.07);border:1px solid #533;color:#e55;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:10px;float:right">&#x1f5d1;</button></div><div style="padding:12px;background:#0d0f14;border-radius:6px;font-size:12px;line-height:1.6;color:#aab;max-height:300px;overflow-y:auto;white-space:pre-wrap">'+(k.content||'').substring(0,10000)+'</div><button onclick="kbLoad()" style="margin-top:8px;background:rgba(0,212,212,0.07);border:1px solid rgba(0,212,212,0.1);color:#0dd;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:11px">&#x2190; 返回</button>'})}
-function kbDel(id){if(!confirm('确认删除？'))return;fetch('/api/knowledge',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).then(function(r){r.ok?kbLoad():alert('失败')})}
-function kbAdd(){var t=prompt('标题：');if(!t)return;var c=prompt('内容：');if(!c)return;fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t,content:c})}).then(function(r){r.ok?kbLoad():alert('失败')})}
-function kbUpload(fs){for(var i=0;i<fs.length;i++){(function(f){var r=new FileReader();r.onload=function(e){fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:f.name.replace(/\.[^.]+$/,''),content:e.target.result})}).then(function(r2){if(r2.ok)kbLoad()})};r.readAsText(f)})(fs[i])}}
-</script>
 
+  <script>
+    const scoreSeries = [];
+    const alertSeries = [];
+    const chartSvg = document.getElementById('traffic-chart');
+    const eventList = document.getElementById('event-list');
+    const hookGrid = document.getElementById('hook-grid');
+    const vaultActionGrid = document.getElementById('vault-action-grid');
+    const memoryQueue = document.getElementById('memory-queue');
+    let vaultActionBusy = false;
+    const localActionFeed = [];
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function clampPercent(value, max) {
+      if (!max || max <= 0) return 0;
+      return Math.max(0, Math.min(100, Math.round((value / max) * 100)));
+    }
+
+    function linePath(values, width, height, pad) {
+      const min = Math.min.apply(null, values);
+      const max = Math.max.apply(null, values);
+      const span = Math.max(max - min, 1);
+      return values.map(function (value, index) {
+        const x = pad + (index * (width - pad * 2)) / Math.max(values.length - 1, 1);
+        const y = height - pad - ((value - min) / span) * (height - pad * 2);
+        return (index === 0 ? 'M' : 'L') + ' ' + x.toFixed(2) + ' ' + y.toFixed(2);
+      }).join(' ');
+    }
+
+    function areaPath(values, width, height, pad) {
+      const line = linePath(values, width, height, pad);
+      const lastX = width - pad;
+      const firstX = pad;
+      return line + ' L ' + lastX + ' ' + (height - pad) + ' L ' + firstX + ' ' + (height - pad) + ' Z';
+    }
+
+    function renderChart() {
+      const scoreData = scoreSeries.length ? scoreSeries : [0, 0];
+      const alertData = alertSeries.length ? alertSeries : [0, 0];
+      const width = 760;
+      const height = 260;
+      const pad = 18;
+      const grid = [0.2, 0.4, 0.6, 0.8].map(function (ratio) {
+        const y = (height - pad * 2) * ratio + pad;
+        return '<line x1="' + pad + '" y1="' + y + '" x2="' + (width - pad) + '" y2="' + y + '" />';
+      }).join('');
+
+      chartSvg.innerHTML = ''
+        + '<defs>'
+        + '  <linearGradient id="score-fill" x1="0" x2="0" y1="0" y2="1">'
+        + '    <stop offset="0%" stop-color="rgba(88,214,255,0.42)"></stop>'
+        + '    <stop offset="100%" stop-color="rgba(88,214,255,0.02)"></stop>'
+        + '  </linearGradient>'
+        + '  <linearGradient id="alert-fill" x1="0" x2="0" y1="0" y2="1">'
+        + '    <stop offset="0%" stop-color="rgba(255,204,92,0.30)"></stop>'
+        + '    <stop offset="100%" stop-color="rgba(255,204,92,0.01)"></stop>'
+        + '  </linearGradient>'
+        + '</defs>'
+        + '<g stroke="rgba(255,255,255,0.08)" stroke-width="1">' + grid + '</g>'
+        + '<path d="' + areaPath(scoreData, width, height, pad) + '" fill="url(#score-fill)"></path>'
+        + '<path d="' + areaPath(alertData, width, height, pad) + '" fill="url(#alert-fill)"></path>'
+        + '<path d="' + linePath(scoreData, width, height, pad) + '" fill="none" stroke="#58d6ff" stroke-width="4" stroke-linecap="round"></path>'
+        + '<path d="' + linePath(alertData, width, height, pad) + '" fill="none" stroke="#ffcc5c" stroke-width="3" stroke-linecap="round" stroke-dasharray="10 10"></path>';
+    }
+
+    function pushSeries(score, alerts) {
+      scoreSeries.push(score);
+      alertSeries.push(alerts);
+      if (scoreSeries.length > 24) scoreSeries.shift();
+      if (alertSeries.length > 24) alertSeries.shift();
+      renderChart();
+    }
+
+    function badgeClass(status) {
+      if (status === 'green') return 'ok';
+      if (status === 'yellow') return 'warn';
+      if (status === 'red') return 'down';
+      return '';
+    }
+
+    function statusLabel(status) {
+      if (status === 'green') return 'Healthy';
+      if (status === 'yellow') return 'Warn';
+      if (status === 'red') return 'Down';
+      return 'Idle';
+    }
+
+    function hookColor(status) {
+      return status === 'green' ? 'green' : status === 'yellow' ? 'yellow' : status === 'red' ? 'red' : 'gray';
+    }
+
+    function formatElapsed(ms) {
+      if (!ms || ms < 0) return '--';
+      if (ms >= 60000) return (ms / 60000).toFixed(1) + 'm';
+      return Math.round(ms / 1000) + 's';
+    }
+
+    function renderHooks(cards) {
+      hookGrid.innerHTML = cards.map(function (card) {
+        return ''
+          + '<div class="hook-card">'
+          + '  <div class="hook-top">'
+          + '    <div class="hook-id"><span class="hook-dot ' + hookColor(card.status) + '"></span>' + card.id + '</div>'
+          + '    <div class="hook-threshold">' + formatElapsed(card.thresholdMs) + '</div>'
+          + '  </div>'
+          + '  <div class="hook-name">' + card.name + '</div>'
+          + '  <div class="hook-meta">'
+          + '    <span>Calls ' + (card.callCount || 0) + '</span>'
+          + '    <span>Err ' + (card.errorCount || 0) + '</span>'
+          + '    <span>' + (card.recentAvg || 0) + 'ms</span>'
+          + '  </div>'
+          + '  <div class="hook-sub"><span class="badge ' + badgeClass(card.status) + '">' + statusLabel(card.status) + '</span> · last ' + formatElapsed(card.elapsedMs) + ' ago</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function renderEvents(alerts, dispatch, heart, operations) {
+      const items = [];
+      if (Array.isArray(localActionFeed) && localActionFeed.length) {
+        for (let i = 0; i < Math.min(localActionFeed.length, 3); i += 1) {
+          const item = localActionFeed[i];
+          items.push({
+            time: item.time || 'local',
+            text: item.text
+          });
+        }
+      }
+      if (alerts.alerts && alerts.alerts.length) {
+        for (let i = 0; i < Math.min(alerts.alerts.length, 3); i += 1) {
+          const alert = alerts.alerts[i];
+          items.push({
+            time: 'alert',
+            text: alert.id + ' · ' + alert.type + ' · ' + alert.name
+          });
+        }
+      }
+      if (dispatch.decisions && dispatch.decisions.length) {
+        for (let i = 0; i < Math.min(dispatch.decisions.length, 2); i += 1) {
+          const decision = dispatch.decisions[i];
+          items.push({
+            time: decision.type,
+            text: decision.target + ' → ' + decision.action
+          });
+        }
+      }
+      if (operations && operations.recent && operations.recent.length) {
+        for (let i = 0; i < Math.min(operations.recent.length, 3); i += 1) {
+          const operation = operations.recent[i];
+          items.push({
+            time: 'vault',
+            text: (operation.operation || 'op') + ' · ' + (operation.detail || operation.sourceId || operation.targetId || 'recent vault action')
+          });
+        }
+      }
+      if (heart && heart.state) {
+        items.push({
+          time: 'heart',
+          text: '关系态 ' + (heart.state.relationState || '-') + '，氛围 ' + (heart.state.atmosphere || '-') + '，标签 ' + ((heart.state.emotionLabel && heart.state.emotionLabel.label) || '-')
+        });
+      }
+      if (!items.length) {
+        items.push({ time: 'idle', text: '当前没有新的异常或调度摘要。' });
+      }
+      eventList.innerHTML = items.map(function (item, index) {
+        return '<li><span class="event-time">' + item.time + ' #' + String(index + 1).padStart(2, '0') + '</span><div>' + item.text + '</div></li>';
+      }).join('');
+    }
+
+    function healthClass(status) {
+      if (status === 'healthy') return 'healthy';
+      if (status === 'watch') return 'watch';
+      return 'risk';
+    }
+
+    async function postAction(target) {
+      const response = await fetch(withBase(target), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!response.ok) throw new Error(target + ' -> ' + response.status);
+      return response.json().catch(function () { return { status: 'ok' }; });
+    }
+
+    async function runVaultAction(target, label) {
+      if (vaultActionBusy) return;
+      vaultActionBusy = true;
+      setText('vault-action-status', '正在执行：' + label);
+      try {
+        const result = await postAction(target);
+        const count = result && typeof result.count === 'number' ? '，影响 ' + result.count + ' 条' : '';
+        localActionFeed.unshift({ time: 'exec', text: label + count });
+        if (localActionFeed.length > 6) localActionFeed.pop();
+        setText('vault-action-status', '已完成：' + label + count + '。');
+        await refreshAll();
+      } catch (err) {
+        localActionFeed.unshift({ time: 'error', text: label + ' 执行失败：' + String(err && err.message ? err.message : err) });
+        if (localActionFeed.length > 6) localActionFeed.pop();
+        setText('vault-action-status', '执行失败：' + String(err && err.message ? err.message : err));
+      } finally {
+        vaultActionBusy = false;
+      }
+    }
+
+    function renderVaultActions(vaultHealth, vaults) {
+      const order = [
+        { key: 'sand', title: '砂金库' },
+        { key: 'gold', title: '金库' },
+        { key: 'diamond', title: '黑钻库' }
+      ];
+      vaultActionGrid.innerHTML = order.map(function (item) {
+        const health = vaultHealth && vaultHealth[item.key] ? vaultHealth[item.key] : {};
+        const metrics = vaults && vaults[item.key] ? vaults[item.key] : {};
+        const reasons = Array.isArray(health.reasons) && health.reasons.length ? health.reasons : ['当前没有新的风险提示。'];
+        const highlights = Array.isArray(health.highlights) && health.highlights.length ? health.highlights : [];
+        const actions = Array.isArray(health.actions) ? health.actions : [];
+        const metricList = Object.keys(metrics).slice(0, 4).map(function (key) {
+          return '<span>' + key + ' ' + metrics[key] + '</span>';
+        }).join('');
+        return ''
+          + '<article class="action-card">'
+          + '  <div class="action-top">'
+          + '    <div><p class="section-label">' + item.title + '</p><strong>' + Number(health.score || 0) + ' 分</strong></div>'
+          + '    <span class="health-badge ' + healthClass(health.status) + '">' + (health.status || 'risk') + '</span>'
+          + '  </div>'
+          + '  <div class="action-metrics">'
+          + metricList
+          + '  </div>'
+          + (highlights.length ? '  <div class="action-metrics">' + highlights.map(function (tag) { return '<span>' + tag + '</span>'; }).join('') + '</div>' : '')
+          + '  <ul class="action-reasons">' + reasons.map(function (reason) { return '<li>' + reason + '</li>'; }).join('') + '</ul>'
+          + '  <div class="action-buttons">'
+          +       (actions.length
+            ? actions.map(function (action, index) {
+                const safeTarget = String(action.target || '').replace(/"/g, '&quot;');
+                const safeLabel = String(action.label || ('执行动作 ' + (index + 1))).replace(/"/g, '&quot;');
+                const suffix = action.count ? ' (' + action.count + ')' : '';
+                return '<button class="action-button" data-target="' + safeTarget + '" data-label="' + safeLabel + '"' + (vaultActionBusy ? ' disabled' : '') + '>' + safeLabel + suffix + '</button>';
+              }).join('')
+            : '<button class="action-button" disabled>当前无建议动作</button>')
+          + '  </div>'
+          + '</article>';
+      }).join('');
+
+      const buttons = vaultActionGrid.querySelectorAll('.action-button[data-target]');
+      buttons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          runVaultAction(button.getAttribute('data-target'), button.getAttribute('data-label') || 'vault action');
+        });
+      });
+    }
+
+    function renderMemoryQueue(items) {
+      if (!items || !items.length) {
+        memoryQueue.innerHTML = '<div class="memory-row"><p class="memory-row-title">当前没有需要人工处理的单条记忆。</p></div>';
+        return;
+      }
+
+      memoryQueue.innerHTML = items.map(function (item) {
+        const chips = [
+          '<span class="memory-chip">' + (item.lifecycle || 'candidate') + '</span>',
+          '<span class="memory-chip">calcium ' + Number(item.calcium || 0) + '</span>',
+          '<span class="memory-chip">recall ' + Number(item.recall || 0) + '</span>',
+          item.primaryEmotion ? '<span class="memory-chip">' + item.primaryEmotion + '</span>' : '',
+          item.isLandmark ? '<span class="memory-chip">landmark</span>' : '',
+          item.promotedToDiamond ? '<span class="memory-chip">diamond</span>' : ''
+        ].filter(Boolean).join('');
+
+        const buttons = (item.actions || []).map(function (action) {
+          const safeTarget = String(action.target || '').replace(/"/g, '&quot;');
+          const safeLabel = String(action.label || '执行').replace(/"/g, '&quot;');
+          return '<button class="action-button" data-target="' + safeTarget + '" data-label="' + safeLabel + ' #' + item.id + '"' + (vaultActionBusy ? ' disabled' : '') + '>' + safeLabel + '</button>';
+        }).join('');
+
+        return ''
+          + '<article class="memory-row">'
+          + '  <div class="memory-row-top">'
+          + '    <p class="memory-row-title">' + (item.snippet || item.id || 'memory') + '</p>'
+          + '    <span class="memory-chip">' + item.id + '</span>'
+          + '  </div>'
+          + '  <div class="memory-row-meta">' + chips + '</div>'
+          + '  <div class="memory-row-actions">' + buttons + '</div>'
+          + '</article>';
+      }).join('');
+
+      const buttons = memoryQueue.querySelectorAll('.action-button[data-target]');
+      buttons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          runVaultAction(button.getAttribute('data-target'), button.getAttribute('data-label') || 'memory action');
+        });
+      });
+    }
+
+    function updateRails(modules, heart, status) {
+      const m7Logs = modules && modules.m7 ? (modules.m7.total_logs || 0) : 0;
+      const m8Scars = modules && modules.m8 ? (modules.m8.total_scars || 0) : 0;
+      const trust = heart && heart.state && heart.state.relationMetrics ? Number(heart.state.relationMetrics.trust || 0) : 0;
+
+      document.getElementById('rail-m7-fill').style.width = clampPercent(m7Logs, 50) + '%';
+      document.getElementById('rail-m7-label').textContent = String(m7Logs);
+      document.getElementById('rail-m8-fill').style.width = clampPercent(m8Scars, 20) + '%';
+      document.getElementById('rail-m8-label').textContent = String(m8Scars);
+      document.getElementById('rail-trust-fill').style.width = clampPercent(trust, 100) + '%';
+      document.getElementById('rail-trust-label').textContent = String(trust);
+
+      setText('queue-mode', status && status.family ? String(status.family.total || 0) : '--');
+      setText('storage-records', status && status.storage ? String(status.storage.total_records || 0) : '--');
+    }
+
+    function updateTopline(health, status, modules, dispatch, heart, alerts) {
+      const score = dispatch ? Math.max(0, Number(dispatch.score || 0)) : 0;
+      const mode = dispatch && dispatch.mode ? dispatch.mode : '--';
+      const turns = status ? Number(status.conversation_turns || 0) : 0;
+      const landmarks = health && health.memory ? Number(health.memory.landmarks || 0) : 0;
+      const heartLabel = heart && heart.state && heart.state.emotionLabel ? heart.state.emotionLabel.label || '-' : '-';
+
+      setText('score-value', score + '%');
+      setText('score-trend', mode);
+      setText('turns-value', String(turns));
+      setText('turns-trend', 'storage seq ' + (status && status.storage ? status.storage.seq_pos || 0 : 0));
+      setText('landmarks-value', String(landmarks));
+      setText('landmarks-trend', 'entities ' + (health && health.memory ? health.memory.entities || 0 : 0));
+      setText('heart-value', heartLabel);
+      setText('heart-trend', heart && heart.state ? ((heart.state.relationState || '-') + ' · ' + (heart.state.atmosphere || '-')) : 'Heart data unavailable');
+
+      setText('run-health', 'hooks ' + score + '%');
+      setText('run-mode', mode);
+      setText('run-heart', heartLabel);
+      const threadCoverage = health && health.architecture && health.architecture.threading
+        ? Number(health.architecture.threading.memoryDnaCoverage || 0)
+        : 0;
+      const lifecycle = health && health.architecture ? health.architecture.lifecycle || {} : {};
+      const vaults = health && health.architecture ? health.architecture.vaults || {} : {};
+      const vaultHealth = health && health.architecture ? health.architecture.vaultHealth || {} : {};
+      const knowledge = health && health.architecture ? health.architecture.knowledge || {} : {};
+      const backlog = Number(lifecycle.highCalciumUnpromoted || 0);
+      const activeLifecycle = Number(lifecycle.promotedToDiamond || 0) + Number(lifecycle.healedScars || 0);
+      const sandReady = Number(vaults.sand ? vaults.sand.readyForGold || 0 : 0);
+      const diamondUtil = Number(vaults.diamond ? vaults.diamond.utilization || 0 : 0);
+      const vaultOverall = Number(vaultHealth.overall ? vaultHealth.overall.score || 0 : 0);
+      const classified = Number(knowledge.classified || 0);
+      const pendingKnowledge = Number(knowledge.pending || 0);
+
+      setText('sidebar-copy', '当前告警 ' + ((alerts && alerts.alerts) ? alerts.alerts.length : 0) + ' 条，已记录对话 ' + turns + ' 轮，landmarks ' + landmarks + '，thread coverage ' + threadCoverage + '%，三库健康分 ' + vaultOverall + '，砂金待入金 ' + sandReady + '，高钙待晋升 ' + backlog + '，黑钻利用率 ' + diamondUtil + '%。');
+
+      setText('thread-coverage', threadCoverage ? (threadCoverage + '%') : '--');
+      setText('active-lifecycle', String(activeLifecycle || 0));
+      setText('knowledge-classified', classified + (pendingKnowledge ? ' / +' + pendingKnowledge + ' pending' : ''));
+      setText('promotion-backlog', String(backlog || 0));
+
+      pushSeries(score, (alerts && alerts.alerts ? alerts.alerts.length : 0));
+    }
+
+    const apiBase = new URLSearchParams(window.location.search).get('apiBase') || '';
+
+    function withBase(path) {
+      if (!apiBase) return path;
+      return apiBase.replace(/\/$/, '') + path;
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(withBase(url), { cache: 'no-cache' });
+      if (!response.ok) throw new Error(url + ' -> ' + response.status);
+      return response.json();
+    }
+
+    function hydrateFromCommandCenter(snapshot) {
+      const monitor = snapshot && snapshot.hooks ? { cards: snapshot.hooks.cards || [] } : { cards: [] };
+      const alerts = snapshot && snapshot.hooks ? snapshot.hooks.alerts || { alerts: [] } : { alerts: [] };
+      const dispatch = snapshot && snapshot.hooks ? snapshot.hooks.dispatch || { score: 0, mode: 'unavailable', decisions: [] } : { score: 0, mode: 'unavailable', decisions: [] };
+      const health = snapshot && snapshot.memory ? {
+        memory: {
+          landmarks: snapshot.memory.overview ? snapshot.memory.overview.landmarks || 0 : 0,
+          entities: snapshot.memory.overview ? snapshot.memory.overview.entities || 0 : 0
+        },
+        persistence: snapshot.memory ? snapshot.memory.persistence || {} : {},
+        roleplay: snapshot && snapshot.system ? snapshot.system.roleplay || { active: false } : { active: false },
+        architecture: snapshot.memory ? {
+          threading: snapshot.memory.threading || {},
+          lifecycle: snapshot.memory.lifecycle || {},
+          vaults: snapshot.memory.vaults || {},
+          vaultHealth: snapshot.memory.vaultHealth || {},
+          operations: snapshot.memory.operations || {},
+          actionables: snapshot.memory.actionables || [],
+          knowledge: snapshot.memory.knowledge || {}
+        } : {}
+      } : {};
+      const status = snapshot && snapshot.system ? {
+        conversation_turns: snapshot.system.conversationTurns || 0,
+        storage: snapshot.system.storage ? {
+          total_records: snapshot.system.storage.totalRecords || 0,
+          seq_pos: snapshot.system.storage.seqPos || 0
+        } : null,
+        family: snapshot.system.family ? { total: snapshot.system.family.total || 0 } : null
+      } : {};
+      const modules = snapshot && snapshot.modules ? {
+        m7: { total_pending: snapshot.modules.m7 ? snapshot.modules.m7.totalPending || 0 : 0 },
+        m8: { total_entries: snapshot.modules.m8 ? snapshot.modules.m8.landmarks || 0 : 0, total_scars: snapshot.modules.m8 ? snapshot.modules.m8.scars || 0 : 0 }
+      } : {};
+      const heart = snapshot && snapshot.heart ? snapshot.heart : {};
+      return { monitor, alerts, dispatch, health, status, modules, heart };
+    }
+
+    async function refreshAll() {
+      try {
+        let payload;
+        try {
+          const snapshot = await fetchJson('/api/command-center');
+          payload = hydrateFromCommandCenter(snapshot);
+        } catch (_ccError) {
+          const results = await Promise.allSettled([
+            fetchJson('/_hooks/monitor'),
+            fetchJson('/_hooks/alerts'),
+            fetchJson('/_hooks/dispatch'),
+            fetchJson('/api/health'),
+            fetchJson('/api/status'),
+            fetchJson('/api/modules'),
+            fetchJson('/api/engine/heart')
+          ]);
+          payload = {
+            monitor: results[0].status === 'fulfilled' ? results[0].value : { cards: [] },
+            alerts: results[1].status === 'fulfilled' ? results[1].value : { alerts: [] },
+            dispatch: results[2].status === 'fulfilled' ? results[2].value : { score: 0, mode: 'unavailable', decisions: [] },
+            health: results[3].status === 'fulfilled' ? results[3].value : {},
+            status: results[4].status === 'fulfilled' ? results[4].value : {},
+            modules: results[5].status === 'fulfilled' ? results[5].value : {},
+            heart: results[6].status === 'fulfilled' ? results[6].value : {}
+          };
+        }
+
+        renderHooks(payload.monitor.cards || []);
+        renderEvents(
+          payload.alerts,
+          payload.dispatch,
+          payload.heart,
+          payload.health && payload.health.architecture ? payload.health.architecture.operations || {} : {}
+        );
+        updateRails(payload.modules, payload.heart, payload.status);
+        updateTopline(payload.health, payload.status, payload.modules, payload.dispatch, payload.heart, payload.alerts);
+        renderVaultActions(
+          payload.health && payload.health.architecture ? payload.health.architecture.vaultHealth || {} : {},
+          payload.health && payload.health.architecture ? payload.health.architecture.vaults || {} : {}
+        );
+        renderMemoryQueue(
+          payload.health && payload.health.architecture ? payload.health.architecture.actionables || [] : []
+        );
+      } catch (err) {
+        eventList.innerHTML = '<li><span class="event-time">error</span><div>' + String(err && err.message ? err.message : err) + '</div></li>';
+        setText('vault-action-status', 'command center 刷新失败：' + String(err && err.message ? err.message : err));
+        memoryQueue.innerHTML = '<div class="memory-row"><p class="memory-row-title">memory queue 加载失败：' + String(err && err.message ? err.message : err) + '</p></div>';
+      }
+    }
+
+    document.getElementById('refresh-now').addEventListener('click', refreshAll);
+    renderChart();
+    refreshAll();
+    setInterval(refreshAll, 4000);
+  </script>
 </body>
 </html>

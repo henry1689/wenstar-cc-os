@@ -66,6 +66,12 @@ export interface VaultReport {
   alerts?: string[];
 }
 
+export interface DiamondPromotionDecision {
+  eligible: boolean;
+  reason: string | null;
+  targetState: 'candidate' | 'promoted';
+}
+
 // ─── 操作日志 ───
 
 /** 记录三库操作（景幻仙姑审计日志） */
@@ -118,6 +124,7 @@ export function addBlackDiamond(
     notes?: string;
     emotion_vector?: string;
     dna_root_id?: string | null;
+    promotion_reason?: string;
   },
 ): BlackDiamondEntry {
   const id = `bd_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
@@ -130,18 +137,33 @@ export function addBlackDiamond(
       const lowest = sqlite.queryAll('SELECT id, calcium_level FROM black_diamond ORDER BY CAST(calcium_level AS REAL) ASC, created_at ASC LIMIT 1') as any[];
       if (lowest.length > 0) {
         const demotedId = lowest[0].id;
-        sqlite.writeRaw('UPDATE memories SET promoted_to_diamond = 0 WHERE id = (SELECT source_id FROM black_diamond WHERE id = ?)', [demotedId]);
-        sqlite.writeRaw('DELETE FROM black_diamond WHERE id = ?', [demotedId]);
+        sqlite.writeRaw(
+          `UPDATE memories
+           SET promoted_to_diamond = 0,
+               lifecycle_state = 'active',
+               promotion_reason = NULL
+           WHERE id = (SELECT source_id FROM black_diamond WHERE id = ?)`,
+          demotedId,
+        );
+        sqlite.writeRaw('DELETE FROM black_diamond WHERE id = ?', demotedId);
         console.log('[Vault] 黑钻超出上限(200)，降级: ' + demotedId);
       }
     }
   } catch (_) { /* 上限检测不阻塞晋升 */ }
-  // P3: mark as promoted in memories table
-  sqlite.writeRaw(`UPDATE memories SET promoted_to_diamond = 1 WHERE id = ?`, [params.source_id]);
-  const dnaFullCode = params.dna_root_id ? `${params.dna_root_id}-BD-C${params.calcium_level ?? 1}` : null;
+  if (params.source_id) {
+    sqlite.writeRaw(
+      `UPDATE memories
+       SET promoted_to_diamond = 1,
+           lifecycle_state = 'promoted',
+           promotion_reason = ?,
+           last_verified_at = ?
+       WHERE id = ?`,
+      params.promotion_reason || 'black_diamond_promotion', now, params.source_id,
+    );
+  }
   sqlite.writeRaw(
-    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, dna_root_id, dna_full_code)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     id,
     params.summary,
     params.emotion_tag || null,
@@ -149,11 +171,9 @@ export function addBlackDiamond(
     params.calcium_level ?? 1,
     JSON.stringify(tags),
     params.notes || '',
+    now,
+    now,
     params.emotion_vector || null,
-    now,
-    now,
-    params.dna_root_id || null,
-    dnaFullCode,
   );
   return getBlackDiamond(sqlite, id)!;
 }
@@ -183,7 +203,17 @@ export function updateBlackDiamond(
 export function deleteBlackDiamond(sqlite: SQLiteAdapter, id: string): boolean {
   const existing = getBlackDiamond(sqlite, id);
   if (!existing) return false;
-  sqlite.writeRaw('DELETE FROM black_diamond WHERE id = ?', [id]);
+  if (existing.source_id) {
+    sqlite.writeRaw(
+      `UPDATE memories
+       SET promoted_to_diamond = 0,
+           lifecycle_state = 'active',
+           promotion_reason = NULL
+       WHERE id = ?`,
+      existing.source_id,
+    );
+  }
+  sqlite.writeRaw('DELETE FROM black_diamond WHERE id = ?', id);
   return true;
 }
 
@@ -282,7 +312,8 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
   }
 
   const rows = sqlite.queryAll(
-    `SELECT id, raw_input, calcium_level, recall_count, is_landmark, scar_type, narrative_tag, perception_json, dna_root_id
+    `SELECT id, raw_input, calcium_score, calcium_level, recall_count, is_landmark,
+            scar_type, narrative_tag, perception_json, lifecycle_state, promoted_to_diamond
      FROM memories WHERE id = ? LIMIT 1`,
     [memoryId],
   );
@@ -290,8 +321,10 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
   const mem = rows[0] as any;
   const rawInput = (mem.raw_input as string) || '';
   const emotionTag = (mem.scar_type as string) || (mem.narrative_tag as string) || '中性';
+  const decision = evaluateDiamondPromotion(mem);
+  if (!decision.eligible) return null;
   // P1: 提炼日志
-  logVaultOperation(sqlite, 'promote', 'gold', memoryId, undefined, `提炼至黑钻: ${rawInput.substring(0, 30)}`);
+  logVaultOperation(sqlite, 'promote', 'gold', memoryId, undefined, `提炼至黑钻: ${rawInput.substring(0, 30)} (${decision.reason})`);
   const tags = ['gold_提炼', emotionTag];
   if (mem.is_landmark === 1) tags.push('地标');
   const emotionVec = (mem as any).perception_json || null;
@@ -302,13 +335,38 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
     source_id: memoryId,
     calcium_level: mem.calcium_level as number,
     tags,
-    notes: `自动提炼于 ${new Date().toISOString()}`,
+    notes: `自动提炼于 ${new Date().toISOString()} · ${decision.reason}`,
     emotion_vector: emotionVec,
-    dna_root_id: (mem as any).dna_root_id || null,
+    promotion_reason: decision.reason || undefined,
   });
 }
 
-/** 批量自动提炼（v1 兼容 — 委托 v2） */
+export function evaluateDiamondPromotion(memory: Record<string, any>): DiamondPromotionDecision {
+  const calciumScore = Number(memory.calcium_score ?? memory.calcium_level ?? 0);
+  const recallCount = Number(memory.recall_count ?? 0);
+  const isLandmark = Number(memory.is_landmark ?? 0) === 1 || memory.is_landmark === true;
+  const lifecycleState = String(memory.lifecycle_state ?? 'candidate');
+  const scarType = memory.scar_type ? String(memory.scar_type) : null;
+  const promotedToDiamond = Number(memory.promoted_to_diamond ?? 0) === 1;
+
+  if (promotedToDiamond || lifecycleState === 'promoted') {
+    return { eligible: false, reason: null, targetState: 'promoted' };
+  }
+  if (lifecycleState === 'suppressed' && scarType) {
+    return { eligible: false, reason: null, targetState: 'candidate' };
+  }
+  if (isLandmark && calciumScore >= 3.5) {
+    return { eligible: true, reason: 'landmark+high-calcium', targetState: 'promoted' };
+  }
+  if (calciumScore >= 4.5) {
+    return { eligible: true, reason: 'native-calcium>=4.5', targetState: 'promoted' };
+  }
+  if (recallCount >= 5) {
+    return { eligible: true, reason: 'recall>=5', targetState: 'promoted' };
+  }
+  return { eligible: false, reason: null, targetState: 'candidate' };
+}
+
 export function autoPromoteCandidates(sqlite: SQLiteAdapter, limit = 5): BlackDiamondEntry[] {
   return autoPromoteCandidatesV2(sqlite, limit);
 }
@@ -325,10 +383,13 @@ export function autoPromoteCandidatesV2(sqlite: SQLiteAdapter, limit = 5): Black
   );
 
   const candidates = sqlite.queryAll(
-    `SELECT id, raw_input, calcium_score, recall_count, narrative_tag, dna_root_id
+    `SELECT id, raw_input, calcium_score, calcium_level, recall_count, narrative_tag,
+            dna_root_id, is_landmark, scar_type, lifecycle_state, promoted_to_diamond
      FROM memories
-     WHERE (calcium_score >= 4.5 OR recall_count >= 5) AND is_promoted = 0
-     ORDER BY calcium_score DESC, recall_count DESC
+     WHERE COALESCE(promoted_to_diamond, 0) = 0
+       AND lifecycle_state IN ('candidate', 'active', 'healed')
+       AND (calcium_score >= 3.5 OR recall_count >= 3 OR is_landmark = 1)
+     ORDER BY calcium_score DESC, recall_count DESC, is_landmark DESC
      LIMIT ?`,
     [limit],
   ) as any[];
@@ -336,9 +397,10 @@ export function autoPromoteCandidatesV2(sqlite: SQLiteAdapter, limit = 5): Black
   const results: BlackDiamondEntry[] = [];
   for (const mem of candidates) {
     if (alreadyPromoted.has(mem.id as string)) continue;
+    const decision = evaluateDiamondPromotion(mem);
+    if (!decision.eligible) continue;
     const entry = promoteToBlackDiamond(sqlite, mem.id as string);
     if (entry) {
-      sqlite.writeRaw('UPDATE memories SET is_promoted = 1 WHERE id = ?', [mem.id]);
       results.push(entry);
     }
   }
@@ -354,7 +416,7 @@ export function applyRecallIncrement(sqlite: SQLiteAdapter, memoryId: string): v
      recall_count = COALESCE(recall_count, 0) + 1,
      last_recalled_at = datetime('now','localtime')
      WHERE id = ?`,
-    [memoryId]
+    memoryId,
   );
 }
 
@@ -397,8 +459,7 @@ export function compactAlluvial(sqlite: SQLiteAdapter, cutoffDays = 30): number 
   const old = sqlite.queryAll('SELECT COUNT(*) as cnt FROM conversations WHERE timestamp < ? AND is_summary = 0', [cutoff]);
   const count = Number((old[0] as any)?.cnt || 0);
   if (count > 0) {
-    // 同时更新 is_compacted（过渡兼容）
-    sqlite.writeRaw('UPDATE conversations SET is_summary = 1, is_compacted = 1 WHERE timestamp < ? AND is_summary = 0', [cutoff]);
+    sqlite.writeRaw('UPDATE conversations SET is_summary = 1, is_compacted = 1 WHERE timestamp < ? AND is_summary = 0', cutoff);
     logVaultOperation(sqlite, 'compact', 'alluvial', undefined, undefined, `压缩 ${count} 条超过 ${cutoffDays} 天的砂金库对话`);
   }
   return count;

@@ -7,6 +7,7 @@
  */
 import type { ScoredMemory, SimilarityMode } from '../../m2/types/index.js';
 import type { DNA } from '../../m1/types/dna.js';
+import type { Perception24D } from '../../m3/types/perception.js';
 import { rerank } from '../../m4/Reranker.js';
 import { decompose, mergeDecomposedResults } from '../../m4/QueryDecomposer.js';
 
@@ -14,7 +15,7 @@ export interface RetrievalInput {
   ctx: any;
   message: string;
   dna: DNA;
-  p: Record<string, number>;
+  p: Perception24D;
   enrichedHistory: Array<{ content: string }>;
   memoryFragments: string[];
   _bdVecCache: Map<string, Array<{ row: any; score: number }>>;

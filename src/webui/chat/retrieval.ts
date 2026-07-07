@@ -8,15 +8,16 @@
  */
 import type { ConversationTurn } from '../../m5/types/index.js';
 import type { BionicSearchResult } from '../../adapter/bionic-adapter.js';
+import type { Perception24D } from '../../m3/types/perception.js';
 import { bionic } from '../../adapter/bionic-adapter.js';
 
 // P0-2: VAD 服务可用性标志 + 本地缓存池
 let _vadAvailable = true;
 const VAD_CACHE_SIZE = 200;
-const _vadCache: Array<{ timestamp: string; perception: Record<string, number> }> = [];
+const _vadCache: Array<{ timestamp: string; perception: Perception24D }> = [];
 
 /** 记录 24D 感知到 VAD 缓存池 */
-export function pushToVadCache(perception: Record<string, number>): void {
+export function pushToVadCache(perception: Perception24D): void {
   _vadCache.push({ timestamp: new Date().toISOString(), perception });
   if (_vadCache.length > VAD_CACHE_SIZE) _vadCache.shift();
 }

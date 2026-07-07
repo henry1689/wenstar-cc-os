@@ -69,6 +69,7 @@ export class MemoryAssessor {
         if (text.length < cfg.minContentLength) continue;
 
         const dnaRootId = conv.dna_root_id || `sand_fallback_${Date.now()}`;
+        const calciumScore = Number(conv.calcium_score || 1.0);
         const memoryId = `mem_${dnaRootId}`;
 
         try {
@@ -77,20 +78,20 @@ export class MemoryAssessor {
           if (exist.length > 0) continue;
 
           sqlite.writeRaw(
-            `INSERT INTO memories
+            `INSERT OR IGNORE INTO memories
              (id, raw_input, entity_genes, created_at, calcium_score, calcium_level, effective_strength, dna_root_id, strength_updated_at, namespace)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [memoryId, text.substring(0, 500),
-             conv.entity_json || '[]',
-             new Date().toISOString(),
-             conv.calcium_score,
-             Math.min(3, Math.floor(conv.calcium_score)),
-             Math.min(1.0, conv.calcium_score / 10),
-             dnaRootId,
-             new Date().toISOString(),
-             'default']
+            memoryId, text.substring(0, 500),
+            conv.entity_json || '[]',
+            new Date().toISOString(),
+            calciumScore,
+            Math.min(3, Math.floor(calciumScore)),
+            Math.min(1.0, calciumScore / 10),
+            dnaRootId,
+            new Date().toISOString(),
+            'default',
           );
-          sqlite.writeRaw('UPDATE conversations SET is_promoted = 1 WHERE id = ?', [conv.id]);
+          sqlite.writeRaw('UPDATE conversations SET is_promoted = 1 WHERE id = ?', conv.id);
           promoted++;
         } catch { /* 去重跳过 */ }
       }
@@ -131,9 +132,12 @@ export class MemoryAssessor {
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
          strength_updated_at = ?
-         WHERE calcium_score > 0 AND is_promoted = 0 AND calcium_score >= 3.0`,
-        [MEMORY_CONFIG.recall.calciumMin, dc.highCalciumDecay,
-         dc.strengthFloor, dc.highStrengthFactor, now]
+         WHERE calcium_score > 0
+           AND COALESCE(promoted_to_diamond, 0) = 0
+           AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
+           AND calcium_score >= 3.0`,
+        MEMORY_CONFIG.recall.calciumMin, dc.highCalciumDecay,
+        dc.strengthFloor, dc.highStrengthFactor, now,
       );
 
       // 工作相关记忆 → 慢衰减
@@ -141,11 +145,14 @@ export class MemoryAssessor {
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
          strength_updated_at = ?
-         WHERE calcium_score > 0 AND is_promoted = 0 AND calcium_score < 3.0
+         WHERE calcium_score > 0
+         AND COALESCE(promoted_to_diamond, 0) = 0
+         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
+         AND calcium_score < 3.0
          AND (COALESCE(narrative_tag, '') LIKE '%工作%' OR COALESCE(narrative_tag, '') LIKE '%项目%'
               OR COALESCE(narrative_tag, '') LIKE '%公司%' OR COALESCE(narrative_tag, '') LIKE '%会议%')`,
-        [MEMORY_CONFIG.recall.calciumMin, dc.workDecay,
-         dc.strengthFloor, dc.workStrengthFactor, now]
+        MEMORY_CONFIG.recall.calciumMin, dc.workDecay,
+        dc.strengthFloor, dc.workStrengthFactor, now,
       );
 
       // 普通中性记忆 → 正常衰减
@@ -153,11 +160,14 @@ export class MemoryAssessor {
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
          strength_updated_at = ?
-         WHERE calcium_score > 0 AND is_promoted = 0 AND calcium_score < 3.0
+         WHERE calcium_score > 0
+         AND COALESCE(promoted_to_diamond, 0) = 0
+         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
+         AND calcium_score < 3.0
          AND (COALESCE(narrative_tag, '') NOT LIKE '%工作%' AND COALESCE(narrative_tag, '') NOT LIKE '%项目%'
               AND COALESCE(narrative_tag, '') NOT LIKE '%公司%' AND COALESCE(narrative_tag, '') NOT LIKE '%会议%')`,
-        [MEMORY_CONFIG.recall.calciumMin, dc.normalDecay,
-         dc.strengthFloor, dc.normalStrengthFactor, now]
+        MEMORY_CONFIG.recall.calciumMin, dc.normalDecay,
+        dc.strengthFloor, dc.normalStrengthFactor, now,
       );
 
       console.log('[MemoryAssessor] 钙化分衰减完成');

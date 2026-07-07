@@ -45,7 +45,6 @@ import { InductionScheduler } from '../m7/InductionScheduler.js';
 import { ConsolidationQueue } from '../m7/ConsolidationQueue.js';
 import { MemoryAssessor } from '../app/vault/MemoryAssessor.js';
 import { M7Orchestrator, startM7Interval } from '../m7/M7Orchestrator.js';
-import busboy from 'busboy';
 import { M8FusionAdapter } from '../m8/M8FusionAdapter.js';
 import { MasterProfileService } from '../app/profile/MasterProfileService.js';
 import { computeCalcium } from '../m2/math.js';
@@ -71,7 +70,6 @@ import { M5ClueAssistant } from '../m5/clue/M5ClueAssistant.js';
 import { ClueTracker } from '../m7/ClueTracker.js';
 import { TaskAgentEngine, ToolRegistry, calendarTool, reminderTool, noteTool, createSearchTool, startReminderChecker } from '../app/task-agent/index.js';
 import { YuyaoMemoryService } from '../app/yuyao-memory/YuyaoMemoryService.js';
-import { excelToJson, jsonToExcel, parseFile } from '../app/knowledge/FileUploadService.js';
 import { listKeys, setKey, deleteKey, getKeyValue } from '../app/shared/ApiKeyStorage.js';
 import { SomaticMemory } from '../app/somatic/SomaticMemory.js';
 import { MemoryVault } from '../app/memory-vault/MemoryVault.js';
@@ -80,10 +78,14 @@ import type { SimilarityMode, ScoredMemory } from '../m2/types/index.js';
 import type { SelfModelV1 } from '../m1/types/dna.js';
 import type { ConversationTurn } from '../m5/types/index.js';
 import type { M3Decision } from '../m3/types/perception.js';
-import { processChat as processChatNew, resetVadStatus } from './chat.js';
+import { processChat as processChatNew, resetVadStatus, type ChatResponse as ProcessChatResponse } from './chat.js';
 
 import { handleObservabilityRoutes } from './server-observability-routes.js';
 import { handleMemoryRoutes } from './server-memory-routes.js';
+import { handleVaultRoutes } from './server-vault-routes.js';
+import { handleOpsRoutes } from './server-ops-routes.js';
+import { handleKnowledgeRoutes } from './server-knowledge-routes.js';
+import { handleKnowledgeFileRoutes } from './server-knowledge-file-routes.js';
 import { exportHookMonitor, importHookMonitor, startBackupDaemon } from '../hooks/backup-daemon.js';
 import { Orchestrator } from '../engine/orchestrator.js';
 import { setProbeWriter } from '../app/roleplay/RoleplayProbeReporter.js';
@@ -723,8 +725,8 @@ async function initPipeline(): Promise<void> {
       const result = runGoldQC(storage.getSQLite());
       if (result.scanned > 0) console.log(`[GoldQC] 扫描 ${result.scanned} 条, 通过 ${result.approved} 条, 拒绝 ${result.rejected} 条`);
       // 自动提炼：扫描高钙质记忆提升到黑钻（与 GoldQC 互补，门槛不同）
-      const { autoPromoteCandidates } = await import('../app/vault/VaultManager.js');
-      const promoted = autoPromoteCandidates(storage.getSQLite(), 5);
+      const { autoPromoteCandidatesV2 } = await import('../app/vault/VaultManager.js');
+      const promoted = autoPromoteCandidatesV2(storage.getSQLite(), 5);
       if (promoted.length > 0) console.log(`[Vault] 自动提炼: ${promoted.length} 条→黑钻`);
     } catch (err) { console.warn('[GoldQC] 失败:', err); }
   }, 60 * 60 * 1000));
@@ -745,7 +747,7 @@ async function initPipeline(): Promise<void> {
       const sqlite = storage.getSQLite();
       if (!sqlite) return;
       const vaultMod = await import('../app/vault/VaultManager.js');
-      const promoted = vaultMod.autoPromoteCandidates(sqlite, 3);
+      const promoted = vaultMod.autoPromoteCandidatesV2(sqlite, 3);
       if (promoted && promoted.length > 0) {
         vaultMod.logVaultOperation(sqlite, 'auto_promote', 'gold', undefined, undefined, '巡检提炼' + promoted.length + '条');
         console.log('[Jinghuan] 自动巡检: 提炼 ' + promoted.length + ' 条');
@@ -768,20 +770,36 @@ import { RoleParamsSnapshot } from '../app/roleplay-legacy/RoleParamsSnapshot.js
 // ════════════════════════════════════════════════════════
 // Chat API
 // ════════════════════════════════════════════════════════
-interface ChatResponse {
-  reply: string; turn_count: number;
-  m1: { branch_id: string; locus_path: string; seq_pos: number; leaf_zone: string; ref: string; entities: Array<{ name: string; type: string }>; raw_input: string; entity_genes: any[] };
-  m3: {
-    quadrant1: any[]; quadrant2: any[]; quadrant3: any[]; quadrant4: any[];
-    calcium: { score: number; level: number; label: string; breakdown: any };
-    actions: string[]; reason: string;
+type ChatResponse = ProcessChatResponse;
+
+function createReplyOnlyChatResponse(reply: string): ChatResponse {
+  return {
+    reply,
+    turn_count: Math.floor(conversationHistory.length / 2),
+    m1: {
+      branch_id: '',
+      locus_path: '',
+      seq_pos: 0,
+      leaf_zone: '',
+      ref: '',
+      entities: [],
+      raw_input: '',
+      entity_genes: [],
+    },
+    m3: {
+      quadrant1: [],
+      quadrant2: [],
+      quadrant3: [],
+      quadrant4: [],
+      calcium: { score: 0, level: 0, label: 'fallback', breakdown: {} },
+      actions: [],
+      reason: 'hybrid reply-only fallback',
+    },
+    m4: { timeline: [], total: 0, family: 0 },
+    m5: { strategy_id: 'reply-only', tone: 'neutral', depth: 'shallow', max_length: 0, description: 'hybrid fallback' },
+    emotionalFlash: false,
+    triggeredMemoryId: null,
   };
-  m4: { timeline: Array<{ time: string; summary: string; calcium_level?: number }>; total: number; family: number };
-  m5: { strategy_id: string; tone: string; depth: string; max_length: number; description: string };
-  /** 是否触发了情绪传染（用于前端心动闪烁） */
-  emotionalFlash: boolean;
-  /** 触发的记忆 ID */
-  triggeredMemoryId: string | null;
 }
 
 
@@ -821,20 +839,7 @@ async function handleUserMessage(message: string, clientMsgId?: string | null, t
   try {
     // hybrid 模式：走 orchestrator（通过 LegacyAdapter 调用原 processChat）
     const reply = await orchestrator.processUserMessage(message, 'default', clientMsgId ?? undefined, testMode);
-    return {
-      reply,
-      turn_count: conversationHistory.length,
-      m1: { branch_id: '', locus_path: '', seq_pos: 0, leaf_zone: '', ref: '', entities: [], raw_input: message, entity_genes: [] },
-      m3: {
-        quadrant1: [], quadrant2: [], quadrant3: [], quadrant4: [],
-        calcium: { score: 0, level: 0, label: '粉末', breakdown: {} },
-        actions: [], reason: 'hybrid orchestrator',
-      },
-      m4: { timeline: [], total: 0, family: 0 },
-      m5: { strategy_id: 'hybrid', tone: 'default', depth: 'medium', max_length: 220, description: 'Orchestrator fallback payload' },
-      emotionalFlash: false,
-      triggeredMemoryId: null,
-    };
+    return createReplyOnlyChatResponse(reply);
   } catch (err) {
     // 新链路异常 → 静默回退旧链路
     console.error('[S1] 新链路异常，回退旧链路:', (err as Error).message);
@@ -933,8 +938,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     storage, familyGraph, conversationHistory, maintenance,
     m6, m7, m8, clueTracker, topicTracker, alignmentGuard,
     inductionScheduler, masterProfile, getSelfModel, sseClients,
+    hookMonitor, hookDefs: HOOK_DEFS, orchestrator,
     getRoleplayStatus,
-    orchestrator,
     hybridSearch,
     enableNewArch: ENABLE_NEW_ARCH,
   })) return;
@@ -944,35 +949,24 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     req, res, url, storage, yuyaoMemory, readBody,
   })) return;
 
+  if (await handleVaultRoutes({
+    req, res, url, storage, conversationHistory, maintenance,
+  })) return;
+
+  if (await handleOpsRoutes({
+    req, res, url, storage, knowledgeBase, backupStats, projectRoot: PROJECT_ROOT, conversationHistory, m7,
+  })) return;
+
+  if (await handleKnowledgeRoutes({
+    req, res, url, knowledgeBase, readBody,
+  })) return;
+
+  if (await handleKnowledgeFileRoutes({
+    req, res, url, knowledgeBase, readBody, dataDir: DATA_DIR,
+  })) return;
+
   try {
     // ── 首页 ──
-
-    // S2-4: 知识库健康检查
-    if (req.method === 'GET' && url.pathname === '/api/knowledge/health') {
-      try {
-        const { KnowledgeMonitor } = await import('../app/knowledge/KnowledgeMonitor.js');
-        const engine = (knowledgeBase as any)['engine'] || knowledgeBase;
-        const monitor = new KnowledgeMonitor(storage.getSQLite(), engine.vectorStore);
-        const report = monitor.selfCheck() as any;
-        // 追加备份状态
-        const successRate = backupStats.totalAttempts > 0
-          ? (backupStats.successCount / backupStats.totalAttempts * 100).toFixed(1) + '%'
-          : 'N/A';
-        const backupDirPath = path.join(PROJECT_ROOT, "data", "backups");
-        let backupFiles: string[] = [];
-        try { backupFiles = fs.readdirSync(backupDirPath).filter(f => f.endsWith('.db')); } catch (e: any) { console.error('[server] error:', e?.message); }
-        report.backup = {
-          lastBackupTime: backupStats.lastBackupTime,
-          backupSuccessRate: successRate,
-          backupCount: backupFiles.length,
-        };
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(report));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(fs.readFileSync(HTML_PATH, 'utf-8'));
@@ -1871,74 +1865,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     // 景幻仙姑 · 三库管理 API
     // ═══════════════════════════════════════════════════════════════
 
-    // ── 三库总览报告 ──
-    if (req.method === 'GET' && url.pathname === '/api/vault/report') {
-      const { generateVaultReport } = await import('../app/vault/VaultManager.js');
-      const report = generateVaultReport(
-        storage.getSQLite(), conversationHistory,
-        200, maintenance.getHealth().lastMaintenance.compaction,
-      );
-      res.writeHead(200); res.end(JSON.stringify(report));
-    }
-
-    // ── 砂金库 -> 金库记忆 ──
-    if (req.method === 'GET' && url.pathname === '/api/vault/alluvial') {
-      const turns = conversationHistory.slice(-100).map(t => ({
-        content: (t.content || '').substring(0, 100),
-        role: t.role, timestamp: t.timestamp,
-      }));
-      res.writeHead(200); res.end(JSON.stringify({ total: conversationHistory.length, turns }));
-    }
-
-    // ── 金库列表 ──
-    if (req.method === 'GET' && url.pathname === '/api/vault/gold') {
-      const { listGoldRecent, getGoldSummary } = await import('../app/vault/VaultManager.js');
-      const sqlite = storage.getSQLite();
-      const summary = getGoldSummary(sqlite);
-      const items = listGoldRecent(sqlite, 20);
-      res.writeHead(200); res.end(JSON.stringify({ ...summary, items }));
-    }
-
-    // ── 黑钻库列表 ──
-    if (req.method === 'GET' && url.pathname === '/api/vault/diamond') {
-      const { listBlackDiamonds, searchBlackDiamonds } = await import('../app/vault/VaultManager.js');
-      const sqlite = storage.getSQLite();
-      const urlP = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-      const search = urlP.searchParams.get('search') || '';
-      const items = search
-        ? searchBlackDiamonds(sqlite, search, 20)
-        : listBlackDiamonds(sqlite, 20, 0);
-      res.writeHead(200); res.end(JSON.stringify({ total: items.length, items }));
-    }
-
-    // ── 黑钻导出（只读，可导出） ──
-    if (req.method === 'GET' && url.pathname === '/api/vault/diamond/export') {
-      const { exportDiamonds } = await import('../app/vault/VaultManager.js');
-      const format = url.searchParams.get('format') || 'json';
-      const data = exportDiamonds(storage.getSQLite(), format as any);
-      res.writeHead(200, { 'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8' });
-      res.end(data);
-    }
-
-    // P3: 砂金库压缩
-    if (req.method === 'POST' && url.pathname === '/api/vault/alluvial/compact') {
-      try {
-        const { compactAlluvial } = await import('../app/vault/VaultManager.js');
-        const days = parseInt(url.searchParams.get('days') || '30', 10);
-        const count = compactAlluvial(storage.getSQLite(), days);
-        res.writeHead(200); res.end(JSON.stringify({ compacted: count }));
-      } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-    }
-
-    // P1: 操作日志查询
-    if (req.method === 'GET' && url.pathname === '/api/vault/log') {
-      const { getVaultLog } = await import('../app/vault/VaultManager.js');
-      const log = getVaultLog(storage.getSQLite(), parseInt(url.searchParams.get('limit') || '20', 10));
-      // persistence handled in server-observability-routes.ts
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ count: log.length, log }));
-    }
-
     // P0-3: 幻觉校验日志查询
     if (req.method === 'GET' && url.pathname === '/api/hallucination/log') {
       const _sqlite = storage.getSQLite();
@@ -1965,51 +1891,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (_ae) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', message: String(_ae) }));
-      }
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/vault/auto-promote') {
-      const { autoPromoteCandidates } = await import('../app/vault/VaultManager.js');
-      const entries = autoPromoteCandidates(storage.getSQLite(), 5);
-      res.writeHead(200); res.end(JSON.stringify({ status: 'ok', count: entries.length, entries }));
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // AQC 质检 API
-    // ═══════════════════════════════════════════════════════
-
-
-    if (req.method === "GET" && url.pathname === "/api/aqc/report") {
-      const { getAQCReport } = await import("../app/aqc/AQCEngine.js");
-      res.writeHead(200); res.end(JSON.stringify(getAQCReport(storage.getSQLite())));
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/aqc/run") {
-      const { runSandQC, runGoldQC } = await import("../app/aqc/AQCEngine.js");
-      const sandR = runSandQC(storage.getSQLite(), conversationHistory);
-      const goldR = runGoldQC(storage.getSQLite());
-      res.writeHead(200); res.end(JSON.stringify({ status: "ok", sand: sandR, gold: goldR }));
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/aqc/records") {
-      const rows = storage.getSQLite().queryAll("SELECT * FROM aqc_records ORDER BY created_at DESC LIMIT 20");
-      res.writeHead(200); res.end(JSON.stringify({ total: rows.length, records: rows }));
-    }
-
-    // ── 手动触发梦境分析 ──
-    if (req.method === 'POST' && url.pathname === '/api/dream/analyze') {
-      try {
-        if (m7 && typeof m7.processDreamAnalysis === 'function') {
-          await m7.processDreamAnalysis();
-          res.writeHead(200);
-          res.end(JSON.stringify({ status: 'ok', message: '梦境分析完成' }));
-        } else {
-          res.writeHead(200);
-          res.end(JSON.stringify({ status: 'skip', message: 'M7未就绪' }));
-        }
-      } catch (err: any) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: err.message }));
       }
     }
 
@@ -2131,180 +2012,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result));
       }
-    }
-
-    // ── 知识库 ──
-    // 向量搜索调试
-    if (req.method === 'GET' && url.pathname === '/api/knowledge/vector-search') {
-      const q = url.searchParams.get('q') || '';
-      if (!q) { res.writeHead(400); res.end(JSON.stringify({ error: 'q required' })); return; }
-      const engine = (knowledgeBase as any)['engine'] || knowledgeBase;
-      const provider = engine.embedProvider;
-      if (!provider?.isAvailable?.()) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ hits: [], note: '嵌入 API 不可用，请设置 DEEPSEEK_API_KEY' }));
-      }
-      const queryVec = await provider.embed(q);
-      if (queryVec.length === 0) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ hits: [], note: '嵌入返回空向量' }));
-      }
-      const hits = engine.vectorSearchDebug(queryVec, 10);
-      // persistence handled in server-observability-routes.ts
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ query: q, hits }));
-    }
-
-    // 文件上传（multipart）
-    if (req.method === 'POST' && url.pathname === '/api/knowledge/upload') {
-      let fileBuffer: Buffer | null = null;
-      let fileName = '';
-      let mimeType = '';
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const bb = busboy({ headers: req.headers, limits: { fileSize: 10 * 1024 * 1024 } });
-          // 🔴 上传超时保护：30秒没收完就取消
-          const uploadTimer = setTimeout(() => {
-            bb.destroy();
-            reject(new Error('upload timeout'));
-          }, 30000);
-          bb.on('file', (_fieldname: string, stream: any, info: { filename: string; mimeType: string }) => {
-            fileName = info.filename;
-            mimeType = info.mimeType;
-            const chunks: Buffer[] = [];
-            let totalBytes = 0;
-            stream.on('data', (chunk: any) => {
-              totalBytes += chunk.length;
-              if (totalBytes > 10 * 1024 * 1024) { stream.destroy(); reject(new Error('file too large')); return; }
-              chunks.push(Buffer.from(chunk));
-            });
-            stream.on('end', () => { fileBuffer = Buffer.concat(chunks); });
-          });
-          bb.on('finish', () => { clearTimeout(uploadTimer); resolve(); });
-          bb.on('error', (err: Error) => { clearTimeout(uploadTimer); reject(err); });
-          req.pipe(bb);
-        });
-
-        const fb = fileBuffer as Buffer | null;
-        if (!fb || fb.length === 0) {
-          res.writeHead(400); res.end(JSON.stringify({ error: 'empty file' })); return;
-        }
-
-        const entry = await knowledgeBase.upload(fb, fileName, mimeType);
-        res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(entry));
-      } catch (err: any) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: err.message || 'upload failed' }));
-      }
-    }
-
-    // Excel 编辑 API（从上传目录读取原始文件）
-    if (req.method === 'POST' && url.pathname === '/api/knowledge/excel-query') {
-      const body = JSON.parse(await readBody(req));
-      const { knId, sheet, row, col, value } = body;
-      const entry = knowledgeBase.getById(knId);
-      if (!entry || !['xlsx', 'xls', 'csv'].includes(entry.source_type)) {
-        res.writeHead(400); res.end(JSON.stringify({ error: 'not found or not an excel file' }));
-        return;
-      }
-      try {
-        // 从上传目录查找原始 Excel 文件
-        const uploadDir = path.join(DATA_DIR, 'uploads');
-        let excelBuffer: Buffer | null = null;
-        if (existsSync(uploadDir)) {
-          const files = fs.readdirSync(uploadDir);
-          // 找与条目 ID 关联的文件（source_name 匹配）
-          const match = files.find(f => f.includes(entry.title.replace(/[^a-zA-Z0-9._-]/g, '_')));
-          if (match) {
-            excelBuffer = fs.readFileSync(path.join(uploadDir, match));
-          }
-        }
-        if (!excelBuffer) {
-          // 尝试从 content 中的文本重建（纯文本回退）
-          res.writeHead(400); res.end(JSON.stringify({ error: '原始Excel文件未找到，请重新上传' }));
-          return;
-        }
-        const { sheets } = excelToJson(excelBuffer);
-        if (sheet !== undefined) {
-          if (row !== undefined && col !== undefined && value !== undefined) {
-            // 编辑模式：修改单元格
-            const ws = sheets[sheet];
-            if (ws === undefined) { res.writeHead(400); res.end(JSON.stringify({ error: 'sheet not found' })); return; }
-            while (ws.data.length <= row) ws.data.push([]);
-            while (ws.data[row].length <= col) ws.data[row].push('');
-            ws.data[row][col] = value;
-            const newBuf = jsonToExcel(sheets);
-            // 覆盖原始文件
-            const uploadDir2 = path.join(DATA_DIR, 'uploads');
-            const files2 = fs.readdirSync(uploadDir2);
-            const match2 = files2.find(f => f.includes(entry.title.replace(/[^a-zA-Z0-9._-]/g, '_')));
-            if (match2) fs.writeFileSync(path.join(uploadDir2, match2), newBuf);
-            // 更新知识库文本内容
-            const textContent = await parseFile(newBuf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', entry.source_name || 'data.xlsx');
-            await knowledgeBase.update(knId, { title: entry.title, content: textContent.content });
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true }));
-          }
-          // 查询模式：返回指定 sheet 数据
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ sheet: sheets[sheet] }));
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ sheets }));
-      } catch (err: any) {
-        res.writeHead(400); res.end(JSON.stringify({ error: err.message }));
-      }
-    }
-
-    if (url.pathname === '/api/knowledge') {
-      // GET: 列表 / POST: 新增 / DELETE: 删除
-      if (req.method === 'GET') {
-        const limit = parseInt(url.searchParams.get('limit') || '50');
-        const keyword = url.searchParams.get('search') || '';
-        const interactionType = url.searchParams.get("interaction_type") || ""; let list; if (interactionType) { list = knowledgeBase.searchByInteraction(interactionType, limit); } else if (keyword) { list = await knowledgeBase.search(keyword, limit); } else { list = knowledgeBase.list(limit); }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ total: list.length, items: list }));
-      }
-      if (req.method === 'POST') {
-        const body = JSON.parse(await readBody(req));
-        if (!body.title || !body.content) { res.writeHead(400); res.end(JSON.stringify({error:'title and content required'})); return; }
-        const entry = await knowledgeBase.add({
-          title: body.title, content: body.content,
-          source_type: body.source_type ?? 'text', source_name: body.source_name ?? null,
-          file_size: body.file_size ?? 0, tags: body.tags ?? [], interaction_type: body.interaction_type, scene_tags: body.scene_tags, classification: body.classification,
-
-
-
-        });
-        res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(entry));
-      }
-      if (req.method === 'DELETE') {
-        const body = JSON.parse(await readBody(req));
-        if (!body.id) { res.writeHead(400); res.end(JSON.stringify({error:'id required'})); return; }
-        const ok = knowledgeBase.delete(body.id);
-        res.writeHead(ok ? 200 : 404);
-        res.end(JSON.stringify({ status: ok ? 'deleted' : 'not_found' }));
-      }
-    }
-
-    // 知识库单条目操作（编辑+查看）
-    const knMatch = url.pathname.match(/^\/api\/knowledge\/(kn_[a-z0-9_]+)$/);
-    if (knMatch && req.method === 'GET') {
-      const entry = knowledgeBase.getById(knMatch[1]);
-      if (!entry) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(entry));
-    }
-    if (knMatch && req.method === 'PUT') {
-      const body = JSON.parse(await readBody(req));
-      const ok = await knowledgeBase.update(knMatch[1], {
-        title: body.title, content: body.content, tags: body.tags, locked: body.locked,
-      });
-      res.writeHead(ok ? 200 : 404);
-      res.end(JSON.stringify({ status: ok ? 'updated' : 'not_found_or_locked' }));
     }
 
     // ── API Key 管理 ──

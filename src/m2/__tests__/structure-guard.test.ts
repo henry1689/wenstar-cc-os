@@ -112,6 +112,7 @@ describe('[M2守卫] types/index.ts 类型导出', () => {
     const record: EmotionalMemoryRecord = {
       id: 'test', seq_pos: 1,
       created_at: new Date().toISOString(),
+      memory_kind: 'episodic', lifecycle_state: 'candidate', confidence_score: 0.5, stability_score: 0.3, last_verified_at: null,
       perception: { pleasure: 0.5, arousal: 0.5, dominance: 0.5, aggression: 0.5, sincerity: 0.5, humor: 0.5, factual: 0.5, logical: 0.5, certainty: 0.5, abstract: 0.5, temporal_focus: 0.5, self_ref: 0.5, intimacy: 0.5, power_diff: 0.5, dependency: 0.5, moral_judgment: 0.5, etiquette: 0.5, belonging: 0.5, sexual_attraction: 0.5, sensory_craving: 0.5, energy_merge: 0.5, possessiveness: 0.5, ecstasy: 0.5, safety: 0.5 },
       calcium_score: 0.5, calcium_level: 1,
       raw_input: 'test', locus_path: 'user.misc.default', entity_genes: [], leaf_zone: 'language_semantic_zone',
@@ -207,6 +208,7 @@ describe('[M2守卫] math.ts 算法库', () => {
     const now = new Date();
     const r: EmotionalMemoryRecord = {
       id: 'test', seq_pos: 1, created_at: now.toISOString(),
+      memory_kind: 'episodic', lifecycle_state: 'candidate', confidence_score: 0.5, stability_score: 0.3, last_verified_at: null,
       perception: { pleasure: 0.5, arousal: 0.5, dominance: 0.5, aggression: 0.5, sincerity: 0.5, humor: 0.5, factual: 0.5, logical: 0.5, certainty: 0.5, abstract: 0.5, temporal_focus: 0.5, self_ref: 0.5, intimacy: 0.5, power_diff: 0.5, dependency: 0.5, moral_judgment: 0.5, etiquette: 0.5, belonging: 0.5, sexual_attraction: 0.5, sensory_craving: 0.5, energy_merge: 0.5, possessiveness: 0.5, ecstasy: 0.5, safety: 0.5 },
       calcium_score: 0.5, calcium_level: 1,
       raw_input: 'test', locus_path: 'user.misc.default', entity_genes: [], leaf_zone: 'language_semantic_zone',

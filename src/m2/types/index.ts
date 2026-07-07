@@ -22,6 +22,24 @@ export interface MemoryScar {
   healed_at: string | null;
 }
 
+export type MemoryKind =
+  | 'episodic'
+  | 'fact'
+  | 'preference'
+  | 'relationship'
+  | 'task'
+  | 'reminder'
+  | 'roleplay'
+  | 'summary';
+
+export type MemoryLifecycleState =
+  | 'candidate'
+  | 'active'
+  | 'suppressed'
+  | 'archived'
+  | 'promoted'
+  | 'healed';
+
 /**
  * 融合记忆记录 — 统一存储单元
  *
@@ -39,6 +57,14 @@ export interface EmotionalMemoryRecord {
   created_at: string;
   /** DNA 根码（三段关联主键） */
   dna_root_id?: string;
+  /** 线程标识（对话组 / 主题线 / 角色扮演分支） */
+  thread_id?: string;
+  /** 会话标识（同一批对话） */
+  session_id?: string;
+  /** 对话组标识 */
+  dialog_group_id?: string;
+  /** 来源对话ID列表（JSON） */
+  source_conversation_ids?: number[];
 
   /** ── 主索引：完整 24 维情感向量 ── */
   perception: Perception24D;
@@ -50,6 +76,15 @@ export interface EmotionalMemoryRecord {
   locus_path: string;
   entity_genes: EntityGene[];
   leaf_zone: string;
+  memory_kind: MemoryKind;
+  lifecycle_state: MemoryLifecycleState;
+  confidence_score: number;
+  stability_score: number;
+  last_verified_at: string | null;
+  promotion_reason?: string;
+  suppression_reason?: string;
+  archived_at?: string | null;
+  healed_at?: string | null;
 
   /** P0-1: 家族图谱实体名列表（逗号分隔，用于多维检索） */
   fg_entity_names?: string;

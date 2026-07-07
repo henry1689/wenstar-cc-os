@@ -147,11 +147,23 @@ export class SQLiteAdapter {
 
     // 对话组结构字段
     try { this.db.run("ALTER TABLE memories ADD COLUMN dialog_group_id TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN thread_id TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN session_id TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN source_conversation_ids TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN round_count INTEGER DEFAULT 1"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN topic_label TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN anchor_score REAL"); } catch { /* 列已存在 */ }
     // 🏗️ Fix: ConsolidationQueue.write() 需要 dna_root_id 列
     try { this.db.run("ALTER TABLE memories ADD COLUMN dna_root_id TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN memory_kind TEXT DEFAULT 'episodic'"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN lifecycle_state TEXT DEFAULT 'candidate'"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN confidence_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN stability_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN last_verified_at TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN promotion_reason TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN suppression_reason TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN archived_at TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN healed_at TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_dialog_group ON memories(dialog_group_id)");
 
     // Schema 版本迁移（v2: 编码链路 + 基建标准化）
@@ -339,6 +351,9 @@ export class SQLiteAdapter {
       (id, seq_pos, created_at, perception_json,
        calcium_score, calcium_level,
        locus_path, leaf_zone, raw_input,
+       memory_kind, lifecycle_state, confidence_score, stability_score,
+       last_verified_at, promotion_reason, suppression_reason, archived_at, healed_at,
+       thread_id, session_id, dialog_group_id, source_conversation_ids,
        recall_count, last_recalled_at,
        reinforcement_accumulator, effective_strength, strength_updated_at,
        is_landmark, landmarked_at, narrative_tag, sensory_anchor,
@@ -352,6 +367,9 @@ export class SQLiteAdapter {
       VALUES (?, ?, ?, ?,
               ?, ?,
               ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?, ?,
+              ?, ?, ?, ?,
               ?, ?,
               ?, ?, ?,
               ?, ?, ?, ?,
@@ -366,6 +384,16 @@ export class SQLiteAdapter {
         record.id, record.seq_pos, record.created_at, pJson,
         cs, cl,
         record.locus_path, record.leaf_zone, record.raw_input,
+        record.memory_kind, record.lifecycle_state, record.confidence_score, record.stability_score,
+        record.last_verified_at,
+        record.promotion_reason ?? null,
+        record.suppression_reason ?? null,
+        record.archived_at ?? null,
+        record.healed_at ?? null,
+        record.thread_id ?? record.dialog_group_id ?? record.dna_root_id ?? record.id,
+        record.session_id ?? null,
+        record.dialog_group_id ?? null,
+        record.source_conversation_ids ? JSON.stringify(record.source_conversation_ids) : null,
         record.recall_count, record.last_recalled_at,
         record.reinforcement_accumulator, record.effective_strength, record.strength_updated_at,
         record.is_landmark ? 1 : 0, record.landmarked_at,
@@ -411,6 +439,10 @@ export class SQLiteAdapter {
     perceptionJson: string; calciumScore: number; calciumLevel: number;
     locusPath: string; leafZone: string; rawInput: string;
     primaryEmotion: string; memoryType: string;
+    memoryKind?: string; lifecycleState?: string;
+    confidenceScore?: number; stabilityScore?: number;
+    threadId?: string | null; sessionId?: string | null;
+    sourceConversationIds?: number[] | null;
     dialogGroupId?: string | null; topicLabel?: string | null;
   }): boolean {
     this.ensureReady();
@@ -418,14 +450,22 @@ export class SQLiteAdapter {
       this.runSql(
         `INSERT OR REPLACE INTO memories
         (id, seq_pos, created_at, perception_json, calcium_score, calcium_level,
-         locus_path, leaf_zone, raw_input, recall_count, promoted_to_diamond,
-         strength_updated_at, effective_strength, is_landmark, primary_emotion,
-         memory_type, dialog_group_id, topic_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?)`,
+         locus_path, leaf_zone, raw_input, memory_kind, lifecycle_state,
+         confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
+         recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
+         is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
           opts.locusPath, opts.leafZone, opts.rawInput.substring(0, 2000),
+          opts.memoryKind ?? 'episodic',
+          opts.lifecycleState ?? (opts.calciumLevel >= 2 ? 'active' : 'candidate'),
+          opts.confidenceScore ?? 0.55,
+          opts.stabilityScore ?? (opts.calciumLevel >= 2 ? 0.45 : 0.2),
+          opts.threadId ?? opts.dialogGroupId ?? opts.id,
+          opts.sessionId ?? null,
+          opts.sourceConversationIds ? JSON.stringify(opts.sourceConversationIds) : null,
           opts.createdAt,  // strength_updated_at
           opts.primaryEmotion, opts.memoryType || 'dialog',
           opts.dialogGroupId ?? null, opts.topicLabel ?? null,
@@ -1241,6 +1281,19 @@ export class SQLiteAdapter {
       locus_path: obj.locus_path,
       entity_genes: [], // 实体会在 rowsToRecords 或 findById 中填充
       leaf_zone: obj.leaf_zone,
+      memory_kind: obj.memory_kind ?? 'episodic',
+      lifecycle_state: obj.lifecycle_state ?? 'candidate',
+      confidence_score: obj.confidence_score ?? 0.5,
+      stability_score: obj.stability_score ?? 0.5,
+      last_verified_at: obj.last_verified_at ?? null,
+      promotion_reason: obj.promotion_reason ?? undefined,
+      suppression_reason: obj.suppression_reason ?? undefined,
+      archived_at: obj.archived_at ?? null,
+      healed_at: obj.healed_at ?? null,
+      thread_id: obj.thread_id ?? obj.dialog_group_id ?? obj.dna_root_id ?? obj.id,
+      session_id: obj.session_id ?? undefined,
+      dialog_group_id: obj.dialog_group_id ?? undefined,
+      source_conversation_ids: obj.source_conversation_ids ? JSON.parse(obj.source_conversation_ids) : undefined,
       recall_count: obj.recall_count ?? 0,
       last_recalled_at: obj.last_recalled_at ?? null,
       reinforcement_accumulator: obj.reinforcement_accumulator ?? 0,

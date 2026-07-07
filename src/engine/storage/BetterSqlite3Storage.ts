@@ -12,11 +12,13 @@
  * 2. 将现有 fusion_memory.db 数据导入
  * 3. 切换 IStorageProvider 实现类
  */
-import Database from 'better-sqlite3';
+import BetterSqlite3 from 'better-sqlite3';
 import type { IStorageProvider } from './IStorageProvider.js';
 
+type BetterSqlite3Database = InstanceType<typeof BetterSqlite3>;
+
 export class BetterSqlite3Storage implements IStorageProvider {
-  private db: any = null;
+  private db: BetterSqlite3Database | null = null;
   private dbPath: string;
 
   constructor(dbPath: string) {
@@ -25,7 +27,7 @@ export class BetterSqlite3Storage implements IStorageProvider {
 
   /** 初始化数据库 + WAL 模式 */
   initialize(): void {
-    this.db = new Database(this.dbPath, {
+    this.db = new BetterSqlite3(this.dbPath, {
       // WAL 模式 - 读写并发
       nativeBinding: undefined,
     });
@@ -79,7 +81,7 @@ export class BetterSqlite3Storage implements IStorageProvider {
   }
 
   /** 获取底层 Database 实例（供需要直接 SQL 访问的模块使用） */
-  getNativeDb(): any | null {
+  getNativeDb(): BetterSqlite3Database | null {
     return this.db;
   }
 

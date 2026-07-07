@@ -124,6 +124,12 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       perceptionJson: pJson, calciumScore, calciumLevel,
       locusPath, leafZone: 'user', rawInput: input.message,
       primaryEmotion, memoryType: 'dialog',
+      memoryKind: rp ? 'roleplay' : 'episodic',
+      lifecycleState: calciumLevel >= 2 ? 'active' : 'candidate',
+      confidenceScore: 0.6,
+      stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
+      threadId: rpTag ?? (input.dna as any).dna_root_id ?? idUser,
+      sourceConversationIds: [input.seqPos],
       dialogGroupId: rpTag, topicLabel: null,
     })) {
       hadError = true;
@@ -136,6 +142,12 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       perceptionJson: pJson, calciumScore, calciumLevel,
       locusPath, leafZone: 'assistant', rawInput: input.reply,
       primaryEmotion, memoryType: 'dialog',
+      memoryKind: rp ? 'roleplay' : 'episodic',
+      lifecycleState: calciumLevel >= 2 ? 'active' : 'candidate',
+      confidenceScore: 0.6,
+      stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
+      threadId: rpTag ?? (input.dna as any).dna_root_id ?? idAssist,
+      sourceConversationIds: [input.seqPos + 1],
       dialogGroupId: rpTag, topicLabel: null,
     })) {
       hadError = true;

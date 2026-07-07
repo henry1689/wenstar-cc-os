@@ -18,6 +18,19 @@ CREATE TABLE IF NOT EXISTS memories (
     locus_path TEXT NOT NULL,
     leaf_zone TEXT NOT NULL,
     raw_input TEXT NOT NULL,
+    memory_kind TEXT DEFAULT 'episodic',
+    lifecycle_state TEXT DEFAULT 'candidate',
+    confidence_score REAL DEFAULT 0.5,
+    stability_score REAL DEFAULT 0.5,
+    last_verified_at TEXT,
+    promotion_reason TEXT,
+    suppression_reason TEXT,
+    archived_at TEXT,
+    healed_at TEXT,
+    thread_id TEXT,
+    session_id TEXT,
+    dialog_group_id TEXT,
+    source_conversation_ids TEXT,
 
     -- 记忆动力学
     recall_count INTEGER DEFAULT 0,
@@ -68,6 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_time_period ON memories(time_period);
 CREATE INDEX IF NOT EXISTS idx_memories_season ON memories(season);
 -- P1-4: 多租户索引
 CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
+CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(memory_kind);
+CREATE INDEX IF NOT EXISTS idx_memories_lifecycle ON memories(lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_memories_thread ON memories(thread_id);
 
 -- 实体表
 CREATE TABLE IF NOT EXISTS entities (

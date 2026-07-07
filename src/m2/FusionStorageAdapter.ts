@@ -90,6 +90,10 @@ export class FusionStorageAdapter {
       seq_pos: pos,
       created_at: now,
       dna_root_id: (dna as any).dna_root_id,
+      thread_id: (dna as any).dialog_group_id ?? (dna as any).dna_root_id ?? dna.branch_id,
+      session_id: (dna as any).session_id ?? undefined,
+      dialog_group_id: (dna as any).dialog_group_id,
+      source_conversation_ids: [],
       perception,
       calcium_score: clampedScore,
       calcium_level: calcium.level,
@@ -97,6 +101,15 @@ export class FusionStorageAdapter {
       locus_path: dna.locus_path,
       entity_genes: dna.entity_genes,
       leaf_zone: dna.leaf_zone,
+      memory_kind: 'episodic',
+      lifecycle_state: calcium.level >= 2 ? 'active' : 'candidate',
+      confidence_score: 0.55,
+      stability_score: calcium.level >= 2 ? 0.45 : 0.2,
+      last_verified_at: null,
+      promotion_reason: undefined,
+      suppression_reason: undefined,
+      archived_at: null,
+      healed_at: null,
       primary_emotion: primaryEmotion,
       secondary_emotions: secondaryEmotions,
       recall_count: 0,
@@ -201,7 +214,15 @@ export class FusionStorageAdapter {
 
   promoteToLandmark(memoryId: string, narrativeTag?: string, sensoryAnchor?: string): boolean {
     this.ensureReady();
-    return this.sqlite.promoteToLandmark(memoryId, narrativeTag, sensoryAnchor);
+    const ok = this.sqlite.promoteToLandmark(memoryId, narrativeTag, sensoryAnchor);
+    if (!ok) return false;
+    const record = this.sqlite.findById(memoryId);
+    if (!record) return true;
+    record.lifecycle_state = 'promoted';
+    record.promotion_reason = narrativeTag ?? 'landmark_promotion';
+    record.last_verified_at = new Date().toISOString();
+    this.sqlite.write(record);
+    return true;
   }
 
   markScar(memoryId: string, scarType: string): boolean {
@@ -209,6 +230,8 @@ export class FusionStorageAdapter {
     const record = this.sqlite.findById(memoryId);
     if (!record || record.is_landmark) return false;
     record.scar = { type: scarType as any, healed: false, healed_at: null };
+    record.lifecycle_state = 'suppressed';
+    record.suppression_reason = scarType;
     this.sqlite.write(record);
     return true;
   }
@@ -220,6 +243,10 @@ export class FusionStorageAdapter {
     if (!record || !record.scar) return false;
     record.scar.healed = true;
     record.scar.healed_at = new Date().toISOString();
+    record.lifecycle_state = 'healed';
+    record.healed_at = record.scar.healed_at;
+    record.last_verified_at = record.scar.healed_at;
+    record.suppression_reason = undefined;
     this.sqlite.write(record);
     return true;
   }

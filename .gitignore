@@ -25,6 +25,7 @@ data/
 dist/
 node_modules/
 npm-debug.log*
+.npm-cache/
 voxcpm2/
 voxcpm2/
 __m7_test_*.db
