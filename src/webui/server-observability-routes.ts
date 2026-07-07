@@ -223,6 +223,7 @@ function buildVaultHealth(input: {
     readyByCalcium: number;
     readyByRecall: number;
     readyByLandmark: number;
+    readyByMultiFactor: number;
     weakActive: number;
   };
   diamond: {
@@ -233,6 +234,9 @@ function buildVaultHealth(input: {
     hotEntries: number;
     coldEntries: number;
     recentPromotions: number;
+    directPromotions: number;
+    mergedPromotions: number;
+    multifactorPromotions: number;
     emotionCoverage: number;
   };
 }) {
@@ -296,12 +300,14 @@ function buildVaultHealth(input: {
       status: toStatus(goldScore),
       reasons: [
         input.gold.readyForDiamond > 0 ? `${input.gold.readyForDiamond} 条金库高钙记忆待晋升` : null,
+        input.gold.readyByMultiFactor > 0 ? `${input.gold.readyByMultiFactor} 条记忆满足多因子晋升` : null,
         input.gold.suppressed > 0 ? `${input.gold.suppressed} 条记忆处于抑制态` : null,
         input.gold.weakActive > 0 ? `${input.gold.weakActive} 条活跃记忆已进入弱活性区` : null,
       ].filter(Boolean),
       highlights: [
         `ready ${input.gold.readyForDiamond}`,
         `recall ${input.gold.readyByRecall}`,
+        `multi ${input.gold.readyByMultiFactor}`,
         `weak ${input.gold.weakActive}`,
       ],
       actions: [
@@ -316,11 +322,14 @@ function buildVaultHealth(input: {
       reasons: [
         input.diamond.orphaned > 0 ? `${input.diamond.orphaned} 颗黑钻缺少源记忆链接` : null,
         input.diamond.coldEntries > 0 ? `${input.diamond.coldEntries} 颗黑钻超过 30 天未被召回` : null,
+        input.diamond.mergedPromotions > 0 ? `最近 7 天合钻 ${input.diamond.mergedPromotions} 次` : null,
         input.diamond.utilization > 85 ? `黑钻容量利用率 ${input.diamond.utilization}%` : null,
       ].filter(Boolean),
       highlights: [
         `hot ${input.diamond.hotEntries}`,
         `cold ${input.diamond.coldEntries}`,
+        `merge ${input.diamond.mergedPromotions}`,
+        `multi ${input.diamond.multifactorPromotions}`,
         `emotion ${input.diamond.emotionCoverage}`,
       ],
       actions: [],
@@ -381,6 +390,28 @@ function buildMemoryActionables(rows: any[]) {
       actions,
     };
   });
+}
+
+function buildSourceLookup(rows: any[]) {
+  const lookup: Record<string, any> = {};
+  for (const row of rows) {
+    const memoryId = String(row.id ?? '');
+    if (!memoryId) continue;
+    lookup[memoryId] = {
+      id: memoryId,
+      snippet: String(row.raw_input || '').substring(0, 88),
+      lifecycle: String(row.lifecycle_state ?? 'candidate'),
+      calcium: Number(Number(row.calcium_score ?? 0).toFixed(2)),
+      recall: Number(row.recall_count ?? 0),
+      promotedToDiamond: Number(row.promoted_to_diamond ?? 0) === 1,
+      isLandmark: Number(row.is_landmark ?? 0) === 1,
+      primaryEmotion: row.primary_emotion || null,
+      createdAt: row.created_at || null,
+      readonly: true,
+      actions: [],
+    };
+  }
+  return lookup;
 }
 
 export async function buildCommandCenterSnapshot(
@@ -525,6 +556,29 @@ export async function buildCommandCenterSnapshot(
          THEN 1 ELSE 0 END) as ready_by_landmark,
        SUM(CASE
          WHEN COALESCE(promoted_to_diamond, 0) = 0
+          AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
+          AND NOT (is_landmark = 1 AND calcium_score >= 3.5)
+          AND calcium_score < 4.5
+          AND recall_count < 5
+          AND (
+            (CASE WHEN is_landmark = 1 THEN 2 ELSE 0 END) +
+            (CASE WHEN calcium_score >= 4.0 THEN 3 WHEN calcium_score >= 3.5 THEN 2 ELSE 0 END) +
+            (CASE WHEN recall_count >= 4 THEN 2 WHEN recall_count >= 3 THEN 1 ELSE 0 END) +
+            (CASE WHEN COALESCE(effective_strength, 0) >= 0.72 THEN 2 WHEN COALESCE(effective_strength, 0) >= 0.58 THEN 1 ELSE 0 END) +
+            (CASE WHEN scar_type IS NOT NULL AND scar_type != '' THEN 1 ELSE 0 END) +
+            (CASE WHEN narrative_tag IS NOT NULL AND narrative_tag != '' THEN 1 ELSE 0 END)
+          ) >= 5
+          AND (
+            (CASE WHEN is_landmark = 1 THEN 1 ELSE 0 END) +
+            (CASE WHEN calcium_score >= 3.5 THEN 1 ELSE 0 END) +
+            (CASE WHEN recall_count >= 3 THEN 1 ELSE 0 END) +
+            (CASE WHEN COALESCE(effective_strength, 0) >= 0.58 THEN 1 ELSE 0 END) +
+            (CASE WHEN scar_type IS NOT NULL AND scar_type != '' THEN 1 ELSE 0 END) +
+            (CASE WHEN narrative_tag IS NOT NULL AND narrative_tag != '' THEN 1 ELSE 0 END)
+          ) >= 2
+         THEN 1 ELSE 0 END) as ready_by_multifactor,
+       SUM(CASE
+         WHEN COALESCE(promoted_to_diamond, 0) = 0
           AND lifecycle_state = 'active'
           AND COALESCE(effective_strength, 0) < 0.25
          THEN 1 ELSE 0 END) as weak_active
@@ -564,6 +618,19 @@ export async function buildCommandCenterSnapshot(
        COUNT(DISTINCT COALESCE(emotion_tag, 'unknown')) as emotion_coverage
      FROM black_diamond`,
   ) as any[];
+  const recentDiamondRows = sqlite.queryAll(
+    `SELECT id, summary, emotion_tag, tags, notes, source_id, namespace, created_at, updated_at, calcium_level, recall_count
+     FROM black_diamond
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 6`,
+  ) as any[];
+  const vaultPromotionRows = sqlite.queryAll(
+    `SELECT
+       SUM(CASE WHEN operation = 'merge_promote' AND created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as merged_promotions,
+       SUM(CASE WHEN operation = 'promote' AND created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as direct_promotions,
+       SUM(CASE WHEN operation = 'promote' AND detail LIKE '%multi-factor:%' AND created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as multifactor_promotions
+     FROM vault_log`,
+  ) as any[];
   const actionableMemoryRows = sqlite.queryAll(
     `SELECT id, raw_input, calcium_score, recall_count, lifecycle_state,
             promoted_to_diamond, is_landmark, primary_emotion, created_at
@@ -580,6 +647,26 @@ export async function buildCommandCenterSnapshot(
               created_at DESC
      LIMIT 8`,
   ) as any[];
+  const sourceLookupIds = Array.from(new Set(
+    [
+      ...recentDiamondRows.map((row: any) => row.source_id),
+      ...vaultLogRows
+        .filter((row: any) => row.operation === 'promote' || row.operation === 'merge_promote')
+        .map((row: any) => row.source_id),
+    ]
+      .filter((id: any) => typeof id === 'string' && id.trim().length > 0)
+      .map((id: string) => id.trim()),
+  ));
+  const sourceLookupRows = sourceLookupIds.length > 0
+    ? sqlite.queryAll(
+      `SELECT id, raw_input, calcium_score, recall_count, lifecycle_state,
+              promoted_to_diamond, is_landmark, primary_emotion, created_at
+       FROM memories
+       WHERE id IN (${sourceLookupIds.map(() => '?').join(',')})
+       ORDER BY created_at DESC`,
+      sourceLookupIds,
+    ) as any[]
+    : [];
 
   const memoryLinkage = memoryLinkageRows[0] as any ?? {};
   const groupStats = groupRows[0] as any ?? {};
@@ -591,6 +678,7 @@ export async function buildCommandCenterSnapshot(
   const knowledgeLinks = knowledgeLinkRows[0] as any ?? {};
   const diamondSources = diamondSourceRows[0] as any ?? {};
   const diamondActivity = diamondActivityRows[0] as any ?? {};
+  const vaultPromotionStats = vaultPromotionRows[0] as any ?? {};
 
   const percent = (part: number, total: number): number => {
     if (!total) return 0;
@@ -621,6 +709,7 @@ export async function buildCommandCenterSnapshot(
       readyByCalcium: Number(goldReadiness.ready_by_calcium ?? 0),
       readyByRecall: Number(goldReadiness.ready_by_recall ?? 0),
       readyByLandmark: Number(goldReadiness.ready_by_landmark ?? 0),
+      readyByMultiFactor: Number(goldReadiness.ready_by_multifactor ?? 0),
       weakActive: Number(goldReadiness.weak_active ?? 0),
     },
     diamond: {
@@ -631,6 +720,9 @@ export async function buildCommandCenterSnapshot(
       hotEntries: Number(diamondActivity.hot_entries ?? 0),
       coldEntries: Number(diamondActivity.cold_entries ?? 0),
       recentPromotions: Number(diamondActivity.recent_promotions ?? 0),
+      directPromotions: Number(vaultPromotionStats.direct_promotions ?? 0),
+      mergedPromotions: Number(vaultPromotionStats.merged_promotions ?? 0),
+      multifactorPromotions: Number(vaultPromotionStats.multifactor_promotions ?? 0),
       emotionCoverage: Number(diamondActivity.emotion_coverage ?? 0),
     },
   };
@@ -738,8 +830,55 @@ export async function buildCommandCenterSnapshot(
           targetId: row.target_id || null,
           detail: row.detail || '',
           createdAt: row.created_at || null,
+          emphasis:
+            row.operation === 'merge_promote'
+              ? 'merge'
+              : String(row.detail || '').includes('multi-factor:')
+                ? 'multi-factor'
+                : row.operation === 'promote'
+                  ? 'direct'
+                  : 'neutral',
         })),
       },
+      diamondFlow: {
+        recent: recentDiamondRows.map((row: any) => {
+          const notes = String(row.notes || '');
+          const tags = typeof row.tags === 'string'
+            ? (() => { try { return JSON.parse(row.tags); } catch { return []; } })()
+            : (row.tags || []);
+          const merged = notes.includes('合并来源');
+          const multifactor = notes.includes('multi-factor:');
+          return {
+            id: row.id || null,
+            summary: (row.summary || '').substring(0, 120),
+            emotionTag: row.emotion_tag || '未分类',
+            sourceId: row.source_id || null,
+            namespace: row.namespace || 'default',
+            calciumLevel: Number(row.calcium_level ?? 0),
+            recallCount: Number(row.recall_count ?? 0),
+            updatedAt: row.updated_at || row.created_at || null,
+            tags: Array.isArray(tags) ? tags.slice(0, 5) : [],
+            mode: merged ? 'merge' : multifactor ? 'multi-factor' : 'direct',
+          };
+        }),
+        operations: vaultLogRows
+          .filter((row: any) => row.operation === 'promote' || row.operation === 'merge_promote')
+          .slice(0, 6)
+          .map((row: any) => ({
+            operation: row.operation || 'unknown',
+            sourceId: row.source_id || null,
+            targetId: row.target_id || null,
+            detail: row.detail || '',
+            createdAt: row.created_at || null,
+            mode:
+              row.operation === 'merge_promote'
+                ? 'merge'
+                : String(row.detail || '').includes('multi-factor:')
+                  ? 'multi-factor'
+                  : 'direct',
+          })),
+      },
+      sourceLookup: buildSourceLookup(sourceLookupRows),
       actionables: buildMemoryActionables(actionableMemoryRows),
       knowledge: {
         total: Number(knowledgeStats.total ?? 0),

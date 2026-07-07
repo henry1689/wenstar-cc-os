@@ -410,6 +410,42 @@
       line-height: 1.6;
     }
 
+    .filter-bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 0 0 14px;
+    }
+
+    .filter-button {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #d7e5f7;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .filter-button.active {
+      border-color: rgba(88, 214, 255, 0.45);
+      background: rgba(88, 214, 255, 0.16);
+      color: #eef7ff;
+    }
+
+    .memory-link {
+      border: 0;
+      background: transparent;
+      color: #86dfff;
+      padding: 0;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .memory-link:hover {
+      text-decoration: underline;
+    }
+
     .memory-queue {
       display: grid;
       gap: 14px;
@@ -422,6 +458,11 @@
       border: 1px solid rgba(255, 255, 255, 0.06);
       display: grid;
       gap: 10px;
+    }
+
+    .memory-row.focused {
+      border-color: rgba(88, 214, 255, 0.45);
+      box-shadow: 0 0 0 1px rgba(88, 214, 255, 0.18), 0 16px 32px rgba(0, 0, 0, 0.18);
     }
 
     .memory-row-top,
@@ -876,6 +917,17 @@
       <section class="panel">
         <div class="panel-head">
           <div>
+            <p class="section-label">Diamond Flow</p>
+            <h3>最近黑钻与晋升轨迹</h3>
+          </div>
+        </div>
+        <div class="filter-bar" id="diamond-flow-filters"></div>
+        <div class="memory-queue" id="diamond-flow"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
             <p class="section-label">Memory Queue</p>
             <h3>单条记忆操作队列</h3>
           </div>
@@ -892,9 +944,14 @@
     const eventList = document.getElementById('event-list');
     const hookGrid = document.getElementById('hook-grid');
     const vaultActionGrid = document.getElementById('vault-action-grid');
+    const diamondFlowFilters = document.getElementById('diamond-flow-filters');
+    const diamondFlow = document.getElementById('diamond-flow');
     const memoryQueue = document.getElementById('memory-queue');
     let vaultActionBusy = false;
     const localActionFeed = [];
+    let diamondFlowFilter = 'all';
+    let latestActionables = [];
+    let latestSourceLookup = {};
 
     function setText(id, value) {
       const el = document.getElementById(id);
@@ -1005,6 +1062,20 @@
     }
 
     function renderEvents(alerts, dispatch, heart, operations) {
+      function describeVaultOperation(operation) {
+        if (!operation) return 'recent vault action';
+        if (operation.operation === 'merge_promote') {
+          return '黑钻合并 · ' + (operation.detail || operation.targetId || operation.sourceId || '已有黑钻吸收新来源');
+        }
+        if (operation.operation === 'promote') {
+          if (operation.emphasis === 'multi-factor') {
+            return '多因子晋升 · ' + (operation.detail || operation.sourceId || 'gold -> diamond');
+          }
+          return '黑钻新晋升 · ' + (operation.detail || operation.sourceId || 'gold -> diamond');
+        }
+        return (operation.operation || 'op') + ' · ' + (operation.detail || operation.sourceId || operation.targetId || 'recent vault action');
+      }
+
       const items = [];
       if (Array.isArray(localActionFeed) && localActionFeed.length) {
         for (let i = 0; i < Math.min(localActionFeed.length, 3); i += 1) {
@@ -1038,7 +1109,7 @@
           const operation = operations.recent[i];
           items.push({
             time: 'vault',
-            text: (operation.operation || 'op') + ' · ' + (operation.detail || operation.sourceId || operation.targetId || 'recent vault action')
+            text: describeVaultOperation(operation)
           });
         }
       }
@@ -1139,6 +1210,7 @@
     }
 
     function renderMemoryQueue(items) {
+      latestActionables = Array.isArray(items) ? items : [];
       if (!items || !items.length) {
         memoryQueue.innerHTML = '<div class="memory-row"><p class="memory-row-title">当前没有需要人工处理的单条记忆。</p></div>';
         return;
@@ -1161,7 +1233,7 @@
         }).join('');
 
         return ''
-          + '<article class="memory-row">'
+          + '<article class="memory-row" data-memory-id="' + item.id + '">'
           + '  <div class="memory-row-top">'
           + '    <p class="memory-row-title">' + (item.snippet || item.id || 'memory') + '</p>'
           + '    <span class="memory-chip">' + item.id + '</span>'
@@ -1175,6 +1247,153 @@
       buttons.forEach(function (button) {
         button.addEventListener('click', function () {
           runVaultAction(button.getAttribute('data-target'), button.getAttribute('data-label') || 'memory action');
+        });
+      });
+    }
+
+    function buildReadonlyMemoryRow(item) {
+      const chips = [
+        '<span class="memory-chip">' + (item.lifecycle || 'candidate') + '</span>',
+        '<span class="memory-chip">calcium ' + Number(item.calcium || 0) + '</span>',
+        '<span class="memory-chip">recall ' + Number(item.recall || 0) + '</span>',
+        item.primaryEmotion ? '<span class="memory-chip">' + item.primaryEmotion + '</span>' : '',
+        item.isLandmark ? '<span class="memory-chip">landmark</span>' : '',
+        item.promotedToDiamond ? '<span class="memory-chip">diamond</span>' : '',
+        '<span class="memory-chip">readonly</span>'
+      ].filter(Boolean).join('');
+      return ''
+        + '<article class="memory-row focused" data-memory-id="' + item.id + '" data-readonly-memory="1">'
+        + '  <div class="memory-row-top">'
+        + '    <p class="memory-row-title">' + (item.snippet || item.id || 'memory') + '</p>'
+        + '    <span class="memory-chip">' + item.id + '</span>'
+        + '  </div>'
+        + '  <div class="memory-row-meta">' + chips + '</div>'
+        + '  <div class="memory-row-actions"><span class="memory-chip">created ' + (item.createdAt || '-') + '</span></div>'
+        + '</article>';
+    }
+
+    function focusMemoryQueueById(memoryId) {
+      if (!memoryId) return;
+      const row = memoryQueue.querySelector('[data-memory-id="' + String(memoryId).replace(/"/g, '&quot;') + '"]');
+      const allRows = memoryQueue.querySelectorAll('.memory-row');
+      allRows.forEach(function (item) {
+        item.classList.remove('focused');
+      });
+      if (row) {
+        row.classList.add('focused');
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setText('vault-action-status', '已定位到来源记忆：' + memoryId);
+      } else {
+        const fallback = latestSourceLookup && latestSourceLookup[memoryId] ? latestSourceLookup[memoryId] : null;
+        if (fallback) {
+          const oldReadonly = memoryQueue.querySelector('[data-readonly-memory="1"]');
+          if (oldReadonly) oldReadonly.remove();
+          memoryQueue.insertAdjacentHTML('afterbegin', buildReadonlyMemoryRow(fallback));
+          const injected = memoryQueue.querySelector('[data-memory-id="' + String(memoryId).replace(/"/g, '&quot;') + '"]');
+          if (injected) injected.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setText('vault-action-status', '来源记忆不在当前队列，已插入只读详情：' + memoryId);
+        } else {
+          setText('vault-action-status', '未在当前 Memory Queue 中找到来源记忆：' + memoryId);
+        }
+      }
+    }
+
+    function renderDiamondFlow(flow) {
+      const recent = flow && Array.isArray(flow.recent) ? flow.recent : [];
+      const operations = flow && Array.isArray(flow.operations) ? flow.operations : [];
+      const counts = { all: recent.length + operations.length, direct: 0, 'multi-factor': 0, merge: 0 };
+      recent.forEach(function (item) {
+        const mode = item && item.mode ? item.mode : 'direct';
+        if (typeof counts[mode] === 'number') counts[mode] += 1;
+      });
+      operations.forEach(function (item) {
+        const mode = item && item.mode ? item.mode : 'direct';
+        if (typeof counts[mode] === 'number') counts[mode] += 1;
+      });
+      const filterOrder = [
+        { key: 'all', label: '全部' },
+        { key: 'direct', label: '新钻' },
+        { key: 'multi-factor', label: '多因子' },
+        { key: 'merge', label: '合并' }
+      ];
+      diamondFlowFilters.innerHTML = filterOrder.map(function (item) {
+        return '<button class="filter-button' + (diamondFlowFilter === item.key ? ' active' : '') + '" data-flow-filter="' + item.key + '">' + item.label + ' ' + Number(counts[item.key] || 0) + '</button>';
+      }).join('');
+      const filterButtons = diamondFlowFilters.querySelectorAll('[data-flow-filter]');
+      filterButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          diamondFlowFilter = button.getAttribute('data-flow-filter') || 'all';
+          renderDiamondFlow(flow);
+        });
+      });
+
+      const matchesFilter = function (mode) {
+        return diamondFlowFilter === 'all' || diamondFlowFilter === mode;
+      };
+      const filteredRecent = recent.filter(function (item) { return matchesFilter(item && item.mode ? item.mode : 'direct'); });
+      const filteredOperations = operations.filter(function (item) { return matchesFilter(item && item.mode ? item.mode : 'direct'); });
+      if (!filteredRecent.length && !filteredOperations.length) {
+        diamondFlow.innerHTML = '<div class="memory-row"><p class="memory-row-title">当前还没有最近黑钻轨迹可显示。</p></div>';
+        return;
+      }
+
+      const cards = [];
+      for (let i = 0; i < filteredRecent.length; i += 1) {
+        const item = filteredRecent[i];
+        const chips = [
+          '<span class="memory-chip">' + (item.mode || 'direct') + '</span>',
+          '<span class="memory-chip">' + (item.emotionTag || '未分类') + '</span>',
+          '<span class="memory-chip">calcium ' + Number(item.calciumLevel || 0) + '</span>',
+          '<span class="memory-chip">recall ' + Number(item.recallCount || 0) + '</span>',
+          item.namespace ? '<span class="memory-chip">' + item.namespace + '</span>' : ''
+        ].filter(Boolean).join('');
+        const tags = Array.isArray(item.tags) && item.tags.length
+          ? '<div class="memory-row-meta">' + item.tags.map(function (tag) {
+              return '<span class="memory-chip">' + tag + '</span>';
+            }).join('') + '</div>'
+          : '';
+        const sourceButton = item.sourceId
+          ? '<button class="memory-link" data-source-memory="' + String(item.sourceId).replace(/"/g, '&quot;') + '">定位来源 ' + item.sourceId + '</button>'
+          : '';
+        cards.push(
+          '<article class="memory-row">'
+          + '  <div class="memory-row-top">'
+          + '    <p class="memory-row-title">' + (item.summary || item.id || 'diamond') + '</p>'
+          + '    <span class="memory-chip">' + (item.id || 'diamond') + '</span>'
+          + '  </div>'
+          + '  <div class="memory-row-meta">' + chips + '</div>'
+          + tags
+          + '  <div class="memory-row-actions"><span class="memory-chip">updated ' + (item.updatedAt || '-') + '</span>' + (item.sourceId ? '<span class="memory-chip">source ' + item.sourceId + '</span>' : '') + sourceButton + '</div>'
+          + '</article>'
+        );
+      }
+
+      for (let i = 0; i < filteredOperations.length; i += 1) {
+        const op = filteredOperations[i];
+        const sourceButton = op.sourceId
+          ? '<button class="memory-link" data-source-memory="' + String(op.sourceId).replace(/"/g, '&quot;') + '">定位来源 ' + op.sourceId + '</button>'
+          : '';
+        cards.push(
+          '<article class="memory-row">'
+          + '  <div class="memory-row-top">'
+          + '    <p class="memory-row-title">' + (op.mode === 'merge' ? '黑钻合并事件' : op.mode === 'multi-factor' ? '多因子晋升事件' : '黑钻晋升事件') + '</p>'
+          + '    <span class="memory-chip">' + (op.operation || 'promote') + '</span>'
+          + '  </div>'
+          + '  <div class="memory-row-meta">'
+          + '    <span class="memory-chip">' + (op.mode || 'direct') + '</span>'
+          + (op.targetId ? '<span class="memory-chip">target ' + op.targetId + '</span>' : '')
+          + (op.sourceId ? '<span class="memory-chip">source ' + op.sourceId + '</span>' : '')
+          + '  </div>'
+          + '  <div class="memory-row-actions"><span>' + (op.detail || '最近没有详细说明') + '</span>' + sourceButton + '</div>'
+          + '</article>'
+        );
+      }
+
+      diamondFlow.innerHTML = cards.join('');
+      const sourceButtons = diamondFlow.querySelectorAll('[data-source-memory]');
+      sourceButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          focusMemoryQueueById(button.getAttribute('data-source-memory'));
         });
       });
     }
@@ -1269,6 +1488,8 @@
           vaults: snapshot.memory.vaults || {},
           vaultHealth: snapshot.memory.vaultHealth || {},
           operations: snapshot.memory.operations || {},
+          diamondFlow: snapshot.memory.diamondFlow || {},
+          sourceLookup: snapshot.memory.sourceLookup || {},
           actionables: snapshot.memory.actionables || [],
           knowledge: snapshot.memory.knowledge || {}
         } : {}
@@ -1329,12 +1550,17 @@
           payload.health && payload.health.architecture ? payload.health.architecture.vaultHealth || {} : {},
           payload.health && payload.health.architecture ? payload.health.architecture.vaults || {} : {}
         );
+        latestSourceLookup = payload.health && payload.health.architecture ? payload.health.architecture.sourceLookup || {} : {};
+        renderDiamondFlow(
+          payload.health && payload.health.architecture ? payload.health.architecture.diamondFlow || {} : {}
+        );
         renderMemoryQueue(
           payload.health && payload.health.architecture ? payload.health.architecture.actionables || [] : []
         );
       } catch (err) {
         eventList.innerHTML = '<li><span class="event-time">error</span><div>' + String(err && err.message ? err.message : err) + '</div></li>';
         setText('vault-action-status', 'command center 刷新失败：' + String(err && err.message ? err.message : err));
+        diamondFlow.innerHTML = '<div class="memory-row"><p class="memory-row-title">diamond flow 加载失败：' + String(err && err.message ? err.message : err) + '</p></div>';
         memoryQueue.innerHTML = '<div class="memory-row"><p class="memory-row-title">memory queue 加载失败：' + String(err && err.message ? err.message : err) + '</p></div>';
       }
     }

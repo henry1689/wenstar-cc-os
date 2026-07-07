@@ -247,7 +247,14 @@ CREATE TABLE IF NOT EXISTS conversations (
     entity_names TEXT,
     perception_summary TEXT,
     calcium_score REAL DEFAULT 0,
+    dna_root_id TEXT,
+    dialog_group_id TEXT,
+    dialog_round INTEGER DEFAULT 0,
+    is_compacted INTEGER DEFAULT 0,
+    is_test INTEGER DEFAULT 0,
     is_summary INTEGER DEFAULT 0,
+    is_promoted INTEGER DEFAULT 0,
+    roleplay_char TEXT,
     summary_of_range TEXT,
     -- P0-4: 消息唯一ID（业务幂等键）
     message_id TEXT UNIQUE,
@@ -258,6 +265,9 @@ CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_conv_topic ON conversations(topic);
 CREATE INDEX IF NOT EXISTS idx_conv_seq ON conversations(seq_pos);
 CREATE INDEX IF NOT EXISTS idx_conv_summary ON conversations(is_summary);
+CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id);
+CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id);
+CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted);
 CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id);
 
 -- 主人大脑镜像

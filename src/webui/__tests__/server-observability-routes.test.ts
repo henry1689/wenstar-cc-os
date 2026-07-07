@@ -36,12 +36,21 @@ describe('buildCommandCenterSnapshot', () => {
             if (sql.includes("timestamp < datetime('now', '-24 hours')")) return [{ stale_unpromoted: 3, cold_unpromoted: 1 }];
             if (sql.includes('SUM(CASE WHEN is_promoted = 0') && sql.includes('FROM conversations')) return [{ total: 24, unpromoted: 9, ready_for_gold: 4, with_dna_root: 18, with_dialog_group: 14, roleplay_turns: 6 }];
             if (sql.includes("COALESCE(lifecycle_state, 'candidate') = 'candidate'")) return [{ candidate_count: 11, active_count: 20, suppressed_count: 2, healed_count: 1, promoted_count: 3, archived_count: 5 }];
-            if (sql.includes('ready_by_calcium')) return [{ ready_by_calcium: 2, ready_by_recall: 5, ready_by_landmark: 1, weak_active: 4 }];
+            if (sql.includes('ready_by_calcium')) return [{ ready_by_calcium: 2, ready_by_recall: 5, ready_by_landmark: 1, ready_by_multifactor: 3, weak_active: 4 }];
             if (sql.includes('classification_pending = 0')) return [{ total: 20, classified: 16, pending: 4 }];
             if (sql.includes('COUNT(DISTINCT knowledge_id)')) return [{ links: 12, linked_knowledge_items: 8, linked_memories: 7 }];
-            if (sql.includes('FROM vault_log')) return [{ operation: 'auto_promote', source_type: 'gold', source_id: null, target_id: null, detail: '巡检提炼2条', created_at: '2026-07-07T00:10:00.000Z' }];
+            if (sql.includes('SUM(CASE WHEN operation = \'merge_promote\'')) return [{ merged_promotions: 2, direct_promotions: 3, multifactor_promotions: 1 }];
+            if (sql.includes('FROM vault_log')) return [{ operation: 'promote', source_type: 'gold', source_id: 'mem_7', target_id: 'bd_7', detail: '提炼至黑钻: 核心纪要 (multi-factor:high-calcium+recall>=3+strong-trace+narrative-tag)', created_at: '2026-07-07T00:10:00.000Z' }];
             if (sql.includes('SUM(CASE WHEN source_id IS NOT NULL') && sql.includes('FROM black_diamond')) return [{ total: 4, linked_sources: 3 }];
             if (sql.includes('hot_entries')) return [{ hot_entries: 2, cold_entries: 1, recent_promotions: 3, emotion_coverage: 4 }];
+            if (sql.includes('SELECT id, summary, emotion_tag, tags, notes, source_id, namespace') && sql.includes('FROM black_diamond')) return [
+              { id: 'bd_7', summary: '核心纪要', emotion_tag: '安心', tags: '["gold_提炼","tag:合作转折"]', notes: '自动提炼于 2026-07-07T00:10:00.000Z · multi-factor:high-calcium+recall>=3+strong-trace+narrative-tag', source_id: 'mem_7', namespace: 'default', created_at: '2026-07-07T00:10:00.000Z', updated_at: '2026-07-07T00:10:00.000Z', calcium_level: 4, recall_count: 3 },
+              { id: 'bd_6', summary: '旧黑钻合并条目', emotion_tag: '工作复盘', tags: '["gold_提炼","merged_gold"]', notes: '已有珍藏\n合并来源 mem_6 @ 2026-07-07T00:08:00.000Z (multi-factor:high-calcium+recall>=3)', source_id: 'mem_old', namespace: 'ops', created_at: '2026-07-06T00:10:00.000Z', updated_at: '2026-07-07T00:08:00.000Z', calcium_level: 4, recall_count: 1 },
+            ];
+            if (sql.includes('FROM memories') && sql.includes('WHERE id IN')) return [
+              { id: 'mem_7', raw_input: '核心纪要来源记忆', calcium_score: 4.1, recall_count: 3, lifecycle_state: 'active', promoted_to_diamond: 1, is_landmark: 0, primary_emotion: '安心', created_at: '2026-07-07T00:09:00.000Z' },
+              { id: 'mem_old', raw_input: '旧黑钻来源记忆', calcium_score: 4.2, recall_count: 6, lifecycle_state: 'promoted', promoted_to_diamond: 1, is_landmark: 1, primary_emotion: '工作复盘', created_at: '2026-07-06T00:09:00.000Z' },
+            ];
             if (sql.includes('FROM memories') && sql.includes('LIMIT 8') && sql.includes('COALESCE(lifecycle_state')) return [
               { id: 'mem_action_1', raw_input: '需要人工判断是否升地标的候选记忆', calcium_score: 4.7, recall_count: 4, lifecycle_state: 'active', promoted_to_diamond: 0, is_landmark: 0, primary_emotion: '安心', created_at: '2026-07-07T00:20:00.000Z' },
               { id: 'mem_action_2', raw_input: '此前被压制、现在可人工愈合的记忆', calcium_score: 2.2, recall_count: 2, lifecycle_state: 'suppressed', promoted_to_diamond: 0, is_landmark: 0, primary_emotion: '委屈', created_at: '2026-07-07T00:18:00.000Z' },
@@ -132,15 +141,27 @@ describe('buildCommandCenterSnapshot', () => {
     expect(snapshot.memory.vaults.sand.staleBacklog).toBe(3);
     expect(snapshot.memory.vaults.gold.promoted).toBe(3);
     expect(snapshot.memory.vaults.gold.readyByRecall).toBe(5);
+    expect(snapshot.memory.vaults.gold.readyByMultiFactor).toBe(3);
     expect(snapshot.memory.vaults.gold.weakActive).toBe(4);
     expect(snapshot.memory.vaults.diamond.orphaned).toBe(1);
     expect(snapshot.memory.vaults.diamond.hotEntries).toBe(2);
+    expect(snapshot.memory.vaults.diamond.mergedPromotions).toBe(2);
+    expect(snapshot.memory.vaults.diamond.multifactorPromotions).toBe(1);
     expect(snapshot.memory.vaultHealth.overall.score).toBeGreaterThan(0);
     expect(['healthy', 'watch', 'risk']).toContain(snapshot.memory.vaultHealth.gold.status);
     expect(snapshot.memory.vaultHealth.gold.highlights).toContain('recall 5');
+    expect(snapshot.memory.vaultHealth.gold.highlights).toContain('multi 3');
+    expect(snapshot.memory.vaultHealth.diamond.highlights).toContain('merge 2');
     expect(snapshot.memory.vaultHealth.sand.actions[0].target).toBe('/api/assessor/run?action=sand');
     expect(snapshot.memory.vaultHealth.gold.actions[0].target).toBe('/api/vault/auto-promote');
-    expect(snapshot.memory.operations.recent[0].operation).toBe('auto_promote');
+    expect(snapshot.memory.operations.recent[0].operation).toBe('promote');
+    expect(snapshot.memory.operations.recent[0].emphasis).toBe('multi-factor');
+    expect(snapshot.memory.diamondFlow.recent[0].id).toBe('bd_7');
+    expect(snapshot.memory.diamondFlow.recent[0].mode).toBe('multi-factor');
+    expect(snapshot.memory.diamondFlow.recent[1].mode).toBe('merge');
+    expect(snapshot.memory.diamondFlow.operations[0].targetId).toBe('bd_7');
+    expect(snapshot.memory.sourceLookup.mem_7.snippet).toBe('核心纪要来源记忆');
+    expect(snapshot.memory.sourceLookup.mem_old.isLandmark).toBe(true);
     expect(snapshot.memory.actionables[0].id).toBe('mem_action_1');
     expect(snapshot.memory.actionables[0].actions[0].target).toContain('/api/vault/memory/promote?');
     expect(snapshot.memory.actionables[1].actions[0].target).toContain('/api/vault/memory/heal?');

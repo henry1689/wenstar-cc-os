@@ -218,17 +218,31 @@ export class SQLiteAdapter {
         dialog_group_id TEXT,
         dialog_round INTEGER DEFAULT 0,
         is_compacted INTEGER DEFAULT 0,
-        is_test INTEGER DEFAULT 0
+        is_test INTEGER DEFAULT 0,
+        is_summary INTEGER DEFAULT 0,
+        is_promoted INTEGER DEFAULT 0,
+        summary_of_range TEXT,
+        roleplay_char TEXT,
+        message_id TEXT UNIQUE,
+        namespace TEXT DEFAULT 'default'
       )`);
       try { this.db.run("ALTER TABLE conversations ADD COLUMN dna_root_id TEXT"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN dialog_group_id TEXT"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN dialog_round INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN is_compacted INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN is_test INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN is_summary INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN is_promoted INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN summary_of_range TEXT"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN roleplay_char TEXT"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch { /* 列已存在 */ }
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_seq ON conversations(seq_pos)");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id)");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id)");
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted)");
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id)");
     } catch (e) { console.warn('[SQLite] conversations 表创建失败:', e); }
 
     // SP3-3: 黑钻库 FTS5 全文索引（加速检索）
@@ -271,16 +285,18 @@ export class SQLiteAdapter {
     calciumScore?: number;
     dnaRootId?: string;
     isCompacted?: number;
+    namespace?: string;
   }): number {
     this.ensureReady();
     const now = new Date().toISOString();
+    const compacted = options?.isCompacted ?? 0;
     this.runSql(
-      'INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, is_compacted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, is_compacted, is_summary, is_promoted, namespace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
       [role, content, now, options?.seqPos ?? null, options?.topic ?? null,
        options?.entityNames ? JSON.stringify(options.entityNames) : null,
        options?.perception ? JSON.stringify(options.perception) : null,
        options?.calciumScore ?? null, options?.dnaRootId ?? null,
-       options?.isCompacted ?? 0]
+       compacted, compacted, options?.namespace ?? 'default']
     );
     this.save();
     return this.queryAll('SELECT last_insert_rowid() as id')[0]?.id as number || 0;

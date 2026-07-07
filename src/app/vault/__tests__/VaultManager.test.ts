@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addBlackDiamond,
+  autoPromoteCandidatesV2,
   deleteBlackDiamond,
   evaluateDiamondPromotion,
   promoteToBlackDiamond,
@@ -20,6 +21,9 @@ type MemoryRow = {
   promoted_to_diamond?: number;
   promotion_reason?: string | null;
   last_verified_at?: string | null;
+  effective_strength?: number;
+  primary_emotion?: string | null;
+  namespace?: string;
 };
 
 type DiamondRow = {
@@ -33,6 +37,7 @@ type DiamondRow = {
   notes: string;
   created_at: string;
   updated_at: string;
+  namespace?: string;
 };
 
 class MockSQLite {
@@ -52,10 +57,31 @@ class MockSQLite {
       const row = this.diamonds.get(String(params?.[0]));
       return row ? [row] : [];
     }
+    if (sql.includes('SELECT id, summary, emotion_tag, tags, notes, calcium_level') && sql.includes('FROM black_diamond')) {
+      return Array.from(this.diamonds.values());
+    }
     if (sql.includes('SELECT id FROM black_diamond WHERE source_id = ? LIMIT 1')) {
       const sourceId = String(params?.[0]);
       const row = Array.from(this.diamonds.values()).find((entry) => entry.source_id === sourceId);
       return row ? [{ id: row.id }] : [];
+    }
+    if (sql.includes('FROM memories') && sql.includes('COALESCE(promoted_to_diamond, 0) = 0')) {
+      return Array.from(this.memories.values())
+        .filter((row) =>
+          Number(row.promoted_to_diamond ?? 0) === 0 &&
+          ['candidate', 'active', 'healed'].includes(row.lifecycle_state ?? 'candidate') &&
+          (
+            Number(row.calcium_score ?? 0) >= 3.5 ||
+            Number(row.recall_count ?? 0) >= 3 ||
+            Number(row.is_landmark ?? 0) === 1
+          )
+        )
+        .sort((a, b) =>
+          Number(b.calcium_score ?? 0) - Number(a.calcium_score ?? 0) ||
+          Number(b.recall_count ?? 0) - Number(a.recall_count ?? 0) ||
+          Number(b.is_landmark ?? 0) - Number(a.is_landmark ?? 0)
+        )
+        .slice(0, Number(params?.[0] ?? 5));
     }
     if (sql.includes('SELECT id, raw_input, calcium_score')) {
       const row = this.memories.get(String(params?.[0]));
@@ -84,6 +110,15 @@ class MockSQLite {
       row.last_verified_at = String(params[1]);
       return;
     }
+    if (sql.includes('UPDATE black_diamond') && sql.includes('SET calcium_level = ?')) {
+      const row = this.diamonds.get(String(params[4]));
+      if (!row) return;
+      row.calcium_level = Number(params[0]);
+      row.tags = String(params[1]);
+      row.notes = String(params[2]);
+      row.updated_at = String(params[3]);
+      return;
+    }
     if (sql.includes('UPDATE memories') && sql.includes('SET promoted_to_diamond = 0')) {
       const row = this.memories.get(String(params[0]));
       if (!row) return;
@@ -104,6 +139,7 @@ class MockSQLite {
         notes: String(params[6]),
         created_at: String(params[7]),
         updated_at: String(params[8]),
+        namespace: String(params[10] ?? 'default'),
       });
       return;
     }
@@ -131,6 +167,18 @@ describe('VaultManager promotion state machine', () => {
       recall_count: 5,
       lifecycle_state: 'candidate',
     })).toEqual({ eligible: true, reason: 'recall>=5', targetState: 'promoted' });
+
+    expect(evaluateDiamondPromotion({
+      calcium_score: 4.1,
+      recall_count: 3,
+      effective_strength: 0.74,
+      narrative_tag: '重要节点',
+      lifecycle_state: 'active',
+    })).toEqual({
+      eligible: true,
+      reason: 'multi-factor:high-calcium+recall>=3+strong-trace+narrative-tag',
+      targetState: 'promoted',
+    });
   });
 
   it('promotes a gold memory and writes back lifecycle metadata', () => {
@@ -147,6 +195,9 @@ describe('VaultManager promotion state machine', () => {
       perception_json: '{"pleasure":0.8}',
       lifecycle_state: 'active',
       promoted_to_diamond: 0,
+      effective_strength: 0.7,
+      primary_emotion: '快乐',
+      namespace: 'default',
     });
 
     const entry = promoteToBlackDiamond(sqlite as any, 'mem_1');
@@ -168,6 +219,7 @@ describe('VaultManager promotion state machine', () => {
       lifecycle_state: 'promoted',
       promoted_to_diamond: 1,
       promotion_reason: 'recall>=5',
+      namespace: 'default',
     });
 
     const entry = addBlackDiamond(sqlite as any, {
@@ -182,5 +234,63 @@ describe('VaultManager promotion state machine', () => {
     expect(sqlite.memories.get('mem_2')?.promoted_to_diamond).toBe(0);
     expect(sqlite.memories.get('mem_2')?.lifecycle_state).toBe('active');
     expect(sqlite.memories.get('mem_2')?.promotion_reason).toBeNull();
+  });
+
+  it('merges duplicate promotions into existing diamonds instead of creating another entry', () => {
+    const sqlite = new MockSQLite();
+    sqlite.diamonds.set('bd_existing', {
+      id: 'bd_existing',
+      summary: '今天和客户开会，把项目报价重新梳理了一遍。',
+      emotion_tag: '工作复盘',
+      source_id: 'mem_old',
+      calcium_level: 3,
+      recall_count: 0,
+      tags: JSON.stringify(['gold_提炼']),
+      notes: '已有珍藏',
+      created_at: '2026-07-07T07:00:00.000Z',
+      updated_at: '2026-07-07T07:00:00.000Z',
+      namespace: 'ops',
+    });
+    sqlite.memories.set('mem_new', {
+      id: 'mem_new',
+      raw_input: '今天和客户开会，把项目报价重新梳理了一遍。',
+      calcium_score: 4.7,
+      calcium_level: 4,
+      recall_count: 2,
+      narrative_tag: '工作复盘',
+      lifecycle_state: 'active',
+      promoted_to_diamond: 0,
+      effective_strength: 0.82,
+      namespace: 'ops',
+    });
+
+    const entry = promoteToBlackDiamond(sqlite as any, 'mem_new');
+
+    expect(entry?.id).toBe('bd_existing');
+    expect(sqlite.diamonds.size).toBe(1);
+    expect(sqlite.memories.get('mem_new')?.promoted_to_diamond).toBe(1);
+    expect(sqlite.memories.get('mem_new')?.promotion_reason).toBe('merged-into:bd_existing');
+    expect(sqlite.diamonds.get('bd_existing')?.notes).toContain('合并来源 mem_new');
+  });
+
+  it('autoPromoteCandidatesV2 promotes strong multi-factor memories', () => {
+    const sqlite = new MockSQLite();
+    sqlite.memories.set('mem_3', {
+      id: 'mem_3',
+      raw_input: '那次决定把项目重新立项，对我们后面的合作影响很大。',
+      calcium_score: 4.1,
+      calcium_level: 4,
+      recall_count: 3,
+      effective_strength: 0.78,
+      narrative_tag: '合作转折',
+      lifecycle_state: 'active',
+      promoted_to_diamond: 0,
+      namespace: 'default',
+    });
+
+    const entries = autoPromoteCandidatesV2(sqlite as any, 5);
+
+    expect(entries).toHaveLength(1);
+    expect(sqlite.memories.get('mem_3')?.promotion_reason).toBe('multi-factor:high-calcium+recall>=3+strong-trace+narrative-tag');
   });
 });

@@ -80,13 +80,21 @@ export class ConversationDB {
         dialog_group_id TEXT,
         dialog_round INTEGER DEFAULT 0,
         is_compacted INTEGER DEFAULT 0,
-        is_test INTEGER DEFAULT 0
+        is_test INTEGER DEFAULT 0,
+        is_summary INTEGER DEFAULT 0,
+        is_promoted INTEGER DEFAULT 0,
+        summary_of_range TEXT,
+        roleplay_char TEXT,
+        message_id TEXT UNIQUE,
+        namespace TEXT DEFAULT 'default'
       )
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_seq ON conversations(seq_pos)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id)`);
     this.initialized = true;
     console.log('[ConversationDB] 初始化完成: ' + this.dbPath);
   }
@@ -99,7 +107,12 @@ export class ConversationDB {
     try { this.db.run("ALTER TABLE conversations ADD COLUMN dialog_round INTEGER DEFAULT 0"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN is_compacted INTEGER DEFAULT 0"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN is_test INTEGER DEFAULT 0"); } catch {}
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN is_summary INTEGER DEFAULT 0"); } catch {}
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN is_promoted INTEGER DEFAULT 0"); } catch {}
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN summary_of_range TEXT"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN roleplay_char TEXT"); } catch {} // 🎭 角色扮演标记
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch {}
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch {}
   }
 
   insertConversation(role: string, content: string, options?: {
@@ -114,6 +127,7 @@ export class ConversationDB {
     isTest?: number;
     isCompacted?: number;
     roleplayChar?: string;       // 🎭 角色扮演标记：'熊梓铭'等
+    namespace?: string;
   }): number {
     this.ensureReady();
     const seqPos = options?.seqPos ?? 0;
@@ -123,12 +137,12 @@ export class ConversationDB {
     // is_summary 与 is_compacted 同步写入（过渡兼容，后续统一为 is_summary）
     const compactVal = options?.isCompacted ?? 0;
     this.db.run(
-      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [role, content, timestamp, seqPos, options?.topic || '', entityNames, perceptionSummary,
        options?.calciumScore || 0, options?.dnaRootId || null, options?.dialogGroupId || null,
        options?.dialogRound ?? null, options?.isTest ?? 0, compactVal, compactVal,
-       options?.roleplayChar || null],
+       options?.roleplayChar || null, options?.namespace || 'default'],
     );
     if (!this.sharedMode) this.flush();
     return seqPos;

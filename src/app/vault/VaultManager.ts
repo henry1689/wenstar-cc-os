@@ -72,6 +72,15 @@ export interface DiamondPromotionDecision {
   targetState: 'candidate' | 'promoted';
 }
 
+type DiamondDuplicateMatch = {
+  id: string;
+  summary: string;
+  emotion_tag: string | null;
+  tags: string[];
+  notes: string;
+  calcium_level: number;
+};
+
 // ─── 操作日志 ───
 
 /** 记录三库操作（景幻仙姑审计日志） */
@@ -125,6 +134,7 @@ export function addBlackDiamond(
     emotion_vector?: string;
     dna_root_id?: string | null;
     promotion_reason?: string;
+    namespace?: string;
   },
 ): BlackDiamondEntry {
   const id = `bd_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
@@ -162,8 +172,8 @@ export function addBlackDiamond(
     );
   }
   sqlite.writeRaw(
-    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, namespace)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
     id,
     params.summary,
     params.emotion_tag || null,
@@ -174,6 +184,7 @@ export function addBlackDiamond(
     now,
     now,
     params.emotion_vector || null,
+    params.namespace || 'default',
   );
   return getBlackDiamond(sqlite, id)!;
 }
@@ -313,7 +324,8 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
 
   const rows = sqlite.queryAll(
     `SELECT id, raw_input, calcium_score, calcium_level, recall_count, is_landmark,
-            scar_type, narrative_tag, perception_json, lifecycle_state, promoted_to_diamond
+            scar_type, narrative_tag, perception_json, lifecycle_state, promoted_to_diamond,
+            effective_strength, primary_emotion, namespace
      FROM memories WHERE id = ? LIMIT 1`,
     [memoryId],
   );
@@ -323,22 +335,30 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
   const emotionTag = (mem.scar_type as string) || (mem.narrative_tag as string) || '中性';
   const decision = evaluateDiamondPromotion(mem);
   if (!decision.eligible) return null;
-  // P1: 提炼日志
-  logVaultOperation(sqlite, 'promote', 'gold', memoryId, undefined, `提炼至黑钻: ${rawInput.substring(0, 30)} (${decision.reason})`);
+  const duplicate = findDuplicateDiamond(sqlite, rawInput, emotionTag);
+  if (duplicate) {
+    return mergeIntoExistingDiamond(sqlite, duplicate, mem, decision.reason || 'merged-duplicate');
+  }
   const tags = ['gold_提炼', emotionTag];
   if (mem.is_landmark === 1) tags.push('地标');
+  if (mem.narrative_tag) tags.push(`tag:${String(mem.narrative_tag).substring(0, 24)}`);
+  if (mem.primary_emotion && mem.primary_emotion !== emotionTag) tags.push(`emotion:${String(mem.primary_emotion).substring(0, 24)}`);
   const emotionVec = (mem as any).perception_json || null;
 
-  return addBlackDiamond(sqlite, {
+  const entry = addBlackDiamond(sqlite, {
     summary: rawInput.length > 200 ? rawInput.substring(0, 200) + '…' : rawInput,
     emotion_tag: emotionTag,
     source_id: memoryId,
     calcium_level: mem.calcium_level as number,
-    tags,
+    tags: [...new Set(tags)],
     notes: `自动提炼于 ${new Date().toISOString()} · ${decision.reason}`,
     emotion_vector: emotionVec,
+    dna_root_id: mem.dna_root_id ? String(mem.dna_root_id) : null,
     promotion_reason: decision.reason || undefined,
+    namespace: mem.namespace ? String(mem.namespace) : 'default',
   });
+  logVaultOperation(sqlite, 'promote', 'gold', memoryId, entry.id, `提炼至黑钻: ${rawInput.substring(0, 30)} (${decision.reason})`);
+  return entry;
 }
 
 export function evaluateDiamondPromotion(memory: Record<string, any>): DiamondPromotionDecision {
@@ -348,6 +368,8 @@ export function evaluateDiamondPromotion(memory: Record<string, any>): DiamondPr
   const lifecycleState = String(memory.lifecycle_state ?? 'candidate');
   const scarType = memory.scar_type ? String(memory.scar_type) : null;
   const promotedToDiamond = Number(memory.promoted_to_diamond ?? 0) === 1;
+  const effectiveStrength = Number(memory.effective_strength ?? 0);
+  const hasNarrativeTag = typeof memory.narrative_tag === 'string' && memory.narrative_tag.trim().length > 0;
 
   if (promotedToDiamond || lifecycleState === 'promoted') {
     return { eligible: false, reason: null, targetState: 'promoted' };
@@ -363,6 +385,20 @@ export function evaluateDiamondPromotion(memory: Record<string, any>): DiamondPr
   }
   if (recallCount >= 5) {
     return { eligible: true, reason: 'recall>=5', targetState: 'promoted' };
+  }
+  const factors: string[] = [];
+  let score = 0;
+  if (isLandmark) { score += 2; factors.push('landmark'); }
+  if (calciumScore >= 4.0) { score += 3; factors.push('high-calcium'); }
+  else if (calciumScore >= 3.5) { score += 2; factors.push('calcium>=3.5'); }
+  if (recallCount >= 4) { score += 2; factors.push('recall>=4'); }
+  else if (recallCount >= 3) { score += 1; factors.push('recall>=3'); }
+  if (effectiveStrength >= 0.72) { score += 2; factors.push('strong-trace'); }
+  else if (effectiveStrength >= 0.58) { score += 1; factors.push('stable-trace'); }
+  if (scarType) { score += 1; factors.push(`scar:${scarType}`); }
+  if (hasNarrativeTag) { score += 1; factors.push('narrative-tag'); }
+  if (score >= 5 && factors.length >= 2) {
+    return { eligible: true, reason: `multi-factor:${factors.slice(0, 4).join('+')}`, targetState: 'promoted' };
   }
   return { eligible: false, reason: null, targetState: 'candidate' };
 }
@@ -384,7 +420,8 @@ export function autoPromoteCandidatesV2(sqlite: SQLiteAdapter, limit = 5): Black
 
   const candidates = sqlite.queryAll(
     `SELECT id, raw_input, calcium_score, calcium_level, recall_count, narrative_tag,
-            dna_root_id, is_landmark, scar_type, lifecycle_state, promoted_to_diamond
+            dna_root_id, is_landmark, scar_type, lifecycle_state, promoted_to_diamond,
+            effective_strength, primary_emotion, namespace
      FROM memories
      WHERE COALESCE(promoted_to_diamond, 0) = 0
        AND lifecycle_state IN ('candidate', 'active', 'healed')
@@ -546,4 +583,88 @@ function rowToBlackDiamond(row: any): BlackDiamondEntry {
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
+}
+
+function normalizeDiamondText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .slice(0, 120);
+}
+
+function findDuplicateDiamond(sqlite: SQLiteAdapter, rawInput: string, emotionTag: string): DiamondDuplicateMatch | null {
+  const normalized = normalizeDiamondText(rawInput);
+  if (normalized.length < 16) return null;
+  const rows = sqlite.queryAll(
+    `SELECT id, summary, emotion_tag, tags, notes, calcium_level
+     FROM black_diamond
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 50`,
+  ) as any[];
+
+  for (const row of rows) {
+    const summary = String(row.summary ?? '');
+    const summaryNormalized = normalizeDiamondText(summary);
+    if (!summaryNormalized) continue;
+    const sameEmotion = String(row.emotion_tag ?? '') === emotionTag;
+    const looksDuplicate =
+      summaryNormalized === normalized ||
+      summaryNormalized.includes(normalized) ||
+      normalized.includes(summaryNormalized);
+    if (!looksDuplicate) continue;
+    if (!sameEmotion && Math.min(summaryNormalized.length, normalized.length) < 28) continue;
+    return {
+      id: String(row.id),
+      summary,
+      emotion_tag: row.emotion_tag == null ? null : String(row.emotion_tag),
+      tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : [],
+      notes: String(row.notes ?? ''),
+      calcium_level: Number(row.calcium_level ?? 1),
+    };
+  }
+  return null;
+}
+
+function mergeIntoExistingDiamond(
+  sqlite: SQLiteAdapter,
+  duplicate: DiamondDuplicateMatch,
+  memory: Record<string, any>,
+  reason: string,
+): BlackDiamondEntry | null {
+  const memoryId = String(memory.id);
+  const now = new Date().toISOString();
+  const mergedReason = `merged-into:${duplicate.id}`;
+  const mergedTags = new Set<string>(duplicate.tags);
+  mergedTags.add('merged_gold');
+  if (memory.narrative_tag) mergedTags.add(`tag:${String(memory.narrative_tag).substring(0, 24)}`);
+  if (memory.primary_emotion) mergedTags.add(`emotion:${String(memory.primary_emotion).substring(0, 24)}`);
+  const mergedNotes = [
+    duplicate.notes?.trim(),
+    `合并来源 ${memoryId} @ ${now} (${reason})`,
+  ].filter(Boolean).join('\n');
+
+  sqlite.writeRaw(
+    `UPDATE memories
+     SET promoted_to_diamond = 1,
+         lifecycle_state = 'promoted',
+         promotion_reason = ?,
+         last_verified_at = ?
+     WHERE id = ?`,
+    mergedReason, now, memoryId,
+  );
+  sqlite.writeRaw(
+    `UPDATE black_diamond
+     SET calcium_level = ?,
+         tags = ?,
+         notes = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    Math.max(duplicate.calcium_level, Number(memory.calcium_level ?? 1)),
+    JSON.stringify([...mergedTags]),
+    mergedNotes,
+    now,
+    duplicate.id,
+  );
+  logVaultOperation(sqlite, 'merge_promote', 'gold', memoryId, duplicate.id, `合并进已有黑钻: ${duplicate.id} (${reason})`);
+  return getBlackDiamond(sqlite, duplicate.id);
 }
