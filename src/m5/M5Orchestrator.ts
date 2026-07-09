@@ -37,7 +37,7 @@ export class M5Orchestrator {
    * @param knowledgeBase 知识库内容
    * @param userMessage 用户当前消息（用于场景记忆更新）
    */
-  async orchestrate(m4ctx: M4Context, conversationHistory?: ConversationTurn[], knowledgeBase?: string, userMessage?: string): Promise<string> {
+  async orchestrate(m4ctx: M4Context, conversationHistory?: ConversationTurn[], knowledgeBase?: string, userMessage?: string, currentRole?: RoleType): Promise<string> {
     // P0-1: 提取最近一条 timeline 的 dna_root_id 完成全链路闭环
     const dnaRootId = m4ctx.memory_summary.timeline
       .slice(-1)
@@ -64,22 +64,18 @@ export class M5Orchestrator {
     // P1-3: 记录开始时间，用于判断是否需要过渡话术
     const _startTime = Date.now();
 
-    // === P0: 角色路由（从 LLM Provider 解耦到编排器） ===
+    // === P0: 角色路由（从 chat.ts 单源接收，不再重复分类） ===
+    // 📜 架构铁律：角色状态以 chat.ts 的 _currentRole 为唯一权威
     const _rpInput = userMessage || cognition.current.raw_input || '';
+    this._currentRole = currentRole || this._currentRole;
+    // 强制 lover 覆盖（安全兜底，保留）
     try {
-      const _s = cognition.current.perception_snapshot;
-      const _rd = classify({
-        message: _rpInput,
-        perception: { ..._s, humor: 0, factual: 0, logical: 0, certainty: 0, abstract: 0, temporal_focus: 0, self_ref: 0, power_diff: 0, dependency: 0, moral_judgment: 0, etiquette: 0, belonging: 0 },
-        entities: (cognition.current.key_entities || []).map((n: string) => ({ name: n, type: 'person' as const, allele: n, phenotype: 'neutral' as const, knowledge_type: 'private' as const })),
-        previousRole: this._currentRole,
-        consecutiveIntimateCount: this._transitionState.consecutiveIntimate,
-      });
-      const _t = evaluateTransition(this._transitionState, _rd, _rpInput);
-      this._transitionState = _t.state;
-      this._currentRole = _t.newRole;
-      console.log('[M5Role] ' + this._currentRole + ' (' + _rd.rule + ')');
+      if (this._currentRole !== 'lover' && isIntimate(_rpInput)) {
+        this._currentRole = 'lover';
+        console.log('[M5Role] 消息含亲密词，强制→lover');
+      }
     } catch (_re) {}
+    console.log('[M5Role] ' + this._currentRole + ' (from chat.ts)');
 
     // Step 3: LLM 受控生成（唯一LLM调用点）
     let draft: string;

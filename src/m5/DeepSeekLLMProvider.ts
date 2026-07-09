@@ -10,6 +10,7 @@
  */
 import type { LLMProvider, StrategyConfig, CognitionObject, ConversationTurn } from './types/index.js';
 import { buildSystemPrompt, STYLE_ANCHORS } from './persona/lover-persona.js';
+import { isDeepIntimate, isAcademic, isMoan } from '../common/utils/is-intimate.js';
 import { calcLevel } from './expression/TierVocabMap.js';
 import { calcExpressionSpec } from './expression/ExpressionSpecController.js';
 import { renderIntimateResponse } from './expression/IntimateRenderer.js';
@@ -154,7 +155,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
         //   "思考句1。思考句2……\n\n回答句1。回答句2。"
         // 思维部分通常在第一个双换行之前，或只包含1个短段落
         // 策略：如果开头有1-3句内心独白（含特定关键词），则去掉
-        const THINKING_KEYWORDS = /让[我你]想|让我回|记得|心里|想到|脑中|好好回|在意|吃醋|心酸/;
+        const THINKING_KEYWORDS = /让[我你]想|让我回|记得|心里|想到|脑中|好好回|在意|吃醋|心酸|我们被问|这是一个|当前场景|当前时间|我需要|注意|考虑到|根据规则|从历史|在角色扮演|但根据|所以这|可能[是用]户|作为[一我]|我的角色|我应该|最安全|但注意|可能这是|另外|此外|综上所述|简单来[说讲]|也就是说|用户最后|用户可能|用户当前|我的回复|这个角色|我在想|我决定|最简单的做法|考虑到用户/;
         // 去掉开头第一个段落（以双换行结束），如果它包含思维关键词
         const firstPara = text.match(/^(.+?)(\n\n|$)/);
         if (firstPara && THINKING_KEYWORDS.test(firstPara[1])) {
@@ -201,30 +202,12 @@ export class DeepSeekLLMProvider implements LLMProvider {
     // 从策略中提取 max_length 约束（M5 策略选择器设定）
     const _strategyMaxLen = params.strategy?.params?.max_length ?? 0;
 
-    // R4: 角色路由
-    try {
-      const _p = params.cognition.current.perception_snapshot;
-      const _e = params.cognition.current.key_entities || [];
-      const _d = classify({
-        message: rawInput,
-        perception: {
-          ..._p,
-          humor: 0, factual: 0, logical: 0, certainty: 0,
-          abstract: 0, temporal_focus: 0, self_ref: 0,
-          power_diff: 0, dependency: 0, moral_judgment: 0,
-          etiquette: 0, belonging: 0,
-        },
-        entities: _e.map((n: string) => ({ name: n, type: 'person' as const, allele: n, phenotype: 'neutral' as const, knowledge_type: 'private' as const })),
-        previousRole: DeepSeekLLMProvider._currentRole,
-        consecutiveIntimateCount: DeepSeekLLMProvider._transitionState.consecutiveIntimate,
-      });
-      const _t = evaluateTransition(DeepSeekLLMProvider._transitionState, _d, rawInput);
-      DeepSeekLLMProvider._transitionState = _t.state;
-      DeepSeekLLMProvider._currentRole = _t.newRole;
-      console.log('[RoleRouter] ' + DeepSeekLLMProvider._currentRole + ' (' + _d.rule + ')');
-      // R6: 记忆角色标签
-      try { const { WorkingMemory } = await import('../m9/WorkingMemory.js'); WorkingMemory.currentTag = DeepSeekLLMProvider._currentRole; } catch (e: any) { console.error('[DeepSeek] error:', e?.message); }
-    } catch (_re) { /* 路由失败不阻塞 */ }
+    // 📜 架构铁律：角色路由以 chat.ts 为单源，此处不再重复分类
+    // 直接使用 params.role（从 M5Orchestrator / chat.ts 透传）
+    if (params.role) {
+      DeepSeekLLMProvider._currentRole = params.role;
+    }
+    try { const { WorkingMemory } = await import('../m9/WorkingMemory.js'); WorkingMemory.currentTag = DeepSeekLLMProvider._currentRole; } catch {}
 
     // 📖 本地回复：KB内容含敏感词时绕过API过滤，基于知识库原文直接回答
     if (kb.startsWith('【本地回复】')) {
@@ -390,10 +373,10 @@ export class DeepSeekLLMProvider implements LLMProvider {
     contextBlock += `\n[注意: 如果上面有[内心:...]开头的片段，那是你内心的感觉，不是回忆列表。不要直接复述它，而是自然地转化为关切的语气或行动。]`;
 
     // 🔥 前戏→激情呓语模式 — 当level≥2或raw_input包含强烈亲密词时激活（学术话题不进入）
-    const _academicGuard = /大学|选修课|必修课|课程|专业|学期|考试|学分|论文|实验室|研究|学习|上课|教授|导师|同学|教材|课本|作业|成绩|考研|毕业|学位|奖学金|人体解剖|生理学|心理学|AI应用|人工智能|编程|代码|读大学|一年级|大二|大三|大四/.test(rawInput);
+    const _academicGuard = isAcademic(rawInput);
     if (_academicGuard) { console.log("[PassionateMode] 学术话题拦截"); }
-    const isIntimateText = /高潮|操|干|插|顶|射|丢|到了|要死了|进去|要你|想要|好想要|给我|抱我|吻我|亲我|摸我|进来|进去|受不了/.test(rawInput);
-    const isMoanText = rawInput.length <= 6 && /^(嗯|啊|哼|哦|唔|呼|哈|操)+$/.test(rawInput.trim());
+    const isIntimateText = isDeepIntimate(rawInput);
+    const isMoanText = isMoan(rawInput);
     if (level >= 2 || isIntimateText || isMoanText) {
       contextBlock += `
 
@@ -513,16 +496,11 @@ ${profileText}
     }
 
     // 当前用户消息（带上下文）
-    let userMsgContent = rawInput;
-    if (hasSelfProfile && isSelfIntroQuery) {
-      // 自介查询时，不加 contextBlock（避免污染）
-      userMsgContent = rawInput;
-    } else {
-      userMsgContent = `${contextBlock}\n\n鸿艺: ${rawInput}`;
-    }
+    const userMsgContent = hasSelfProfile && isSelfIntroQuery
+      ? rawInput
+      : `${contextBlock}
+鸿艺: ${rawInput}`;
     messages.push({ role: 'user', content: userMsgContent });
-
-    // 调用 DeepSeek API（带超时+重试）
     const maxTokens = Math.max(
       /讲(个|一)?故事|写(个|一)?小说|写(个|一)?故事/.test(rawInput) ? 1800
       : /感觉|感受|回忆|分享|记得|印象|那时|那次/.test(rawInput) ? 1500

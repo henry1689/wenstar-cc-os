@@ -10,7 +10,7 @@
 
 // @ts-ignore - sql.js ships its own types via dist/sql-wasm.js
 import initSqlJs from 'sql.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EntityGene } from '../m1/types/dna.js';
@@ -32,7 +32,7 @@ import { DEFAULT_BASE_INTIMACY } from './types/graph.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const DEFAULT_DB_PATH = join(__dirname, '..', '..', 'data', 'knowledge', 'family_graph.db');
+const DEFAULT_DB_PATH = join(__dirname, '..', '..', 'data', 'webui', 'knowledge', 'family_graph.db');
 
 /**
  * P1: 人物画像 — 从"名字"到"完整的人"
@@ -469,6 +469,50 @@ export class FamilyGraph implements FamilyGraphInterface {
     try { this.run('CREATE INDEX IF NOT EXISTS idx_edges_source_rel ON edges(source_id, relation)'); } catch {}
 
     this.markDirty();
+
+    // FG基建加固：启动时自动备份 + "我"节点完整性检查
+    this._ensureBackup();
+    this._ensureSelfNode();
+  }
+
+  /**
+   * FG基建加固：自动备份到 data/webui/backups/family_graph/
+   */
+  private _ensureBackup(): void {
+    try {
+      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
+      if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
+      if (existsSync(this.dbPath)) {
+        copyFileSync(this.dbPath, backupPath);
+        console.log('[FG Shield] 自动备份完成: ' + backupPath);
+      }
+    } catch (e) {
+      console.warn('[FG Shield] 自动备份失败:', e);
+    }
+  }
+
+  /**
+   * FG基建加固：确保"我"节点存在（家族图谱的基石）
+   */
+  private _ensureSelfNode(): void {
+    try {
+      const existing = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
+      if (existing.length === 0) {
+        const meId = uid();
+        const now = new Date().toISOString();
+        const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
+        this.run("INSERT INTO nodes (id, type, name, properties, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?)",
+          [meId, meProps, now, now]);
+        console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
+        this.markDirty(true);
+      } else {
+        this.userNodeId = existing[0].id;
+      }
+    } catch (e) {
+      console.error('[FG Shield] "我"节点检查失败:', e);
+    }
   }
 
   /**
@@ -1054,6 +1098,50 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     this.markDirty();
+
+    // FG基建加固：启动时自动备份 + "我"节点完整性检查
+    this._ensureBackup();
+    this._ensureSelfNode();
+  }
+
+  /**
+   * FG基建加固：自动备份到 data/webui/backups/family_graph/
+   */
+  private _ensureBackup(): void {
+    try {
+      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
+      if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
+      if (existsSync(this.dbPath)) {
+        copyFileSync(this.dbPath, backupPath);
+        console.log('[FG Shield] 自动备份完成: ' + backupPath);
+      }
+    } catch (e) {
+      console.warn('[FG Shield] 自动备份失败:', e);
+    }
+  }
+
+  /**
+   * FG基建加固：确保"我"节点存在（家族图谱的基石）
+   */
+  private _ensureSelfNode(): void {
+    try {
+      const existing = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
+      if (existing.length === 0) {
+        const meId = uid();
+        const now = new Date().toISOString();
+        const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
+        this.run("INSERT INTO nodes (id, type, name, properties, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?)",
+          [meId, meProps, now, now]);
+        console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
+        this.markDirty(true);
+      } else {
+        this.userNodeId = existing[0].id;
+      }
+    } catch (e) {
+      console.error('[FG Shield] "我"节点检查失败:', e);
+    }
   }
 
   async addFamilyMember(name: string, relation: string, aliases?: string[]): Promise<void> {
@@ -1343,6 +1431,50 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(merged), new Date().toISOString(), nodes[0].id]);
     this.markDirty();
+
+    // FG基建加固：启动时自动备份 + "我"节点完整性检查
+    this._ensureBackup();
+    this._ensureSelfNode();
+  }
+
+  /**
+   * FG基建加固：自动备份到 data/webui/backups/family_graph/
+   */
+  private _ensureBackup(): void {
+    try {
+      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
+      if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
+      if (existsSync(this.dbPath)) {
+        copyFileSync(this.dbPath, backupPath);
+        console.log('[FG Shield] 自动备份完成: ' + backupPath);
+      }
+    } catch (e) {
+      console.warn('[FG Shield] 自动备份失败:', e);
+    }
+  }
+
+  /**
+   * FG基建加固：确保"我"节点存在（家族图谱的基石）
+   */
+  private _ensureSelfNode(): void {
+    try {
+      const existing = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
+      if (existing.length === 0) {
+        const meId = uid();
+        const now = new Date().toISOString();
+        const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
+        this.run("INSERT INTO nodes (id, type, name, properties, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?)",
+          [meId, meProps, now, now]);
+        console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
+        this.markDirty(true);
+      } else {
+        this.userNodeId = existing[0].id;
+      }
+    } catch (e) {
+      console.error('[FG Shield] "我"节点检查失败:', e);
+    }
   }
 
   async getSocialSummary(): Promise<{ connections: Array<{ name: string; relation_to_user: string; note?: string }> }> {
@@ -1841,6 +1973,50 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(parsed), new Date().toISOString(), node.id]);
     this.markDirty();
+
+    // FG基建加固：启动时自动备份 + "我"节点完整性检查
+    this._ensureBackup();
+    this._ensureSelfNode();
+  }
+
+  /**
+   * FG基建加固：自动备份到 data/webui/backups/family_graph/
+   */
+  private _ensureBackup(): void {
+    try {
+      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
+      if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
+      if (existsSync(this.dbPath)) {
+        copyFileSync(this.dbPath, backupPath);
+        console.log('[FG Shield] 自动备份完成: ' + backupPath);
+      }
+    } catch (e) {
+      console.warn('[FG Shield] 自动备份失败:', e);
+    }
+  }
+
+  /**
+   * FG基建加固：确保"我"节点存在（家族图谱的基石）
+   */
+  private _ensureSelfNode(): void {
+    try {
+      const existing = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
+      if (existing.length === 0) {
+        const meId = uid();
+        const now = new Date().toISOString();
+        const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
+        this.run("INSERT INTO nodes (id, type, name, properties, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?)",
+          [meId, meProps, now, now]);
+        console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
+        this.markDirty(true);
+      } else {
+        this.userNodeId = existing[0].id;
+      }
+    } catch (e) {
+      console.error('[FG Shield] "我"节点检查失败:', e);
+    }
   }
 
   /**

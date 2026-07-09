@@ -23,9 +23,9 @@ export interface TransitionState {
   lastSwitchTime: number;
 }
 
-const MAX_SWITCHES_PER_SESSION = 3;
-const LOCK_DURATION_TURNS = 5;
-const INTIMATE_THRESHOLD = 2; // 连续 2 条亲密才切换
+const MAX_SWITCHES_PER_SESSION = 8;
+const LOCK_DURATION_TURNS = 3;
+const INTIMATE_THRESHOLD = 1; // 1条亲密立即切换
 const DECAY_INTERVAL_MS = 30 * 60 * 1000; // 30 分钟无切换自动衰减
 const DECAY_THRESHOLD_SWITCHES = 3;
 

@@ -37,6 +37,32 @@ export async function collectFourLayerData(
   const _realMainFg = ctx.m4?.getRealFamilyGraph?.();
   const fgAdapter = _overrideFg ? new FamilyGraphAdapter(_overrideFg, roleplayId, _realMainFg) : null;
 
+  // ═══ 时间线分段：计算当前会话的起始时间戳 ═══
+  let sinceTimestamp: string | undefined;
+  try {
+    if (ctx.conversationHistory && ctx.conversationHistory.length > 0) {
+      let earliest = ctx.conversationHistory[0].timestamp;
+      for (let i = ctx.conversationHistory.length - 1; i >= 0; i--) {
+        const turn = ctx.conversationHistory[i];
+        if ((turn as any).rpChar === roleplay && turn.timestamp) {
+          earliest = turn.timestamp;
+          break;
+        }
+      }
+      if (earliest) {
+        const now = Date.now();
+        const t = new Date(earliest).getTime();
+        if (now - t > 60 * 60 * 1000) {
+          sinceTimestamp = new Date(now - 60 * 60 * 1000).toISOString();
+          console.log('[Roleplay] 时间窗: 新会话，只检过去1h');
+        } else {
+          sinceTimestamp = earliest;
+          console.log('[Roleplay] 时间窗: 同会话，从' + earliest.substring(0, 19));
+        }
+      }
+    }
+  } catch (_te) {}
+
   console.log('[Roleplay] 串行检索开始');
   // ═══ 串行5层检索 ═══
   let clueResult: FullClueResult | null = null;
@@ -47,7 +73,7 @@ export async function collectFourLayerData(
       const retriever = new MemoryRetriever(ctx.storage as any);
       console.log('[Roleplay] 串行: MemoryRetriever created, calling retrieveFullClue...');
       clueResult = await withTimeout(
-        retriever.retrieveFullClue(roleplay, message, null, true),
+        retriever.retrieveFullClue(roleplay, message, null, true, undefined, sinceTimestamp),
         null as any,
       );
       console.log('[Roleplay] 串行: retrieveFullClue returned, clueResult=' + (clueResult ? 'ok' : 'null'));
@@ -154,6 +180,7 @@ function buildLayer2(
   const lines: string[] = ['【我的家人】'];
   const relLabel: Record<string, string> = {
     mother_of: '妈妈', father_of: '爸爸', spouse_of: '配偶',
+    elder_sister_of: '姐姐', younger_sister_of: '妹妹',
     sibling_of: '姐妹/兄弟', child_of: '孩子', parent_of: '父母',
     aunt_of: '姑姑', cousin_of: '表亲', niece_of: '侄女',
     elder_sister_of: '姐姐', younger_sister_of: '妹妹',
@@ -204,9 +231,9 @@ function buildLayer2(
 
 function buildLayer3(sand: MemoryEntry[], vault: MemoryEntry[], diamond: MemoryEntry[]): Layer3Data {
   const parts: string[] = [];
-  if (diamond.length > 0) parts.push('【珍藏回忆】\n' + diamond.map(d => d.text).join('\n'));
-  if (sand.length > 0) parts.push('【近期互动】\n' + sand.map(s => s.text).join('\n'));
-  if (vault.length > 0) parts.push('【过往记忆】\n' + vault.map(v => v.text).join('\n'));
+  if (diamond.length > 0) parts.push('【珍藏回忆（以下都是过去的事）】\n' + diamond.map(d => '• [过去] ' + d.text).join('\n'));
+  if (sand.length > 0) parts.push('【近期互动（以下都是过去的事）】\n' + sand.map(s => '• [过去] ' + s.text).join('\n'));
+  if (vault.length > 0) parts.push('【过往记忆（以下都是过去的事）】\n' + vault.map(v => '• [过去] ' + v.text).join('\n'));
   return { sandMemories: sand, vaultMemories: vault, diamondMemories: diamond, memoryText: parts.join('\n\n') };
 }
 

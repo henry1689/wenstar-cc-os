@@ -461,7 +461,7 @@ async function initPipeline(): Promise<void> {
     if (existsSync(fmPath)) sources.push({ src: fmPath, prefix: 'knowledge' });
 
     // 家族图谱
-    const fgPath = path.join(PROJECT_ROOT, 'data', 'knowledge', 'family_graph.db');
+    const fgPath = path.join(DATA_DIR, 'knowledge', 'family_graph.db');
     if (existsSync(fgPath)) sources.push({ src: fgPath, prefix: 'family_graph' });
 
     // MemoryVault 独立仓

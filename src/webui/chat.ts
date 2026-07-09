@@ -467,7 +467,10 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 	        }
 	      }
 	    }
-	    for (const name of allNames) {
+	    const COMMON_PHRASES = new Set(['不用了', '知道了', '好了', '对了', '行了', '没事', '好的',
+	      '好吧', '是的', '嗯嗯', '谢谢', '不用谢', '不客气', '不会的', '可以的', '没关系']);
+	    const allNamesFiltered = allNames.filter(function(n) { return !COMMON_PHRASES.has(n); });
+	    for (const name of allNamesFiltered) {
 	      if (name === '我' || name.length < 2) continue;
 	      // 消息以"X，"/"X "/"X:"开头，或"X呢/呀/啊/吗/哈"结尾
 	      if (message.startsWith(name + '，') || message.startsWith(name + ',') ||
@@ -2228,7 +2231,7 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
 if (_ruleEngineBlocked && _ruleEngineReply) {
   reply = _ruleEngineReply;
 } else {
-reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\\n').filter(l => l.trim()).join('\n') + '\\n\\n' + message) : message);
+reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\\n').filter(l => l.trim()).join('\n') + '\\n\\n' + message) : message, _currentRole);
 }
 
     // 🏗️ 防复发第一层: 角色扮演运行时自检

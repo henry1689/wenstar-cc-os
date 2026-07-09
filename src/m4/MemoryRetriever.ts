@@ -292,7 +292,7 @@ export class MemoryRetriever {
   }
 
   // === P0: 五层串行截断检索 ===
-  async retrieveFullClue(roleplay: string, message: string, m4Ctx: any, enableTopology?: boolean, namespace?: string): Promise<FullClueResult> {
+  async retrieveFullClue(roleplay: string, message: string, m4Ctx: any, enableTopology?: boolean, namespace?: string, sinceTimestamp?: string): Promise<FullClueResult> {
     const layers: string[] = []; const r: any = { l1Context:[], l2Sand:[], l2Vault:[], l2Diamond:[], l3Topology:[], l4Knowledge:[], hasValidRelation:false, layersUsed:layers };
     layers.push('L1');
     if (m4Ctx && m4Ctx.family_context) for (const fc of m4Ctx.family_context) if (fc.entity === roleplay || fc.related_entity === roleplay) r.l1Context.push(fc.entity + '的' + fc.relation + '是' + fc.related_entity);
@@ -301,11 +301,18 @@ export class MemoryRetriever {
     try {
       const sq = typeof this.storage.getSQLite === 'function' ? this.storage.getSQLite() : null;
       if (sq && typeof sq.queryAll === 'function') {
-        const s = sq.queryAll("SELECT content FROM conversations WHERE roleplay_char=? AND is_compacted=0 AND role='user' ORDER BY timestamp DESC LIMIT 10", [roleplay]);
+        // 📜 时间窗过滤：sinceTimestamp 存在时只检索之后的数据（防止旧场景污染）
+        const timeFilter = sinceTimestamp ? "AND timestamp > ?" : "";
+        const timeParams = sinceTimestamp ? [roleplay, sinceTimestamp] : [roleplay];
+        const s = sq.queryAll("SELECT content FROM conversations WHERE roleplay_char=? AND is_compacted=0 AND role='user' " + timeFilter + " ORDER BY timestamp DESC LIMIT 10", timeParams);
         for (const x of s || []) if (x.content) r.l2Sand.push(String(x.content ?? "").substring(0, 200));
-        const v = sq.queryAll("SELECT raw_input FROM memories WHERE raw_input LIKE ? ORDER BY calcium_score DESC LIMIT 8", ['%' + roleplay + '%']);
+        const vtFilter = sinceTimestamp ? "AND created_at > ?" : "";
+        const vtParams = sinceTimestamp ? ['%' + roleplay + '%', sinceTimestamp] : ['%' + roleplay + '%'];
+        const v = sq.queryAll("SELECT raw_input FROM memories WHERE raw_input LIKE ? " + vtFilter + " ORDER BY calcium_score DESC LIMIT 8", vtParams);
         for (const x of v || []) if (x.raw_input) r.l2Vault.push(String(x.raw_input ?? "").substring(0, 200));
-        const d = sq.queryAll("SELECT summary FROM black_diamond WHERE tags LIKE ? ORDER BY created_at DESC LIMIT 5", ['%rp_' + roleplay + '%']);
+        const bdFilter = sinceTimestamp ? "AND created_at > ?" : "";
+        const bdParams = sinceTimestamp ? ['%rp_' + roleplay + '%', sinceTimestamp] : ['%rp_' + roleplay + '%'];
+        const d = sq.queryAll("SELECT summary FROM black_diamond WHERE tags LIKE ? " + bdFilter + " ORDER BY created_at DESC LIMIT 5", bdParams);
         for (const x of d || []) if (x.summary) r.l2Diamond.push(String(x.summary ?? "").substring(0, 200));
       }
     } catch (e) {}
