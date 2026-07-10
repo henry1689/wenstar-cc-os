@@ -2194,6 +2194,23 @@ export class FamilyGraph implements FamilyGraphInterface {
       extracted++;
     }
 
+    // 📜 提取住址/家庭地址
+    const addrPatterns = [
+      new RegExp(`${personName}.*?(?:住在|住|家在)([^，。！？]{2,30})`),
+      new RegExp(`${personName}.*?(?:家|住的地方|住址)(?:在|是)([^，。！？]{2,30})`),
+    ];
+    for (const addrRe of addrPatterns) {
+      const addrMatch = conversationText.match(addrRe);
+      if (addrMatch && addrMatch[1] && !/什么|哪里|哪儿|哪/.test(addrMatch[1])) {
+        const addr = addrMatch[1].trim().substring(0, 30);
+        if (!profile.address || profile.address !== addr) {
+          await this.updatePersonProfile(personName, { address: addr } as any, { countMention: false });
+          extracted++;
+        }
+        break;
+      }
+    }
+
     // 10. 提取人生大事（结婚/生子/毕业等）
     const milestoneMatch = conversationText.match(new RegExp(`${personName}.*?(?:结婚|生子|毕业|考上|入职|退休|去世|生病|住院|创业|开店)([^。！？]{2,30})`));
     if (milestoneMatch) {

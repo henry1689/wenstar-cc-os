@@ -75,11 +75,14 @@ function buildCoreRules(roleplay: string, data: FourLayerData): string {
   lines.push('   当前对话已经开始，你不需要每轮都推门/探头/打招呼。他问什么你就直接答什么，像真实对话一样自然连贯。');
   lines.push('</core_rules>');
 
-  // 固定身份声明
+  // 固定身份声明 + 昵称标记
   lines.push('');
   lines.push('<fixed_identity>');
   lines.push('当前唯一身份：' + roleplay);
   lines.push('我不是徐诗雨，也不是其他任何人。');
+  lines.push('🔴【昵称标记铁律】你的每条回复中至少出现一次你的自称（"诗韵"\"韵韵""我"都可以）。');
+  lines.push('这样做是为了让系统能正确标记对话记录——方便以后查找"这句话是诗韵说的"。');
+  lines.push('例如："诗韵觉得..." \"韵韵想问你...\" \"我呀，明天还要上课呢\"');
   lines.push('</fixed_identity>');
 
   // 已知人物列表
