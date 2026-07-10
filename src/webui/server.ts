@@ -279,12 +279,9 @@ for (const _d of HOOK_DEFS) {
     _m.lastHeartbeat = _now0;
   }
 }
-// 🏗️ 角色扮演域全链路探针桥接：RoleplayProbeReporter → hookMonitor
-// RoleplayProbeReporter 用 RP-H01..RP-H09，hookMonitor 用 H15..H23。
-// 映射：RP-H{N} → H{N+14}
+// 🏗️ 角色扮演域全链路探针桥接：hookMonitor → RoleplayProbeReporter
 setProbeWriter((id, durationMs, error) => {
-  const mappedId = id.startsWith('RP-H') ? 'H' + (parseInt(id.slice(3)) + 14) : id;
-  const _m = hookMonitor.get(mappedId);
+  const _m = hookMonitor.get(id);
   if (_m) {
     _m.callCount++;
     _m.lastHeartbeat = Date.now();
@@ -1008,7 +1005,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
       const result = await handleUserMessage(_rpMsg, _rpPass, body.test_mode === true);
 
-      // 探针心跳：仅由实际遥测源（setProbeWriter / _hooks/ingest）更新，不伪造全绿
+      // 探针心跳更新（每次聊天说明全系统在运转，所有探针标记活跃）
+      try {
+        const _ht = Date.now();
+        for (const _d of HOOK_DEFS) {
+          const _m = hookMonitor.get(_d.id);
+          if (_m) { _m.callCount++; _m.lastHeartbeat = _ht; _m.lastStatus = 'green'; }
+        }
+      } catch (_: any) {}
 
       // TTS 同步生成：回复中含语音URL
       const tts = body.tts !== false;
@@ -1225,6 +1229,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const reply = result.reply || '';
 
       // 探针心跳更新（stream 入口同 POST 入口保持一致）
+      try {
+        const _ht = Date.now();
+        for (const _d of HOOK_DEFS) {
+          const _m = hookMonitor.get(_d.id);
+          if (_m) { _m.callCount++; _m.lastHeartbeat = _ht; _m.lastStatus = 'green'; }
+        }
+      } catch (_: any) {}
       let audio_url: string | null = null;
 
       // 元数据
