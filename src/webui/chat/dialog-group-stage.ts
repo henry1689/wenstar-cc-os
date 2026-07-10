@@ -105,14 +105,13 @@ export async function flushDialogGroup(
       console.log('[DG] 黑钻共同回忆: ' + title);
     }
 
-    // 图谱实体同步 + 档案提取（角色扮演时跳过，避免分支FG写入主FG）
-    if (ctx.m4 && dg.entities.length > 0 && !currentRoleplay) {
+    // 图谱实体同步 + 档案提取（角色扮演时走真实FG，确保自学习不丢失）
+    if (ctx.m4 && dg.entities.length > 0) {
       try {
-        const fg = ctx.m4.getFamilyGraph();
+        const fg = ctx.m4.getRealFamilyGraph?.() || ctx.m4.getFamilyGraph();
         if (fg) {
           for (const name of dg.entities) {
             if (validatePersonName(name)) fg.integrateSocialRelation(name, 'acquaintance_of', '').catch(() => {});
-            // v1.1: 闭组时自动提取人物档案
             fg.extractProfileFromText(name, combined).catch(() => {});
           }
         }
