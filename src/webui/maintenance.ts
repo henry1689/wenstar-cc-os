@@ -90,6 +90,7 @@ export class MaintenanceService {
   private startTime = Date.now();
   private lastCompaction: string | null = null;
   private lastGc: string | null = null;
+  private knowledgeGcTimer: ReturnType<typeof setInterval> | null = null;
   private eventLoopLag = 0;
 
   private compactionTimer: ReturnType<typeof setInterval> | null = null;
@@ -178,7 +179,7 @@ export class MaintenanceService {
 
     // 知识库未分类条目 GC（3个月无分类彻底删除 — 铁律）
     // 记事记忆过期清理（365天）
-    setInterval(() => {
+    this.knowledgeGcTimer = setInterval(() => {
       try {
         const r = this._runKnowledgeGc(); if (r > 0) console.log('[Maintenance] 知识库GC: 清理 ' + r + ' 条过期未分类条目');
         // 清理过期记事记忆（调用 YuyaoMemoryService，通过注入的函数）
@@ -215,6 +216,7 @@ export class MaintenanceService {
     if (this.compactionTimer) clearInterval(this.compactionTimer);
     if (this.gcTimer) clearInterval(this.gcTimer);
     if (this.decayTimer) clearInterval(this.decayTimer);
+    if (this.knowledgeGcTimer) clearInterval(this.knowledgeGcTimer);
     console.log('[Maintenance] 维护引擎已停止');
   }
 

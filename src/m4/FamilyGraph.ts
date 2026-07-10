@@ -1634,6 +1634,19 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
   }
 
+  /** 关闭数据库连接，释放 WASM 内存。调用后此实例不可再用。 */
+  close(): void {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    if (this._dirty && this.db) {
+      try {
+        const data = this.db.export();
+        writeFileSync(this.dbPath, Buffer.from(data));
+      } catch (err) { console.error('[FamilyGraph] 关闭前落盘失败:', err); }
+    }
+    if (this.db) { this.db.close(); this.db = undefined as any; }
+    this.ready = false;
+  }
+
   /** P4: 显式触发落盘（关闭前调用） */
   async flushAll(): Promise<void> {
     this.flush();

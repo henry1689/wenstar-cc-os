@@ -325,6 +325,10 @@ function calcNextRepeat(currentRemindAt: string, rule: string): string | null {
 }
 
 async function initPipeline(): Promise<void> {
+  // Q3: 关闭旧实例释放 WASM 内存，防止 /api/reset 累积 Database 对象
+  if (familyGraph) { try { familyGraph.close(); } catch (e: any) { console.error('[server] error:', e?.message); } }
+  if (memoryVault) { try { memoryVault.close(); } catch (e: any) { console.error('[server] error:', e?.message); } }
+  if (storage) { try { storage.getSQLite()?.close(); } catch (e: any) { console.error('[server] error:', e?.message); } }
   for (const d of [DATA_DIR, path.join(DATA_DIR, 'uploads'), path.join(DATA_DIR, 'audio')]) {
     if (!existsSync(d)) mkdirSync(d, { recursive: true });
     try { fs.accessSync(d, fs.constants.W_OK); } catch { console.warn('[Server] 目录不可写:', d); }
@@ -559,7 +563,7 @@ async function initPipeline(): Promise<void> {
 
   // 启动后15分钟首次执行，之后每30分钟
   setTimeout(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 15 * 60 * 1000);
-  setInterval(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 30 * 60 * 1000);
+  addTimer(setInterval(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 30 * 60 * 1000));
   console.log('  统一备份引擎已启动 ✓ (15min首执行, 30min周期)');
 
 
@@ -702,7 +706,7 @@ async function initPipeline(): Promise<void> {
     (keyword: string, limit: number) => knowledgeBase.search(keyword, limit)
   ));
   taskAgent = new TaskAgentEngine();
-  startReminderChecker();
+  addTimer(startReminderChecker());
   try { const logs = yuyaoMemory.checkMissedOnStartup(); for (const l of logs) console.log('[Memory]', l); } catch (e) { console.warn('[Memory] 启动自检失败:', e); }
   console.log('  任务代理已启动 ✓');
 
@@ -1290,7 +1294,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       consolidationQueue?.stop();
       if (m7Timer) { clearInterval(m7Timer); m7Timer = null; }
       if (m6Timer) { clearInterval(m6Timer); m6Timer = null; }
+      clearAllTimers();  // Q4: 清空 addTimer 注册表中的所有句柄
       resetConversationHistory();
+      // Q3: initPipeline 内部先关旧 sql.js 实例再新建
       await initPipeline();
       res.writeHead(200); res.end(JSON.stringify({status:'ok',message:'已重置'}));
     }
