@@ -135,12 +135,16 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       hadError = true;
     }
 
-    // 写助理回复
+    // 写助理回复 — 剥离场景描写后再存储
+    //     LLM 的回复含"（我趴在浴缸边…）"等动作描写。这是生成产物，不是语义记忆。
+    //     原样存储 → 下次检索注入 → LLM 读到自己的场景文本 → 重新走进那个场景 → 死循环。
+    //     存储时剥离括号场景描写，只保留语义内容（"我记得那次你说…我姐…"）。
     const idAssist = `mem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const cleanReply = input.reply.replace(/（[^）]*）/g, '').trim();
     if (!sqlite.writeMemory({
       id: idAssist, seqPos: input.seqPos + 1, createdAt: now,
       perceptionJson: pJson, calciumScore, calciumLevel,
-      locusPath, leafZone: 'assistant', rawInput: input.reply,
+      locusPath, leafZone: 'assistant', rawInput: cleanReply,
       primaryEmotion, memoryType: 'dialog',
       memoryKind: rp ? 'roleplay' : 'episodic',
       lifecycleState: calciumLevel >= 2 ? 'active' : 'candidate',
