@@ -840,6 +840,14 @@ export class SQLiteAdapter {
       console.warn('[Decay] decay_log 裁剪失败:', e?.message);
     }
 
+    // Q2: 辅助日志表无界增长防护 — 每日维护时顺带裁剪过期记录
+    try {
+      const d90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      const d30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      (this.db as any).run("DELETE FROM vault_log WHERE created_at < ?", [d90]);
+      (this.db as any).run("DELETE FROM aqc_records WHERE created_at < ?", [d30]);
+    } catch (e: any) { /* 非致命 — 表可能不存在 */ }
+
     return { total, archived };
   }
 

@@ -85,6 +85,12 @@ export function runSandQC(
     else pending++;
   }
 
+  // 裁剪 30 天前的记录，防止 aqc_records 无界膨胀（50 行/小时 → 438K/年）
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    sqlite.writeRaw("DELETE FROM aqc_records WHERE source_type='sand' AND created_at < ?", cutoff);
+  } catch {}
+
   return { scanned, approved, pending };
 }
 
@@ -157,6 +163,12 @@ export function runGoldQC(sqlite: SQLiteAdapter, limit = 50): GoldQCResult {
   } catch (err) {
     console.warn('[GoldQC] 扫描失败:', err);
   }
+
+  // 裁剪 30 天前的记录（与 SandQC 共用同一张 aqc_records 表）
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    sqlite.writeRaw("DELETE FROM aqc_records WHERE source_type='gold' AND created_at < ?", cutoff);
+  } catch {}
 
   return { scanned, approved, rejected };
 }
