@@ -659,7 +659,7 @@ export class SQLiteAdapter {
     // If not enough results from landmarks, do Tier 2: recent memory scan
     if (allScored.length < query.limit) {
       const all = this.execSql(
-        `SELECT * FROM memories WHERE 1=1${rpExclude} ORDER BY seq_pos DESC LIMIT 200`,
+        `SELECT * FROM memories WHERE 1=1${rpExclude} ORDER BY created_at DESC LIMIT 200`,
       );
       const records = this.rowsToRecords(all)
         .filter(r => r.effective_strength >= 0.05 && !landmarkIds.has(r.id));
@@ -723,13 +723,21 @@ export class SQLiteAdapter {
       } catch { /* VAD parse failure is non-fatal */ }
     }
 
+    // 时间衰减：168小时（一周）半衰期。时序不是硬过滤——钙化分保留了长期重要记忆的
+    // 竞争力——而是排序加权：同等情感相似度下，新近的记忆排在旧的记忆前面。
+    let recency = 1.0;
+    if (record.created_at) {
+      const hoursAgo = (Date.now() - new Date(record.created_at).getTime()) / 3_600_000;
+      recency = Math.pow(0.5, hoursAgo / 168);
+    }
+
     const str = record.effective_strength ?? 0.5;
     const composite = isNaN(str) ? 0.5 : str * (
       weights.emotional * emotional +
       weights.topic * topic +
       weights.entity * entityOverlap +
       weights.calcium * calcium
-    ) + vadBonus;
+    ) * recency + vadBonus;
 
     const safeComposite = isNaN(composite) ? 0 : Math.max(0, Math.min(1, composite));
 
