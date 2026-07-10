@@ -5,6 +5,17 @@
  * 包含：flushDialogGroup — 锚点/碎片/黑钻/图谱写入
  */
 import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
+import { computeCalcium } from '../../m2/math.js';
+
+// H3: 单一钙化标度 [0,1] — 与 m2.computeCalcium / M3Config 阈值(0.3/0.6/0.8)完全一致的等级映射。
+// 闭组写入必须与逐轮砂金写入(persistence-stage 用 decision.enhanced.calcium_score/level)同标度，
+// 否则同一段内容在库里出现两套分数，检索排序错乱。
+function calciumLevel(score: number): 0 | 1 | 2 | 3 {
+  if (score < 0.3) return 0;
+  if (score < 0.6) return 1;
+  if (score < 0.8) return 2;
+  return 3;
+}
 
 export async function flushDialogGroup(
   ctx: any,
@@ -37,40 +48,48 @@ export async function flushDialogGroup(
     }
     // 锚点必须是完整Q+A
     const anchorText = '【核心】\n用户: ' + dg.rounds[anchorIdx].q + '\n玉瑶: ' + dg.rounds[anchorIdx].a;
-    const anchorCalcium = Math.min(dg.maxCalcium * 1.2, 4.5);
+    // H3: 锚点即本组情感峰值轮，钙化分直接采用 dg.maxCalcium（引擎级 [0,1] 分值），
+    //     不再 *1.2 抬升到不可达的 [0,4.5] 旧标度。锚点的"重要性"由独立的 anchor_score 列 + dialog_group_id 标记，不靠虚高钙化分。
+    const anchorCalcium = Math.round(dg.maxCalcium * 1000) / 1000;
 
     // 情感峰值向量
     const peakP = dg.perceptions[dg.maxCalciumRound] || dg.perceptions[0] || {};
-    const pVec = JSON.stringify([
-      peakP.pleasure||0, peakP.arousal||0, peakP.dominance||0, peakP.aggression||0,
-      peakP.sincerity||0, peakP.humor||0, peakP.factual||0, peakP.logical||0,
-      peakP.certainty||0, peakP.abstract||0, peakP.temporal_focus||0, peakP.self_ref||0,
-      peakP.intimacy||0, peakP.power_diff||0, peakP.dependency||0, peakP.moral_judgment||0,
-      peakP.etiquette||0, peakP.belonging||0, peakP.sexual_attraction||0, peakP.sensory_craving||0,
-      peakP.energy_merge||0, peakP.possessiveness||0, peakP.ecstasy||0, peakP.safety||0.5,
+    // H3: 抽出 24 维序列化，锚点用峰值向量、碎片用各自轮次向量 — 保证每行的向量与钙化分同源
+    const vec24 = (p: any): string => JSON.stringify([
+      p.pleasure||0, p.arousal||0, p.dominance||0, p.aggression||0,
+      p.sincerity||0, p.humor||0, p.factual||0, p.logical||0,
+      p.certainty||0, p.abstract||0, p.temporal_focus||0, p.self_ref||0,
+      p.intimacy||0, p.power_diff||0, p.dependency||0, p.moral_judgment||0,
+      p.etiquette||0, p.belonging||0, p.sexual_attraction||0, p.sensory_craving||0,
+      p.energy_merge||0, p.possessiveness||0, p.ecstasy||0, p.safety||0.5,
     ]);
+    const pVec = vec24(peakP);
 
     // 写入核心锚点（高钙化分，带anchor_score标记）
     const anchorId = dg.id + '_ANCHOR';
     sql.writeRaw(
       "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       anchorId, -(dg.rounds.length + 100), now, pVec, anchorCalcium,
-      Math.max(Math.min(Math.floor(anchorCalcium * 2), 3), 1), dg.locusPath || 'general',
+      calciumLevel(anchorCalcium), dg.locusPath || 'general',
       'language_semantic_zone', anchorText, 0.5 + anchorCalcium * 0.3, now,
       decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, anchorCalcium
     );
 
-    // 写入细节碎片（其余轮次，原始钙化分x0.7）
+    // 写入细节碎片（其余轮次）
+    // H3: 每条碎片按其所在轮次的真实感知向量计算钙化分（同标度 [0,1]），
+    //     不再用 dg.maxCalcium*0.7 一刀切压到 0.5（旧公式使全部碎片钙化分恒为 0.5，失真）。
     for (let i = 0; i < dg.rounds.length; i++) {
       if (i === anchorIdx) continue;
       const r = dg.rounds[i];
       const chunkText = '【第' + (i + 1) + '轮】\n用户: ' + r.q + '\n玉瑶: ' + r.a;
       const chunkId = dg.id + '_CHUNK_' + String(i).padStart(3, '0');
+      const roundP = dg.perceptions[i] || peakP;
+      const chunkCalcium = Math.round(computeCalcium(roundP as any).score * 1000) / 1000;
       sql.writeRaw(
         "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        chunkId, -dg.rounds.length - i, now, pVec, Math.max(dg.maxCalcium * 0.7, 0.5),
-        Math.max(Math.min(Math.floor(dg.maxCalcium * 2), 3), 1), dg.locusPath || 'general',
-        'language_semantic_zone', chunkText, 0.3 + dg.maxCalcium * 0.2, now,
+        chunkId, -dg.rounds.length - i, now, vec24(roundP), chunkCalcium,
+        calciumLevel(chunkCalcium), dg.locusPath || 'general',
+        'language_semantic_zone', chunkText, 0.3 + chunkCalcium * 0.2, now,
         decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic
       );
     }
@@ -95,6 +114,10 @@ export async function flushDialogGroup(
     console.log('[DG] 闭组: ' + dg.id + ' (' + dg.rounds.length + '轮, 锚点轮#' + anchorIdx + ', 情感:' + uniqueE + (dg.rpChar ? ', 角色扮演:' + dg.rpChar : '') + ')');
 
     // 黑钻晋升（以锚点钙化分为基准）
+    // ⚠️ H3 遗留：阈值 4.5 属于旧的 [0,10] 钙化标度，而 anchorCalcium 已统一为引擎级 [0,1] 分值，
+    //    故此分支恒不触发（自本代码引入以来一直是死路）。黑钻实际由 VaultManager 晋升产出。
+    //    是否让"闭组共同回忆"独立产出黑钻，是一个涉及黑钻库(永久·珍藏)写入的产品决策，
+    //    需单独确认后再改阈值（如 >= 0.8 = 晶体级），此处保持原行为不动，避免重复黑钻。
     if (anchorCalcium >= 4.5) {
       const bdId = dg.id + '_BD';
       const title = '共同回忆·' + (dg.topic || '').split('.').pop() || '对话';
@@ -110,9 +133,21 @@ export async function flushDialogGroup(
       try {
         const fg = ctx.m4.getRealFamilyGraph?.() || ctx.m4.getFamilyGraph();
         if (fg) {
+          // C2+C3: 分离说话人文本，供第一人称自述提取
+          //  - 用户(张三)的话 => 用户第一人称"我"
+          //  - 玉瑶/被扮演角色的话 => 助手第一人称"我"
+          // 仅当实体确实是发言者本人时才传入自述文本，避免把用户的"我"误归到第三方。
+          const userLines = dg.rounds.map((r: any) => r.q || '').join('\n');
+          const assistantLines = dg.rounds.map((r: any) => r.a || '').join('\n');
+          const rpChar = dg.rpChar || null;
           for (const name of dg.entities) {
             if (validatePersonName(name)) fg.integrateSocialRelation(name, 'acquaintance_of', '').catch(() => {});
-            fg.extractProfileFromText(name, combined).catch(() => {});
+            // 判定该实体的第一人称自述来源
+            let selfText: string | undefined;
+            if (rpChar && name === rpChar) selfText = assistantLines;   // 角色扮演：玉瑶所说即被扮演角色的自述
+            else if (name === '玉瑶') selfText = assistantLines;         // 玉瑶本人
+            else if (name === '我') selfText = userLines;                // 用户自身节点
+            fg.extractProfileFromText(name, combined, selfText).catch(() => {});
           }
         }
       } catch (e: any) { console.error('[DialogGroup] error:', e?.message); }

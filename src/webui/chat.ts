@@ -475,6 +475,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     const dna = entryResult.dna;
     let _ruleEngineBlocked = entryResult.ruleEngineBlocked;
     let _ruleEngineReply = entryResult.ruleEngineReply;
+    const _weatherContext = entryResult.weatherContext || '';
 
     // 📸 人物全方位档案提取
     console.log('[PersonProfile] 检查开始, ctx.m4=' + (!!ctx.m4) + ' m4类型=' + (typeof ctx.m4));
@@ -1915,6 +1916,10 @@ if (ENABLE_TEMPORAL_RULE_ENGINE) {
     if (weatherPerm === 'allowed' && weatherCurrent) {
       finalKnowledgeText = (finalKnowledgeText || '') + '\n【气象环境】' + weatherCurrent;
     }
+    // 用户主动问天气的查询结果（优先级最高）
+    if (_weatherContext) {
+      finalKnowledgeText = '【天气查询结果】' + _weatherContext + '\n（基于以上天气数据，用自然的语气回答用户，不要编造未提供的数据）\n\n' + (finalKnowledgeText || '');
+    }
   } catch (_) {}
 }
 
@@ -2056,10 +2061,15 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
           }
         }
 
-        // ① M6 人格特质注入 — 让玉瑶的说话风格随人格演化而变（角色扮演时跳过）
+        // ① M6 自我模型注入 — 让玉瑶的说话风格 + 已形成的偏好 + 自传叙事随人格演化而"活"起来（角色扮演时跳过）
+        //   C1: 此前只注入大五人格的3个阈值；她演化出的偏好与自传叙事(M7梦境内化的成长)从未进入生成提示词，
+        //        导致"她在长大但说话不变"。此处把 M6 的演化自我完整接回生成链路。
         try {
           if (ctx.m6 && !_currentRoleplay) {
-            const traits = ctx.m6.getTraits();
+            const _selfBlocks: string[] = [];
+
+            // 1) 大五人格 → 说话风格
+            const traits = ctx.m6.getTraits?.();
             if (traits) {
               const traitDesc: string[] = [];
               if (traits.agreeableness > 0.7) traitDesc.push('你性格温柔体贴');
@@ -2067,12 +2077,51 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
               if (traits.extraversion > 0.6) traitDesc.push('比较活泼热情');
               else if (traits.extraversion < 0.4) traitDesc.push('比较安静内敛');
               if (traits.neuroticism > 0.6) traitDesc.push('情绪敏感');
+              if (traits.openness > 0.75) traitDesc.push('好奇心强、喜欢新鲜事物');
+              if (traits.conscientiousness > 0.75) traitDesc.push('细心可靠');
               if (traitDesc.length > 0) {
-                finalKnowledgeText = '【性格】' + traitDesc.join('，') + '\n（按照当前性格说话，不要违背' + (traitDesc.length > 1 ? '这些' : '这个') + '特点）\n\n' + finalKnowledgeText;
+                _selfBlocks.push('【性格】' + traitDesc.join('，') + '（按照当前性格说话，不要违背' + (traitDesc.length > 1 ? '这些' : '这个') + '特点）');
               }
             }
+
+            // 2) 已形成的偏好（喜欢/不喜欢）— 让玉瑶的口味保持一致
+            //    跳过纯情绪/动词类误提取名（爱/喜欢/讨厌…），只注入真实的偏好对象
+            const _prefStop = new Set(['喜欢', '爱', '讨厌', '感动', '开心', '难过', '不喜欢', '喜爱']);
+            const _prefs = (ctx.m6.getPreferences?.() || [])
+              .filter((p: any) => p && p.strength >= 0.5 && (p.name || '').length >= 2 && !_prefStop.has(p.name))
+              .sort((a: any, b: any) => b.strength - a.strength)
+              .slice(0, 5);
+            if (_prefs.length > 0) {
+              const _likes = _prefs.filter((p: any) => p.type === 'like').map((p: any) => p.name);
+              const _dislikes = _prefs.filter((p: any) => p.type === 'dislike').map((p: any) => p.name);
+              const _pp: string[] = [];
+              if (_likes.length) _pp.push('你喜欢：' + _likes.join('、'));
+              if (_dislikes.length) _pp.push('你不喜欢：' + _dislikes.join('、'));
+              if (_pp.length) _selfBlocks.push('【我的偏好】' + _pp.join('；'));
+            }
+
+            // 3) 自传叙事 — 核心身份 + 近期高钙化的成长片段，让玉瑶的自我认知连续
+            //    伦理铁律：这是她的人生记忆(含亲密片段)，原样注入，不做任何过滤
+            const _layers = ctx.m6.getNarrativeLayers?.() || [];
+            if (_layers.length > 0) {
+              const _story: string[] = [];
+              if (_layers[0]?.text) _story.push(_layers[0].text);                 // 核心身份叙事（第1层）
+              const _recent = _layers.slice(1)
+                .filter((l: any) => (l.calcium_at_event ?? 0) >= 2)
+                .slice(-3)
+                .map((l: any) => (l.text || '').trim())
+                .filter(Boolean);
+              _story.push(..._recent);
+              if (_story.length > 0) {
+                _selfBlocks.push('【我的自我认知与近况】' + _story.join('；'));
+              }
+            }
+
+            if (_selfBlocks.length > 0) {
+              finalKnowledgeText = _selfBlocks.join('\n') + '\n\n' + finalKnowledgeText;
+            }
           }
-        } catch (err) { console.warn('[M6Trait] 注入失败:', err); }
+        } catch (err) { console.warn('[M6Self] 注入失败:', err); }
 
         try {
 

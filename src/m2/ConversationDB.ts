@@ -32,13 +32,22 @@ export class ConversationDB {
   private dbPath: string;
   private initialized = false;
   private sharedMode = false;
+  /** C4: 共享模式下，把落盘委托给共享 db 的 owner（SQLiteAdapter），避免重复 export 同一 96MB 库 */
+  private _flushCoordinator: (() => void) | null = null;
+  /** C4: 独立模式的防抖落盘状态 */
+  private _flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private _dirty = false;
+  private readonly _FLUSH_INTERVAL = 150;
 
-  constructor(dbPath?: string, existingDb?: any) {
+  constructor(dbPath?: string, existingDb?: any, flushCoordinator?: () => void) {
     if (existingDb) {
       this.db = existingDb;        // 共享 fusion_memory.db 实例
       this.sharedMode = true;
       this.initialized = true;
-      this.dbPath = '(shared)';
+      // C4: 共享模式下仍需知道真实路径以便独立落盘兜底
+      this.dbPath = dbPath || DEFAULT_DB_PATH;
+      // C4: 委托给 owner 统一落盘（未提供则回退独立防抖落盘，仍然正确只是可能重复 export）
+      this._flushCoordinator = flushCoordinator || null;
       return;
     }
     this.dbPath = dbPath || DEFAULT_DB_PATH;
@@ -144,7 +153,8 @@ export class ConversationDB {
        options?.dialogRound ?? null, options?.isTest ?? 0, compactVal, compactVal,
        options?.roleplayChar || null, options?.namespace || 'default'],
     );
-    if (!this.sharedMode) this.flush();
+    // C4: 触发防抖落盘（共享模式委托 owner；独立模式 150ms 合并落盘），防止用户/助手消息因崩溃丢失
+    this.scheduleFlush();
     return seqPos;
   }
 
@@ -216,7 +226,8 @@ export class ConversationDB {
   writeRaw(sql: string, ...params: any[]): void {
     this.ensureReady();
     this.db.run(sql, params.length > 0 ? params : undefined);
-    if (!this.sharedMode) this.flush();
+    // C4: 关键写入触发防抖落盘（对话组回填等）
+    this.scheduleFlush();
   }
 
   queryAll(sql: string, params?: any[]): any[] {
@@ -230,17 +241,49 @@ export class ConversationDB {
   }
 
   close(): void {
-    if (this.db && !this.sharedMode) { this.flush(); this.db.close(); this.db = null; }
+    if (!this.db) return;
+    if (this.sharedMode) {
+      // C4: 共享 db 由 owner(SQLiteAdapter) 负责关闭；这里同步 export 一次作为兜底，
+      // 保证无论 owner 关闭顺序如何，最新的对话写入都已落盘，绝不 close 共享实例
+      try {
+        writeFileSync(this.dbPath, Buffer.from(this.db.export()));
+      } catch (err) {
+        console.error('[ConversationDB] 关闭落盘失败:', err);
+      }
+      this.db = null;
+      return;
+    }
+    // 独立模式：同步落盘后关闭
+    this.flushNow();
+    this.db.close();
+    this.db = null;
   }
 
-  private flush(): void {
-    if (!this.db || this.sharedMode) return;
+  /**
+   * C4: 防抖落盘调度。
+   * - 共享模式：委托 owner(SQLiteAdapter) 统一 export，避免两个类各自 export 同一 96MB 库
+   * - 独立模式：150ms 内的写入合并为一次 export（崩溃窗口 ~150ms）
+   */
+  private scheduleFlush(): void {
+    if (this._flushCoordinator) { this._flushCoordinator(); return; }
+    if (!this.db) return;
+    this._dirty = true;
+    if (!this._flushTimer) {
+      this._flushTimer = setTimeout(() => this.flushNow(), this._FLUSH_INTERVAL);
+    }
+  }
+
+  /** 独立模式立即落盘（共享模式由 owner 负责，此处不导出共享库） */
+  private flushNow(): void {
+    if (!this.db || this.sharedMode || !this._dirty) return;
     try {
       const data = this.db.export();
       writeFileSync(this.dbPath, Buffer.from(data));
+      this._dirty = false;
     } catch (err) {
       console.error('[ConversationDB] 落盘失败:', err);
     }
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
   }
 
   private ensureReady(): void {

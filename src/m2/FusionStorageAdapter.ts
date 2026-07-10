@@ -46,7 +46,12 @@ export class FusionStorageAdapter {
     if (!existsSync(this.dataDir)) mkdirSync(this.dataDir, { recursive: true });
     await this.sqlite.initialize();
     // 初始化共享 ConversationDB（使用同一个 sql.js 实例）
-    this._conversationDB = new ConversationDB(undefined, this.sqlite.getDb());
+    // C4: 传递真实路径 + 落盘协调器 — 共享 db 的落盘委托给 SQLiteAdapter 统一 export（防抖合并，避免重复导出 96MB 库）
+    this._conversationDB = new ConversationDB(
+      join(this.dataDir, 'fusion_memory.db'),
+      this.sqlite.getDb(),
+      () => this.sqlite.scheduleFlush(),
+    );
     await this._conversationDB.initialize();
     this.seqCounter = this.sqlite.getTotalCount();
     this.initialized = true;

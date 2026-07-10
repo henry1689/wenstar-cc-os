@@ -76,11 +76,16 @@ export class SQLiteAdapter {
   private dbPath: string;
   private ready = false;
   private blackDiamondFtsReady = false;
-  /** 批量 flush：累计写次数，每 N 次或每 T 秒才落盘 */
+  /**
+   * 防抖合并落盘：export() 会序列化整个内存库（当前 ~96MB），不能每次写入都落盘。
+   * 策略：一轮对话内的多次写入（消息×2 + 对话组锚点/碎片/黑钻 ~10 次）合并为一次 export。
+   * - _FLUSH_INTERVAL：首次写入后 150ms 内的写入合并落盘（崩溃丢失窗口 ~150ms，远小于旧的 2s）
+   * - _FLUSH_BATCH：硬上限，仅当同步突发写入积压过多时才强制立即落盘（兜底，避免内存无界）
+   */
   private _dirtyCount = 0;
   private _flushTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly _FLUSH_BATCH = 5;  // 每5次写入落盘一次
-  private readonly _FLUSH_INTERVAL = 2000; // 最长2秒落盘一次
+  private readonly _FLUSH_BATCH = 50;  // 硬上限：突发积压超过 50 次才强制同步落盘
+  private readonly _FLUSH_INTERVAL = 150; // 防抖窗口：150ms 内的写入合并为一次落盘
 
   /** P5: 热点查询缓存（2秒 TTL） */
   private _queryCache = new Map<string, { result: any; expiresAt: number }>();
@@ -272,6 +277,8 @@ export class SQLiteAdapter {
   }
 
   close(): void {
+    // C4: 关闭前确保所有待写入数据已落盘
+    this.flush();
     if (this.db) this.db.close();
     this.ready = false;
   }
@@ -298,6 +305,7 @@ export class SQLiteAdapter {
        options?.calciumScore ?? null, options?.dnaRootId ?? null,
        compacted, compacted, options?.namespace ?? 'default']
     );
+    // C4: 关键写入触发防抖落盘（合并在 150ms 窗口，避免 per-write 96MB export）
     this.save();
     return this.queryAll('SELECT last_insert_rowid() as id')[0]?.id as number || 0;
   }
@@ -771,15 +779,20 @@ export class SQLiteAdapter {
       const before = record.effective_strength;
       updateDynamics(record, now);
 
-      // 记录衰减日志
-      const lastUpdate = record.strength_updated_at
-        ? Math.max(0, (now.getTime() - new Date(record.strength_updated_at).getTime()) / 86_400_000)
-        : 0;
-      this.runSql(
-        `INSERT INTO decay_log (memory_id, checked_at, strength_before, strength_after, days_elapsed)
-         VALUES (?, ?, ?, ?, ?)`,
-        [record.id, now.toISOString(), before, record.effective_strength, lastUpdate],
-      );
+      // 记录衰减日志（M2: 只记录有实质变化的行，抑制噪声）
+      //  decay_log 仅用于调试追溯，686K 行中有 >99% 的 strength 变化 <0.00001（纯机械刷新，无诊断价值），
+      //  跳过这些噪声行，同时每周期裁剪到每 memory_id 最近 5 条。
+      const deltaAbs = Math.abs(before - record.effective_strength);
+      if (deltaAbs >= 0.0001) {
+        const lastUpdate = record.strength_updated_at
+          ? Math.max(0, (now.getTime() - new Date(record.strength_updated_at).getTime()) / 86_400_000)
+          : 0;
+        this.runSql(
+          `INSERT INTO decay_log (memory_id, checked_at, strength_before, strength_after, days_elapsed)
+           VALUES (?, ?, ?, ?, ?)`,
+          [record.id, now.toISOString(), before, record.effective_strength, lastUpdate],
+        );
+      }
 
       this.write(record);
       if (record.effective_strength < 0.05) archived++;
@@ -787,6 +800,32 @@ export class SQLiteAdapter {
     }
       offset += PAGE_SIZE;
     } while (pageRecords.length >= PAGE_SIZE);
+
+    // M2: 裁剪 decay_log — 每个 memory_id 只保留最近 5 条检查记录，防止无界膨胀撑大 96MB 库（拖慢 C4 落盘）。
+    //  decay_log 是纯调试追溯日志，从不参与检索；仅保留最近若干条即可满足排障需要。
+    //  用窗口函数单遍扫描（sql.js 1.11 支持），避免相关子查询在存量大表上的 O(N²) 开销。
+    try {
+      (this.db as any).run(
+        `DELETE FROM decay_log WHERE rowid IN (
+           SELECT rowid FROM (
+             SELECT rowid, ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY checked_at DESC) AS rn
+             FROM decay_log
+           ) WHERE rn > 5
+         )`,
+      );
+      const removed = typeof (this.db as any).getRowsModified === 'function'
+        ? (this.db as any).getRowsModified() : 0;
+      if (removed > 0) console.log(`[Decay] decay_log 裁剪: 删除 ${removed} 条历史记录`);
+      // 仅在一次性清理大量存量时 VACUUM 回收磁盘页（日常维护删几条不触发，避免每日重建整库）
+      if (removed > 10000) {
+        try {
+          (this.db as any).run('VACUUM');
+          console.log('[Decay] decay_log 大批清理后已 VACUUM 回收空间');
+        } catch (ve: any) { console.warn('[Decay] VACUUM 失败:', ve?.message); }
+      }
+    } catch (e: any) {
+      console.warn('[Decay] decay_log 裁剪失败:', e?.message);
+    }
 
     return { total, archived };
   }
@@ -949,10 +988,11 @@ export class SQLiteAdapter {
     }
   }
 
-  /** 直接执行 SQL */
+  /** 直接执行 SQL（关键写入触发防抖落盘） */
   writeRaw(sql: string, ...params: any[]): void {
     this.ensureReady();
     this.runSql(sql, params.length > 0 ? params : undefined);
+    // C4: 对话组锚点/碎片/黑钻晋升等关键写入触发防抖落盘（同轮突发写入合并为一次 export）
     this.save();
   }
 
@@ -1217,6 +1257,15 @@ export class SQLiteAdapter {
         this.flush();
       }, this._FLUSH_INTERVAL);
     }
+  }
+
+  /**
+   * C4: 供共享同一 sql.js 实例的 ConversationDB 委托调用。
+   * ConversationDB 写入共享 db 后调用此方法，把 db 标记为脏并调度防抖落盘，
+   * 由 SQLiteAdapter 统一 export 一次（避免两个类各自 export 同一个 96MB 库）。
+   */
+  scheduleFlush(): void {
+    this.save();
   }
 
   /** 强制立即落盘 */

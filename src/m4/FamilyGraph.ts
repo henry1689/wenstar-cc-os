@@ -2054,21 +2054,36 @@ export class FamilyGraph implements FamilyGraphInterface {
    * @param conversationText 对话原文（用于提取上下文）
    * @returns 本次提取到的字段数
    */
-  async extractProfileFromText(personName: string, conversationText: string): Promise<number> {
+  /**
+   * C2+C3: 从对话文本中提取人物档案。
+   * - conversationText: 完整对话（用于第三人称匹配，如"张三是工程师"）
+   * - selfNarration: 可选，该人物自己的发言（用于第一人称匹配，如"我是工程师"）
+   *   仅当该人物是对话的发言者时才传入，避免将用户的第一人称误归因到其他人物。
+   */
+  async extractProfileFromText(personName: string, conversationText: string, selfNarration?: string): Promise<number> {
     const profile = this.getPersonProfile(personName);
     if (!profile || !conversationText) return 0;
 
     let extracted = 0;
+    const selfText = selfNarration || '';
+
+    // C2+C3: 双人称匹配辅助 — 第三人称匹配完整对话，第一人称仅匹配该人物自己的发言
+    const matchSubj = (body: string): RegExpMatchArray | null => {
+      return conversationText.match(new RegExp(`${personName}${body}`))
+          || (selfText ? selfText.match(new RegExp(`我${body}`)) : null);
+    };
 
     // 1. 提取职业/身份（高置信度模式：包含"是"的声明句）
-    const occupationMatch = conversationText.match(new RegExp(`${personName}(?:是|做|从事|在.+?担任)([^，。！？]{2,20}(?:工作|一职|岗位|职位|老师|医生|工程师|经理|主管|员))`));
+    const occupationMatch = matchSubj(`(?:是|做|从事|在.+?担任)([^，。！？]{2,20}(?:工作|一职|岗位|职位|老师|医生|工程师|经理|主管|员))`);
     if (occupationMatch && !profile.occupation && !isInvalidProfileSnippet(occupationMatch[1])) {
       const occupation = occupationMatch[1].substring(0, 30);
       await this.updatePersonProfile(personName, { occupation } as any, { countMention: false });
       extracted++;
     }
 
-    // 2. 提取性格标签（低置信度追加模式）
+    // 2. 提取性格标签（低置信度追加模式 — 无主语锚定，全文扫描）
+    // C2+C3: 同时扫描完整对话和该人物自己的发言
+    const scanText = selfText ? conversationText + '\n' + selfText : conversationText;
     const traitHints = [
       { regex: /开朗|外向|活泼/, value: '开朗' },
       { regex: /内向|安静|腼腆/, value: '内向' },
@@ -2090,7 +2105,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     ];
     const newTraits: string[] = [];
     for (const hint of traitHints) {
-      if (hint.regex.test(conversationText)) {
+      if (hint.regex.test(scanText)) {
         const existing = profile.traits || [];
         if (!existing.includes(hint.value)) {
           newTraits.push(hint.value);
@@ -2104,7 +2119,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // 3. 提取关系描述
-    const relationNoteMatch = conversationText.match(new RegExp(`${personName}(?:是|算|属于)(?:我的|我)?([^，。！？]{2,20}(?:朋友|同学|同事|亲戚|邻居|合伙人|搭档|合作伙伴))`));
+    const relationNoteMatch = matchSubj(`(?:是|算|属于)(?:我的|你的|我|你)?([^，。！？]{2,20}(?:朋友|同学|同事|亲戚|邻居|合伙人|搭档|合作伙伴))`);
     if (relationNoteMatch && relationNoteMatch[1]) {
       const note = relationNoteMatch[1].substring(0, 30);
       if (!profile.relation_to_user) {
@@ -2116,15 +2131,15 @@ export class FamilyGraph implements FamilyGraphInterface {
       }
     }
 
-    // 4. 提取爱好（追加模式）
+    // 4. 提取爱好（追加模式 — 无主语锚定）
     const interestHints = [
       /喜欢|爱好|爱看|爱听|爱玩|爱打|爱去|爱做/,
       /热爱|酷爱|迷恋/,
     ];
     for (const hint of interestHints) {
-      const interestMatch = conversationText.match(hint);
+      const interestMatch = scanText.match(hint);
       if (interestMatch) {
-        const detailMatch = conversationText.match(new RegExp(`${interestMatch[0]}([^，。！？]{2,20})`));
+        const detailMatch = scanText.match(new RegExp(`${interestMatch[0]}([^，。！？]{2,20})`));
         if (detailMatch) {
           const interest = detailMatch[1].substring(0, 15);
           if (!(profile.interests || []).includes(interest) && interest.length >= 2) {
@@ -2137,7 +2152,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // 5. 提取外貌描述
-    const appearanceMatch = conversationText.match(new RegExp(`${personName}(?:长?得?|长相|样子|看起来)([^，。！？]{3,30})`));
+    const appearanceMatch = matchSubj(`(?:长?得?|长相|样子|看起来)([^，。！？]{3,30})`);
     if (appearanceMatch && appearanceMatch[1].length >= 3) {
       const desc = appearanceMatch[1].substring(0, 40);
       if (!profile.appearance && !profile.dossier?.imageTraits?.looks) {
@@ -2151,8 +2166,8 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     // ── v1.2 新增提取规则 ──
 
-    // 6. 提取联系方式（电话/微信/地址）
-    const phoneMatch = conversationText.match(/(?:电话|手机|打给我|联系)(?:\s*[:：]?\s*)(1[3-9]\d{9})/);
+    // 6. 提取联系方式（电话/微信/地址 — 无主语锚定）
+    const phoneMatch = scanText.match(/(?:电话|手机|打给我|联系)(?:\s*[:：]?\s*)(1[3-9]\d{9})/);
     if (phoneMatch) {
       const phone = phoneMatch[1];
       if (profile.dossier?.contact?.phone !== phone) {
@@ -2162,15 +2177,17 @@ export class FamilyGraph implements FamilyGraphInterface {
         extracted++;
       }
     }
-    const wechatMatch = conversationText.match(/(?:微信|WeChat|wx)(?:\s*[:：]?\s*)([a-zA-Z0-9_]{4,30})/);
+    const wechatMatch = scanText.match(/(?:微信|WeChat|wx)(?:\s*[:：]?\s*)([a-zA-Z0-9_]{4,30})/);
     if (wechatMatch) {
       const wechat = wechatMatch[1];
       await this.addPendingItem(personName, 'contact.wechat', wechat, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // 7. 提取年龄/出生年份
-    const ageMatch = conversationText.match(/(?:今年|现在)(\d{1,2})岁/);
+    // 7. 提取年龄/出生年份（无主语锚定）
+    // C2+C3: 优先从 selfText 匹配"我今年X岁"，再回退到全文匹配
+    const ageMatch = (selfText ? selfText.match(/(?:我|)今年(\d{1,2})岁/) : null)
+                  || scanText.match(/(?:今年|现在)(\d{1,2})岁/);
     if (ageMatch) {
       const age = parseInt(ageMatch[1]);
       const birthYear = new Date().getFullYear() - age;
@@ -2179,7 +2196,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // 8. 提取健康信息
-    const healthMatch = conversationText.match(new RegExp(`${personName}.*?(?:身体|健康|生病|住院|吃药|手术|过敏|毛病)([^。！？]{2,30})`));
+    const healthMatch = matchSubj(`.*?(?:身体|健康|生病|住院|吃药|手术|过敏|毛病)([^。！？]{2,30})`);
     if (healthMatch) {
       const healthInfo = healthMatch[0].substring(0, 40);
       await this.addPendingItem(personName, 'health.condition', healthInfo, conversationText.substring(0, 80));
@@ -2187,7 +2204,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // 9. 提取工作单位/地点
-    const workplaceMatch = conversationText.match(new RegExp(`${personName}.*?(?:在|任职于|工作于|在.*上班)([^，。！？]{2,20})`));
+    const workplaceMatch = matchSubj(`.*?(?:在|任职于|工作于|在.*上班)([^，。！？]{2,20})`);
     if (workplaceMatch && !isInvalidProfileSnippet(workplaceMatch[1])) {
       const workplace = workplaceMatch[1].substring(0, 20);
       await this.addPendingItem(personName, 'contact.workplace', workplace, conversationText.substring(0, 80));
@@ -2195,31 +2212,25 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // 📜 提取住址/家庭地址
-    const addrPatterns = [
-      new RegExp(`${personName}.*?(?:住在|住|家在)([^，。！？]{2,30})`),
-      new RegExp(`${personName}.*?(?:家|住的地方|住址)(?:在|是)([^，。！？]{2,30})`),
-    ];
-    for (const addrRe of addrPatterns) {
-      const addrMatch = conversationText.match(addrRe);
-      if (addrMatch && addrMatch[1] && !/什么|哪里|哪儿|哪/.test(addrMatch[1])) {
-        const addr = addrMatch[1].trim().substring(0, 30);
-        if (!profile.address || profile.address !== addr) {
-          await this.updatePersonProfile(personName, { address: addr } as any, { countMention: false });
-          extracted++;
-        }
-        break;
+    const addrMatch = matchSubj(`.*?(?:住在|住|家在)([^，。！？]{2,30})`)
+                   || matchSubj(`.*?(?:家|住的地方|住址)(?:在|是)([^，。！？]{2,30})`);
+    if (addrMatch && addrMatch[1] && !/什么|哪里|哪儿|哪/.test(addrMatch[1])) {
+      const addr = addrMatch[1].trim().substring(0, 30);
+      if (!profile.address || profile.address !== addr) {
+        await this.updatePersonProfile(personName, { address: addr } as any, { countMention: false });
+        extracted++;
       }
     }
 
     // 10. 提取人生大事（结婚/生子/毕业等）
-    const milestoneMatch = conversationText.match(new RegExp(`${personName}.*?(?:结婚|生子|毕业|考上|入职|退休|去世|生病|住院|创业|开店)([^。！？]{2,30})`));
+    const milestoneMatch = matchSubj(`.*?(?:结婚|生子|毕业|考上|入职|退休|去世|生病|住院|创业|开店)([^。！？]{2,30})`);
     if (milestoneMatch) {
       await this.addPendingItem(personName, 'lifeMilestones', milestoneMatch[0].substring(0, 40), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 11. 提取家庭关系（XX的爸爸/妈妈/老婆/老公等）
-    const familyRelMatch = conversationText.match(new RegExp(`${personName}(?:的|是)(?:爸爸|妈妈|父亲|母亲|老公|老婆|丈夫|妻子|儿子|女儿|孩子|哥哥|弟弟|姐姐|妹妹|兄弟|姐妹|爷爷|奶奶|外公|外婆)`));
+    const familyRelMatch = matchSubj(`(?:的|是)(?:爸爸|妈妈|父亲|母亲|老公|老婆|丈夫|妻子|儿子|女儿|孩子|哥哥|弟弟|姐姐|妹妹|兄弟|姐妹|爷爷|奶奶|外公|外婆)`);
     if (familyRelMatch) {
       const relation = familyRelMatch[0].substring(0, 20);
       await this.addPendingItem(personName, 'familyNetwork.extended', relation, conversationText.substring(0, 80));
@@ -2227,114 +2238,133 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // ── v1.2 新增：与用户的交集提取 ──
+    // 交集规则结构复杂，不使用 matchSubj，分别处理第三人称和第一人称
 
-    // 12. 提取结识场景（"我和XX是在XX认识的/认识的"）
-    const metMatch = conversationText.match(new RegExp(`(?:我和|我和|与)${personName}(?:是在|是在|是)([^，。！？]{2,30})(?:认识的|认识的|认识的|见面|相遇|碰到的)`));
-    if (metMatch) {
-      const metWhen = metMatch[1].substring(0, 30);
+    // 12. 提取结识场景（"我和XX是在XX认识的" / "我是在XX认识你的"）
+    let metWhen: string | null = null;
+    const metMatch = conversationText.match(new RegExp(`(?:我和|与)${personName}(?:是在|是)([^，。！？]{2,30})(?:认识的|认识|见面|相遇|碰到的)`));
+    if (metMatch) { metWhen = metMatch[1].substring(0, 30); }
+    if (!metWhen && selfText) {
+      const metFirstMatch = selfText.match(new RegExp(`我(?:是在|是)([^，。！？]{2,30})(?:认识你的|和你认识的|认识你|见到你的|遇到你|碰见你的)`));
+      if (metFirstMatch) { metWhen = metFirstMatch[1].substring(0, 30); }
+    }
+    if (metWhen) {
       await this.addPendingItem(personName, 'relationMap.intersections.metWhen', metWhen, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // 13. 提取共事记录（"一起/合作/同事/项目/共事"）
+    // 13. 提取共事记录（"张三和我一起做XX" / "我和你一起做XX"）
+    let workTogether: string | null = null;
     const workMatch = conversationText.match(new RegExp(`${personName}(?:和我|同我|跟我)?(?:一起|一同|合作|共事|搭档|合伙|共同)(?:做|搞|负责|参与|创业|经营|管理)([^，。！？]{2,40})`));
-    if (workMatch) {
-      const workTogether = workMatch[0].substring(0, 50);
+    if (workMatch) { workTogether = workMatch[0].substring(0, 50); }
+    if (!workTogether && selfText) {
+      const workFirstMatch = selfText.match(new RegExp(`我(?:和你|同你|跟你)(?:一起|一同|合作|共事|搭档|合伙|共同)(?:做|搞|负责|参与|创业|经营|管理)([^，。！？]{2,40})`));
+      if (workFirstMatch) { workTogether = workFirstMatch[0].substring(0, 50); }
+    }
+    if (workTogether) {
       await this.addPendingItem(personName, 'relationMap.intersections.workTogether', workTogether, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // 14. 提取生活交集（"一起去过/一起吃饭/我们经常"）
+    // 14. 提取生活交集（"张三和我一起去XX" / "我和你一起去XX"）
+    let lifeIntersection: string | null = null;
     const lifeMatch = conversationText.match(new RegExp(`${personName}(?:和我|同我|跟我)?(?:一起|经常|偶尔|有时)(?:去|来|吃|喝|玩|聚|见|约|住|走)([^，。！？]{2,30})`));
-    if (lifeMatch) {
-      const lifeIntersection = lifeMatch[0].substring(0, 40);
+    if (lifeMatch) { lifeIntersection = lifeMatch[0].substring(0, 40); }
+    if (!lifeIntersection && selfText) {
+      const lifeFirstMatch = selfText.match(new RegExp(`我(?:和你|同你|跟你)(?:一起|经常|偶尔|有时)(?:去|来|吃|喝|玩|聚|见|约|住|走)([^，。！？]{2,30})`));
+      if (lifeFirstMatch) { lifeIntersection = lifeFirstMatch[0].substring(0, 40); }
+    }
+    if (lifeIntersection) {
       await this.addPendingItem(personName, 'relationMap.intersections.lifeIntersection', lifeIntersection, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // 15. 提取情感评价（"信得过/讨厌/信任/很看重/不喜欢"）
-    const emotionMatch = conversationText.match(new RegExp(`对${personName}(?:很|非常|挺|特别|有点|有些|一向)(?:信赖|信任|看重|欣赏|佩服|尊敬|感恩|感激|讨厌|反感|不满|失望|嫌弃|依赖|依靠|忌惮|防备)`));
+    // 15. 提取情感评价（"对张三很信任" / "我对你很信任"）
+    const emotionMatch = conversationText.match(new RegExp(`对${personName}(?:很|非常|挺|特别|有点|有些|一向)(?:信赖|信任|看重|欣赏|佩服|尊敬|感恩|感激|讨厌|反感|不满|失望|嫌弃|依赖|依靠|忌惮|防备)`))
+                      || (selfText ? selfText.match(new RegExp(`我对你(?:很|非常|挺|特别|有点|有些|一向)(?:信赖|信任|看重|欣赏|佩服|尊敬|感恩|感激|讨厌|反感|不满|失望|嫌弃|依赖|依靠|忌惮|防备)`)) : null);
     if (emotionMatch) {
       const assessment = emotionMatch[0].substring(0, 30);
       await this.addPendingItem(personName, 'relationMap.intersections.emotionalAssessment', assessment, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // 16. 提取利益关系（"我的客户/合伙人/供应商/老板"）
-    const interestMatch = conversationText.match(new RegExp(`${personName}(?:是|算|属于)我的(?:客户|供应商|合伙人|合作伙伴|老板|上级|下属|员工|同事|搭档|乙方|甲方|代理商|渠道商|股东|投资人)`));
+    // 16. 提取利益关系（"张三是我的客户" / "我是你的客户"）
+    const interestMatch = conversationText.match(new RegExp(`${personName}(?:是|算|属于)我的(?:客户|供应商|合伙人|合作伙伴|老板|上级|下属|员工|同事|搭档|乙方|甲方|代理商|渠道商|股东|投资人)`))
+                       || (selfText ? selfText.match(new RegExp(`我(?:是|算|属于)你的(?:客户|供应商|合伙人|合作伙伴|老板|上级|下属|员工|同事|搭档|乙方|甲方|代理商|渠道商|股东|投资人)`)) : null);
     if (interestMatch) {
       const interestRelation = interestMatch[0].substring(0, 20);
       await this.addPendingItem(personName, 'relationMap.intersections.interestRelation', interestRelation, conversationText.substring(0, 80));
       extracted++;
     }
 
-    // ── v1.2 新增：女性详细体征提取（非家人女性） ──
+    // ── v1.2 新增：女性详细体征提取 ──
+    // C2+C3: 全部经由 matchSubj，第一人称仅匹配 selfNarration（该人物自己的发言）
 
     // 17. 提取整体印象/气质
-    const impressionMatch = conversationText.match(new RegExp(`${personName}.*?(?:第一印象|给人的感觉|气质|那种|一看就是|看起来)([^。！？]{3,30})`));
+    const impressionMatch = matchSubj(`.*?(?:第一印象|给人的感觉|气质|那种|一看就是|看起来)([^。！？]{3,30})`);
     if (impressionMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.firstImpression', impressionMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 18. 提取身高体型描述（含三围/身材数据）
-    const statureMatch = conversationText.match(new RegExp(`${personName}.*?(?:身高|一米[五六七八九]|身材|个子|体型|三围|胸围|腰围|臀围|匀称|苗条|丰满|娇小|高挑|修长|性感|火辣)([^。！？]{3,30})`));
+    const statureMatch = matchSubj(`.*?(?:身高|一米[五六七八九]|身材|个子|体型|三围|胸围|腰围|臀围|匀称|苗条|丰满|娇小|高挑|修长|性感|火辣)([^。！？]{3,30})`);
     if (statureMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.stature', statureMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 19. 提取胸部特征
-    const breastMatch = conversationText.match(new RegExp(`${personName}.*?(?:胸|乳房|乳沟|奶子|胸部|乳晕|乳头|胸型|罩杯|丰满|平胸|微乳|大胸|巨乳|椒乳|酥胸|双峰)([^。！？]{2,30})`));
+    const breastMatch = matchSubj(`.*?(?:胸|乳房|乳沟|奶子|胸部|乳晕|乳头|胸型|罩杯|丰满|平胸|微乳|大胸|巨乳|椒乳|酥胸|双峰)([^。！？]{2,30})`);
     if (breastMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.breasts', breastMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 20. 提取臀部/腰/腿特征
-    const bodyPartMatch = conversationText.match(new RegExp(`${personName}.*?(?:臀|屁股|翘臀|蜜桃臀|圆润|腰|细腰|小蛮腰|水蛇腰|蜜桃|美腿|大腿|长腿|玉腿|腿型|小腿|修长|笔直|性感)([^。！？]{2,30})`));
+    const bodyPartMatch = matchSubj(`.*?(?:臀|屁股|翘臀|蜜桃臀|圆润|腰|细腰|小蛮腰|水蛇腰|蜜桃|美腿|大腿|长腿|玉腿|腿型|小腿|修长|笔直|性感)([^。！？]{2,30})`);
     if (bodyPartMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.buttocks', bodyPartMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 21. 提取皮肤描述
-    const skinMatch = conversationText.match(new RegExp(`${personName}.*?(?:皮肤|肌肤|肤质|雪白|白皙|嫩滑|光滑|细腻|吹弹可破|冰肌玉骨|小麦色|古铜|白嫩|弹性|体温|温热|冰凉)([^。！？]{2,30})`));
+    const skinMatch = matchSubj(`.*?(?:皮肤|肌肤|肤质|雪白|白皙|嫩滑|光滑|细腻|吹弹可破|冰肌玉骨|小麦色|古铜|白嫩|弹性|体温|温热|冰凉)([^。！？]{2,30})`);
     if (skinMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.skin', skinMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 22. 提取唇/眼/发特征
-    const lookMatch = conversationText.match(new RegExp(`${personName}.*?(?:嘴唇|双唇|红唇|性感|丰唇|薄唇|眼睛|眼神|双眸|眼眸|瞳孔|桃花眼|丹凤眼|睫毛|秀发|长发|青丝|发丝|发质|马尾|披肩发|短发|卷发|直发|发香)([^。！？]{2,30})`));
+    const lookMatch = matchSubj(`.*?(?:嘴唇|双唇|红唇|性感|丰唇|薄唇|眼睛|眼神|双眸|眼眸|瞳孔|桃花眼|丹凤眼|睫毛|秀发|长发|青丝|发丝|发质|马尾|披肩发|短发|卷发|直发|发香)([^。！？]{2,30})`);
     if (lookMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.lips', lookMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 23. 提取体味/体香/香水
-    const scentMatch = conversationText.match(new RegExp(`${personName}.*?(?:体味|体香|香水|味道|气味|香|气息|芬芳|幽香|清香|淡香|浓郁|奶香|花|栀子|玫瑰|茉莉|檀香|麝香)([^。！？]{2,30})`));
+    const scentMatch = matchSubj(`.*?(?:体味|体香|香水|味道|气味|香|气息|芬芳|幽香|清香|淡香|浓郁|奶香|花|栀子|玫瑰|茉莉|檀香|麝香)([^。！？]{2,30})`);
     if (scentMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.bodyScent', scentMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 24. 提取性感/魅惑描述
-    const allureMatch = conversationText.match(new RegExp(`${personName}.*?(?:性感|魅惑|妩媚|妖娆|撩人|迷人|勾人|摄魂|风骚|骚|浪|淫荡|风情|韵味|诱惑|挑逗|销魂|让人受不了|把持不住|欲火)([^。！？]{2,30})`));
+    const allureMatch = matchSubj(`.*?(?:性感|魅惑|妩媚|妖娆|撩人|迷人|勾人|摄魂|风骚|骚|浪|淫荡|风情|韵味|诱惑|挑逗|销魂|让人受不了|把持不住|欲火)([^。！？]{2,30})`);
     if (allureMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.allure', allureMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 25. 提取触感描述
-    const touchMatch = conversationText.match(new RegExp(`${personName}.*?(?:手感|触感|抚摸|接触|温软|柔软|柔滑|细腻|紧致|弹性|炙热|滚烫|冰凉|润滑|湿润|嫩滑)([^。！？]{2,30})`));
+    const touchMatch = matchSubj(`.*?(?:手感|触感|抚摸|接触|温软|柔软|柔滑|细腻|紧致|弹性|炙热|滚烫|冰凉|润滑|湿润|嫩滑)([^。！？]{2,30})`);
     if (touchMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.touch', touchMatch[0].substring(0, 50), conversationText.substring(0, 80));
       extracted++;
     }
 
     // 26. 提取特殊记忆点
-    const memMatch = conversationText.match(new RegExp(`${personName}.*?(?:最让人|最令我|印象最深|忘不了|怀念|想念|回味|魂牵梦萦|念念不忘|挥之不去)([^。！？]{3,40})`));
+    const memMatch = matchSubj(`.*?(?:最让人|最令我|印象最深|忘不了|怀念|想念|回味|魂牵梦萦|念念不忘|挥之不去)([^。！？]{3,40})`);
     if (memMatch) {
       await this.addPendingItem(personName, 'imageTraits.feminineDetails.memorableTraits', memMatch[0].substring(0, 60), conversationText.substring(0, 80));
       extracted++;
