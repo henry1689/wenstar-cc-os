@@ -733,11 +733,15 @@ export class SQLiteAdapter {
     }
 
     const str = record.effective_strength ?? 0.5;
+    // Q1: 钙化分归一化到 [0,1]——种子级 computeCalcium 产出 [0,1]，累积级最高到 [0,10]。
+    //未经归一化时，被召回过 5 次的记忆（calcium≈1.0+）其 calcium 项的幅值是 emotional/topic
+    // 项的 10 倍，直接淹没情感相似度。除以10后找回语义：被反复想起的记忆仍有加权优势，
+    // 但不至于单维决定排名。
     const composite = isNaN(str) ? 0.5 : str * (
       weights.emotional * emotional +
       weights.topic * topic +
       weights.entity * entityOverlap +
-      weights.calcium * calcium
+      weights.calcium * (calcium / 10)
     ) * recency + vadBonus;
 
     const safeComposite = isNaN(composite) ? 0 : Math.max(0, Math.min(1, composite));

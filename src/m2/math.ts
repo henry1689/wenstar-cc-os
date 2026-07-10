@@ -241,16 +241,18 @@ export function allocateRetrievalWeights(
   arousal: number,
   mode: SimilarityMode,
 ): RetrievalWeights {
-  let wE = 0.40, wT = 0.25, wEnt = 0.20, wCa = 0.15;
+  // Q1: 钙化分已归一化到 [0,1] (/10)，权重相应提升以保持语义——被反复召回的
+  // 记忆应有检索优势，但不淹没情感相似度。各模式的钙化权重大约×1.7 补偿 /10 缩小。
+  let wE = 0.35, wT = 0.20, wEnt = 0.20, wCa = 0.25;
 
   if (entityCount >= 2) {
-    wEnt = 0.45; wE = 0.20; wT = 0.20; wCa = 0.15;
+    wEnt = 0.40; wE = 0.20; wT = 0.15; wCa = 0.25;
   }
   if (arousal > 0.7) {
-    wE = 0.60; wT = 0.10; wEnt = 0.10; wCa = 0.20;
+    wE = 0.50; wT = 0.10; wEnt = 0.10; wCa = 0.30;
   }
   if (mode === 'by_calcium') {
-    wCa = 0.45; wE = 0.35; wT = 0.10; wEnt = 0.10;
+    wCa = 0.50; wE = 0.30; wT = 0.10; wEnt = 0.10;
   }
 
   const sum = wE + wT + wEnt + wCa;
