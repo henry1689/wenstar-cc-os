@@ -408,7 +408,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
     });
 
     // 检测本次是否为自介查询 + 知识库中有玉瑶档案
-    const hasSelfProfile = kb.includes('【玉瑶本人档案】');
+    const hasSelfProfile = kb.includes('【玉瑶本人】') || kb.includes('玉瑶的档案');
     const isSelfIntroQuery = /你是谁|介绍你自己|你叫什么|你多大了|你多大/.test(rawInput);
 
     // 注入最近对话历史（作为真实的 user/assistant 消息）
@@ -435,7 +435,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
     // 🚨 玉瑶本人档案——紧贴用户消息注入，防止被历史对话淹没
     if (hasSelfProfile && isSelfIntroQuery) {
-      const profileText = kb.replace(/^.*?【玉瑶本人档案】.*?\n/, '').substring(0, 2000);
+      const profileText = kb.replace(/^.*?【玉瑶本人】.*?\n/, '').substring(0, 2000);
       messages.push({
         role: 'system',
         content: `【⚠️ 强制指令】用户正在问关于你自己的身份问题。以下是你的真实个人档案，这是关于"我是谁"的唯一权威信息。你必须完全基于此回答，不要参考对话历史中的任何内容：
