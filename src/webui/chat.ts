@@ -448,7 +448,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     const _sinceRp = Date.now() - _lastRpInteractionTime;
     if (_sinceRp > 15 * 60 * 1000) {
       console.log('[📜角色超时退出] 距上次角色扮演互动' + Math.round(_sinceRp / 60000) + '分钟，自动切回玉瑶');
-      try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+      try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
       _currentRoleplay = null;
       _currentRPBranch = null;
       _currentCharacterClass = null;
@@ -583,7 +583,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
                             [_personEntity[0].id, _featId, new Date().toISOString()]
                           );
                           // (FG-迁移) 同步写入 FamilyGraph 特征边（角色扮演时跳过）
-                          if (!_currentRoleplay) try { ctx.m4?.getFamilyGraph()?.addFeatureEdge(_n, _featName, 'appearance').catch(() => {}); } catch {}
+                          if (!_currentRoleplay) try { ctx.m4?.getFamilyGraph()?.addFeatureEdge(_n, _featName, 'appearance').catch((e: any) => console.warn('[FG] addFeatureEdge失败:', e?.message)); } catch (e) { console.warn('[FG] addFeatureEdge调用异常:', (e as any)?.message); }
                         }
                       }
                     } catch (e: any) { console.error('[chat] error:', e?.message); }
@@ -688,7 +688,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     _transitionState = transition.state;
     _currentRole = transition.newRole;
     console.log('[RoleRouter] ' + _currentRole + ' (' + roleDecision.rule + ')');
-    try { const { WorkingMemory: WM } = await import('../m9/WorkingMemory.js'); WM.currentTag = _currentRole; } catch {}
+    try { const { WorkingMemory: WM } = await import('../m9/WorkingMemory.js'); WM.currentTag = _currentRole; } catch (e) { console.warn('[WorkingMemory] currentTag 设置失败:', (e as any)?.message); }
     // 主人大脑镜像提取：每轮对话后自动提取+审查+存储
     if (ctx.masterProfile && message.length > 3) {
       try {
@@ -1291,7 +1291,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     if (/停止.*扮演|退出扮演|结束扮演|不扮演了/.test(message)) {
         console.log('[Roleplay] 🔴 退出检测命中: msg="' + message.substring(0, 30) + '"');
         // 🎭 先清除M4的FG分支覆盖（所有后续FG操作回到主FG）
-        try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+        try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
         // 🏗️ P1-1: 退出时存档角色情感 + 恢复玉瑶情感
         if (_emotionSnapshot) {
           _emotionSnapshot.exitRoleplay();
@@ -1319,12 +1319,12 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     async function _loadRPFamily(charName: string): Promise<string> {
       try {
         if (!_currentRPBranch || _currentRPBranch.rootName !== charName) {
-          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
           const fg = ctx.m4 ? ctx.m4.getFamilyGraph() : null;
           if (!fg) return '';
           _currentRPBranch = new FamilyGraphRoleBranch(fg, charName);
           await _currentRPBranch.initialize();
-          try { ctx.m4?.setFamilyGraphOverride?.(_currentRPBranch); } catch {}
+          try { ctx.m4?.setFamilyGraphOverride?.(_currentRPBranch); } catch (e) { console.warn('[Roleplay] 设置FG角色分支失败:', (e as any)?.message); }
         }
         const familyText = _currentRPBranch.getFamilyTreeText();
         if (familyText) console.log('[Roleplay] FG分支家族树: ' + familyText.length + '字节, ' + _currentRPBranch.size + '人');
@@ -1425,7 +1425,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         if (_rpSwitching) {
           console.log('[Roleplay] 角色切换: ' + _currentRoleplay + ' → ' + character);
           // 清除旧 FG 分支
-          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+          try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
           _currentRPBranch = null;
           _rpLoadedPersons.clear();
           // 🏗️ P1-2: 触发 enrichedWithGuard 历史过滤（清理旧角色的 assistant 回复）
@@ -1461,12 +1461,12 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         // 🏗️ P0: 创建FG分支（角色视角家族树）
         try {
           if (!_currentRPBranch || _currentRPBranch.rootName !== character) {
-            try { ctx.m4?.setFamilyGraphOverride?.(null); } catch {}
+            try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
             const _fg = ctx.m4 ? ctx.m4.getFamilyGraph() : null;
             if (_fg) {
               _currentRPBranch = new FamilyGraphRoleBranch(_fg, character);
               await _currentRPBranch.initialize();
-              try { ctx.m4?.setFamilyGraphOverride?.(_currentRPBranch); } catch {}
+              try { ctx.m4?.setFamilyGraphOverride?.(_currentRPBranch); } catch (e) { console.warn('[Roleplay] 设置FG角色分支失败:', (e as any)?.message); }
             }
           }
         } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }

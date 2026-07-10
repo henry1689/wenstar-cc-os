@@ -991,7 +991,11 @@ export class SQLiteAdapter {
   /** 直接执行 SQL（关键写入触发防抖落盘） */
   writeRaw(sql: string, ...params: any[]): void {
     this.ensureReady();
-    this.runSql(sql, params.length > 0 ? params : undefined);
+    // 兼容两种调用风格：writeRaw(sql, a, b) 与 writeRaw(sql, [a, b])。
+    // sql.js 无法把数组绑定到单个 ?，故"单个数组参数"必为数组风格，需展开——否则整个数组被绑到 ?1、
+    // 其余 ? 变 NULL，导致 UPDATE ... WHERE id=? 恒不命中（静默无操作）。
+    const bind = (params.length === 1 && Array.isArray(params[0])) ? params[0] : params;
+    this.runSql(sql, bind.length > 0 ? bind : undefined);
     // C4: 对话组锚点/碎片/黑钻晋升等关键写入触发防抖落盘（同轮突发写入合并为一次 export）
     this.save();
   }

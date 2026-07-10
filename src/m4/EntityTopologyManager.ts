@@ -126,18 +126,22 @@ export class EntityTopologyManager {
     const revLevel = LEVEL_MAP[reverse] ?? 2;
     const isoTime = now;
 
+    // R2: 用确定性 id（非随机）使 INSERT OR REPLACE 对同关系去重，避免重复插入。
+    // id = root_id : target_id : relation : namespace 的拼接，保证同一关系对永远只有一个行。
+    const id = `${entityA}:${entityB}:${relation}:${namespace}`;
+
     // 正向: A → B
     this.sqlite.writeRaw(
       `INSERT OR REPLACE INTO entity_topology (id, root_entity_id, target_entity_id, relation_type, reverse_relation, topology_level, namespace, dna_root_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [this.uid(), entityA, entityB, relation, reverse, level, namespace, dnaRootId || null, isoTime, isoTime],
+      [id, entityA, entityB, relation, reverse, level, namespace, dnaRootId || null, isoTime, isoTime],
     );
 
     // 反向: B → A（自动计算反向关系）
     this.sqlite.writeRaw(
       `INSERT OR REPLACE INTO entity_topology (id, root_entity_id, target_entity_id, relation_type, reverse_relation, topology_level, namespace, dna_root_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [this.uid(), entityB, entityA, reverse, relation, revLevel, namespace, dnaRootId || null, isoTime, isoTime],
+      [id + '_rev', entityB, entityA, reverse, relation, revLevel, namespace, dnaRootId || null, isoTime, isoTime],
     );
   }
 

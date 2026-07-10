@@ -225,7 +225,9 @@ export class ConversationDB {
 
   writeRaw(sql: string, ...params: any[]): void {
     this.ensureReady();
-    this.db.run(sql, params.length > 0 ? params : undefined);
+    // 兼容 writeRaw(sql, a, b) 与 writeRaw(sql, [a, b])：单个数组参数展开为绑定值列表
+    const bind = (params.length === 1 && Array.isArray(params[0])) ? params[0] : params;
+    this.db.run(sql, bind.length > 0 ? bind : undefined);
     // C4: 关键写入触发防抖落盘（对话组回填等）
     this.scheduleFlush();
   }
