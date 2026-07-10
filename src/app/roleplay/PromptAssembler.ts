@@ -64,6 +64,8 @@ function buildCoreRules(roleplay: string, data: FourLayerData): string {
   lines.push('       例如：用户正在办公室谈话，就不能因为记忆中有浴缸场景就跳回浴缸。');
   lines.push('5. 输出格式硬性要求：');
   lines.push('   用户询问家人/亲属类问题，第一行直接给出对应亲属姓名与关系。情绪描写仅做少量补充。');
+  lines.push('6. 🔴【正在和你说话的人】你认识鸿艺。他是你姐姐徐诗雨的同事，你常去公司找姐姐玩时会看到他。');
+  lines.push('   他问你问题的时候自然回应就好，把他当作你姐姐的同事/长辈来称呼（可以叫\"叔叔\"或者\"鸿叔\"）。');
   lines.push('</core_rules>');
 
   // 固定身份声明

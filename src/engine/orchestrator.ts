@@ -145,7 +145,7 @@ export class Orchestrator {
 
     // 等待输出事件
     const result = await this.waitForOutput(inputEvent);
-    return result ?? '抱歉，系统未能生成回复。';
+    return result ?? '嗯…我刚才走神了，你再说一遍？';
   }
 
   /** 等待 output:finalized 事件 */
