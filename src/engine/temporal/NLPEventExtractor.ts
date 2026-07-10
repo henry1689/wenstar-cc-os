@@ -7,7 +7,7 @@
 import { EVENT_COMMON_SENSE, OUTDOOR_KEYWORDS, setWorldRuleMode } from './TemporalConfig.js';
 
 export interface ExtractedEvent {
-  type: 'temporal_event' | 'weather_setting' | 'location_change' | 'mode_switch' | 'event_query' | 'event_cancel' | 'outdoor_activity';
+  type: 'temporal_event' | 'weather_setting' | 'location_change' | 'mode_switch' | 'event_query' | 'event_cancel' | 'outdoor_activity' | 'weather_query' | 'location_switch_weather';
   entityId: string;
   content: string;
   params: Record<string, any>;
@@ -34,6 +34,14 @@ class NLPEventExtractorImpl {
     const modeResult = this.detectModeSwitch(text);
     if (modeResult) return modeResult;
 
+    // 天气查询优先检测（在时序事件之前，因为"下周去上海天气如何"既是天气查询也是行程）
+    const weatherQueryResult = this.detectWeatherQuery(text);
+    if (weatherQueryResult) return weatherQueryResult;
+
+    // 行程+天气组合："下周去上海" → 查询上海预报
+    const tripWeatherResult = this.detectTripWeather(text, defaultEntityId);
+    if (tripWeatherResult) return tripWeatherResult;
+
     const queryResult = this.detectEventQuery(text);
     if (queryResult) return queryResult;
     const cancelResult = this.detectEventCancel(text);
@@ -53,6 +61,51 @@ class NLPEventExtractorImpl {
     }
 
     return null;
+  }
+
+  /** 用户主动询问天气 */
+  private detectWeatherQuery(text: string): ExtractedEvent | null {
+    // "天气怎么样""天气如何""查一下天气""下周天气"等
+    if (!/天气|气象|气温|下雨|下雪|降温|升温|台风|暴雨/.test(text)) return null;
+    // 提取目标城市（如果有）
+    const cityMatch = text.match(/([一-龥]{2,4})(?:的|那边)?(?:天气|气象|气温)/);
+    const targetCity = cityMatch?.[1] || null;
+    // 检测是否问远期
+    const isFuture = /下周|下星期|未来|预报|之后/.test(text);
+
+    return {
+      type: 'weather_query',
+      entityId: '',
+      content: text,
+      params: {
+        targetCity,
+        isFutureQuery: isFuture,
+      },
+      hasOutdoorActivity: false,
+    };
+  }
+
+  /** "下周去上海" → 查上海天气预报 */
+  private detectTripWeather(text: string, entityId: string): ExtractedEvent | null {
+    // "去XX出差""下周去XX""要去XX"等
+    const tripMatch = text.match(/(?:去|到|出差去|要去|去一趟)([一-龥]{2,4})(?:出差|旅行|玩|开会)?(?:[，。]|$)/);
+    if (!tripMatch) return null;
+    const city = tripMatch[1].trim();
+    // 排除模糊词
+    if (/那边|那里|哪里|外地|公司|上班|楼下/.test(city)) return null;
+    // 同时问天气
+    const asksWeather = /天气|气温|带什么衣服|穿什么|冷不冷|热不热|下雨|带伞/.test(text);
+
+    return {
+      type: 'location_switch_weather',
+      entityId,
+      content: text,
+      params: {
+        city,
+        asksWeather: asksWeather || true, // 去外地默认关心天气
+      },
+      hasOutdoorActivity: true,
+    };
   }
 
   private detectModeSwitch(text: string): ExtractedEvent | null {

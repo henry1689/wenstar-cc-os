@@ -2,9 +2,13 @@
  * ChatProfiles — 人物档案提取管线
  * chat.ts L454-691 原样拆出
  */
-import type { ChatContext } from './types.js';
+import type { ChatContext } from '../chat.js';
 
-export async function extractPersonProfiles(
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function extractPersonProfiles(
   ctx: ChatContext,
   message: string,
   dna: any,
@@ -205,49 +209,4 @@ export async function extractPersonProfiles(
       } catch (err) {
         console.warn('[ProfileExtract] 答案提取失败:', (err as Error).message);
       }
-  
-      const decision = ctx.m3.decide(dna, { current_time: new Date().toISOString(), current_location: '深圳' });
-  
-      // P0-1: 角色路由（模块级状态持久化）
-      const p = decision.enhanced.perception;
-      const roleDecision = classify({
-        message, perception: p,
-        entities: dna.entity_genes,
-        previousRole: _currentRole,
-        consecutiveIntimateCount: _transitionState.consecutiveIntimate,
-      });
-      const transition = evaluateTransition(_transitionState, roleDecision, message);
-      _transitionState = transition.state;
-      _currentRole = transition.newRole;
-      console.log('[RoleRouter] ' + _currentRole + ' (' + roleDecision.rule + ')');
-      try { const { WorkingMemory: WM } = await import('../m9/WorkingMemory.js'); WM.currentTag = _currentRole; } catch {}
-      // 主人大脑镜像提取：每轮对话后自动提取+审查+存储
-      if (ctx.masterProfile && message.length > 3) {
-        try {
-          const extractResult = await ctx.masterProfile.extract(
-            message,
-            decision.enhanced.calcium_score,
-            undefined // LLM辅助可选，暂不传
-          );
-          if (extractResult.subjective.length > 0 || extractResult.objective.length > 0) {
-            if (ctx.masterProfile.review(message, decision.enhanced.calcium_score, dna.entity_genes.length > 0)) {
-              ctx.masterProfile.store(message, extractResult);
-              if (extractResult.subjective.length > 0 || extractResult.objective.length > 0) {
-                console.log('[Mirror] 记录:', extractResult.subjective.map(s=>s.category).concat(extractResult.objective.map(o=>o.table)).join(','));
-              }
-            }
-          }
-        } catch (err) {
-          console.warn('[Mirror] 提取失败:', (err as Error).message);
-        }
-      }
-  
-      const seqPos = ctx.storage.reserveNextSeq();
-  
-      ctx.workingMemory.push(dna, p, seqPos, decision.primary_emotion, decision.secondary_emotions);
-  
-      ctx.consolidationQueue.recordActivity();
-  
-      // 修复：enrichedHistory 只保留最近 20 轮对话原文，干净不掺杂记忆注入
-  
 }
