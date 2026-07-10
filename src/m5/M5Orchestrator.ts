@@ -84,11 +84,6 @@ export class M5Orchestrator {
       const currentTime = new Date().toISOString();
       const result = await this.llm.generate({ strategy, cognition, conversationHistory, knowledgeBase: combinedKnowledge, currentTime, userMessage, role: this._currentRole });
       draft = result.text;
-      // 检查是否太短或为 fallback 回复（DeepSeek API 调用失败时的降级标记）
-      if (!draft || draft.length <= 6) {
-        console.warn(`[M5] LLM产出过短("${draft}")，降级到MockLLMProvider`);
-        draft = '';
-      }
     } catch (err) {
       console.error('[M5] LLM生成失败:', err);
       draft = '';

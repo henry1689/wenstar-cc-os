@@ -43,7 +43,7 @@ export class Orchestrator {
   private generationOrch: GenerationOrchestrator;
   private _temporalTimer: any = null;
   private _commModeRouter: CommunicationModeRouter | null = null;
-  private _temporalModules: { timeKeeper?: any; calendar?: any; moonCalc?: any; phenology?: any; naturalCycle?: any; aggregator?: any; governor?: any; timerRegistry?: any } = {};
+  private _temporalModules: { timeKeeper?: any; calendar?: any; moonCalc?: any; phenology?: any; naturalCycle?: any; aggregator?: any; governor?: any; timerRegistry?: any; weather?: any } = {};
 
   /** 用于 legacy 模式的直接 processChat 引用 */
   private legacyProcessChat: ProcessChatFn | null = null;
@@ -220,6 +220,7 @@ export class Orchestrator {
       const storage = this.config.storage;
       if (!storage) return;
       const { TimeKeeper, SessionTracker, TimerRegistry, CalendarEngine, LunarPhaseCalc, PhenologyTimeline, NaturalCycle, TemporalContextAggregator } = await import('./temporal/index.js');
+      const { AmbientWeatherContext } = await import('./temporal/AmbientWeatherContext.js');
 
       const timeKeeper = new TimeKeeper({ storage, newSessionThreshold: 7200000 });
       await timeKeeper.init();
@@ -242,6 +243,12 @@ export class Orchestrator {
       this._temporalModules.timerRegistry = new TimerRegistry({ storage, newSessionThreshold: 7200000 }, timeKeeper);
       this._temporalModules.timerRegistry.setBus(this.bus);
       await this._temporalModules.timerRegistry.init();
+
+      // 📜 和风天气接入
+      const weather = new AmbientWeatherContext(timeKeeper, this._temporalModules.naturalCycle);
+      await weather.init();
+      this._temporalModules.weather = weather;
+
       const governor = new TemporalGovernor(timeKeeper, sessionTracker, this._temporalModules.aggregator, this._temporalModules.timerRegistry);
       governor.setBus(this.bus);
       await governor.init(storage);
@@ -257,12 +264,22 @@ export class Orchestrator {
     }
   }
 
-  /** 刷新时空上下文 */
+  /** 刷新时空上下文（含天气） */
   private refreshTemporalContext(): void {
     try {
       if (this._temporalModules.aggregator) {
         const ctx = this._temporalModules.aggregator.getFullContext();
         EngineContext.setTemporalBlock(ctx.promptBlock);
+      }
+      // 天气同步刷新
+      if (this._temporalModules.weather) {
+        this._temporalModules.weather.pollRefresh().catch(() => {});
+        const w = this._temporalModules.weather.getCurrentWeather();
+        if (w && w.source === 'qweather_api') {
+          EngineContext.setExtra('weather_permission', 'allowed');
+          EngineContext.setExtra('weather_current', w.description);
+          if (w.alertInfo) EngineContext.setExtra('weather_alert', w.alertInfo);
+        }
       }
     } catch (e: any) { console.error('[Orchestrator] error:', e?.message); }
   }

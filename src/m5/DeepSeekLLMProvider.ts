@@ -97,9 +97,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const _dl = (extraParams as any).level ?? 0;
-        // timeout from config center
-      const _llmTimed = selectLLMConfig(_dl, rawInput, params.role);
-      const _timeoutMs = _llmTimed.timeoutMs;
+        const _timeoutMs = _dl >= 2 ? 20000 : _dl <= -2 ? 15000 : 10000;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), _timeoutMs);
 
@@ -465,7 +463,7 @@ ${profileText}
     const presencePenalty = _llmCfg.presencePenalty;
 
     try {
-      return await this.callDeepSeekApi(messages, maxTokens, _finalTemp, {
+      return await this.callDeepSeekApi(messages, maxTokens, temperature, {
         frequency_penalty: frequencyPenalty,
         presence_penalty: presencePenalty,
         level: level,
