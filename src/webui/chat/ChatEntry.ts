@@ -14,7 +14,7 @@ export interface EntryState {
   _currentRPBranch: any;
   _currentCharacterClass: string | null;
   _currentRole: string;
-  _rpJustExited: boolean;
+  _rpJustExited: number;
 }
 
 export interface EntryResult {
@@ -31,7 +31,7 @@ export async function runChatEntry(
   state: EntryState,
 ): Promise<EntryResult> {
   // 📜 退出残留
-  if (state._rpJustExited && state._currentRoleplay) {
+  if (state._rpJustExited > 0 && state._currentRoleplay) {
     console.log('[📜角色退出残留] 检测到 _currentRoleplay=' + state._currentRoleplay + ' 但 _rpJustExited=true — 强制清除');
     state._currentRoleplay = null;
     state._currentRPBranch = null;

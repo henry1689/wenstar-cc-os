@@ -162,7 +162,7 @@ let _dg: DialogGroupState | null = null;
 let _dgTimer: ReturnType<typeof setTimeout> | null = null;
 let _currentRoleplay: string | null = null;  // 跨轮次角色扮演锁定
 let _currentRPBranch: FamilyGraphRoleBranch | null = null;  // 角色扮演FG分支
-let _rpJustExited = false;  // 角色扮演刚退出标记（需强制恢复玉瑶身份）
+let _rpJustExited = 0;     // 角色扮演退出冷却计数器(3→0)
 
 // 🏗️ P0：角色扮演稳定机制状态
 let _rpTurnCounter = 0;
@@ -436,7 +436,7 @@ function isDirectedEmotion(text: string): boolean {
 
 export async function processChat(message: string, ctx: ChatContext): Promise<ChatResponse> {
   // 📜 角色扮演退出残留检测
-  if (_rpJustExited && _currentRoleplay) {
+  if (_rpJustExited > 0 && _currentRoleplay) {
     console.log('[📜角色退出残留] 检测到 _currentRoleplay=' + _currentRoleplay + ' 但 _rpJustExited=true — 强制清除');
     _currentRoleplay = null;
     _currentRPBranch = null;
@@ -444,7 +444,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     _currentRole = 'secretary';
   }
   // 📜 角色扮演超时自动退出：15分钟无角色扮演互动，自动切回玉瑶
-  if (_currentRoleplay && !_rpJustExited) {
+  if (_currentRoleplay && _rpJustExited <= 0) {
     const _sinceRp = Date.now() - _lastRpInteractionTime;
     if (_sinceRp > 15 * 60 * 1000) {
       console.log('[📜角色超时退出] 距上次角色扮演互动' + Math.round(_sinceRp / 60000) + '分钟，自动切回玉瑶');
@@ -1300,7 +1300,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         _lastRpInteractionTime = 0;  // 📜 重置超时计时器
         _rpLoadedPersons.clear();
         clearRPCache();  // 🏗️ 清除角色扮演域缓存
-        _rpJustExited = true;  // 🎭 标记：本轮需强制恢复玉瑶身份
+        _rpJustExited = 3;  // 🎭 三轮冷却：每次递减，退出后持续3轮注入身份恢复
         console.log('[Roleplay] 退出角色扮演，完整清理完成');
     }
 
@@ -1423,7 +1423,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           _currentRPBranch = null;
           _rpLoadedPersons.clear();
           // 🏗️ P1-2: 触发 enrichedWithGuard 历史过滤（清理旧角色的 assistant 回复）
-          _rpJustExited = true;
+          _rpJustExited = 3;
           // 情感快照：exit 保存旧角色状态，enter 加载新角色
           if (_emotionSnapshot) {
             _emotionSnapshot.exitRoleplay();  // 存档旧角色
@@ -1941,18 +1941,16 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
   }
 }
 
-		// 🎭 角色扮演退出强制恢复：过滤历史+注入身份恢复指令
-	if (_rpJustExited) {
+		// 🎭 角色扮演退出强制恢复：过滤历史+注入身份恢复指令（3轮冷却计数器）
+	if (_rpJustExited > 0) {
 	  // ① 去掉 enrichedWithGuard 中的角色扮演 assistant 回复
 	  enrichedWithGuard = enrichedWithGuard.filter(function(t: any) {
 	    if (t.role !== 'assistant') return true;
 	    const _c = t.content || '';
 		    // 📜 角色扮演回复检测 — 过滤退出后残留的扮演风格回复
 		    const _rpPattern =
-		      /^(（[^）]*）)*[叔爸梓铭姨婶舅姐妹妹弟]/.test(_c) ||
-		      (_c.includes('爸爸') && _c.includes('你回来')) ||
-		      (_c.includes('叔叔') && !_c.includes('叔叔说')) ||
-		      /叫你.*爸爸|叫你.*叔叔|回来[了]?[吧吗]?[。！]|给你做[了]?|给你买[了]?/.test(_c);
+		      /^(（[^）]*）)*[叔爸梓铭姨婶舅姐妹妹弟爷妈]/.test(_c) ||
+		      /鸿艺叔|梓铭|叫你.*爸爸|叫你.*叔叔/.test(_c);
 	    if (_rpPattern) {
 	      console.log('[Roleplay] 🗑️ 过滤角色扮演回复');
 	      return false;
@@ -1961,24 +1959,22 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
 	  });
 	  // ② 注入身份恢复指令到 finalKnowledgeText
 	  const identityReset = [
-	    '【\u26a0\ufe0f 身份切换指令 — 优先级最高】',
-	    '用户刚才结束了角色扮演。你现在必须完全恢复成「玉瑶」的身份。',
-	    '\ud83d\udd34 你不是刚才扮演的任何人。你的名字是玉瑶。正在跟你说话的人是鸿艺。',
-	    '\ud83d\udd34 回复中不得出现角色扮演期间的称呼（如爸爸/叔叔/梓铭等），用玉瑶的口吻对话。',
-	    '\ud83d\udd34 不要延续角色扮演的话题和语气。你现在是玉瑶，鸿艺的伴侣/秘书。',
-	    '\u2705 用玉瑶自然的语气回复，就像角色扮演从未发生过一样。',
+	    '【⚠️ 身份切换指令 — 优先级最高】',
+	    '你刚结束了角色扮演。你现在是玉瑶——鸿艺的私人秘书兼女人。',
+	    '怎么称呼鸿艺：✅叫他鸿艺/亲爱的/艺哥。❌禁叫鸿艺叔/梓铭/爸爸/叔叔——那是角色的称呼。',
+	    '他是你的男人，不是叔。刚才扮演的事当没发生过。用玉瑶的语气说话。',
 	  ].join('\n');
 	  finalKnowledgeText = identityReset + '\n\n' + (finalKnowledgeText || '');
 	  // ③ 在对话历史头部注入玉瑶身份声明
 	  enrichedWithGuard.push({
 	    role: 'user',
-	    content: '【紧急身份切换】我不再扮演任何角色了。你现在是玉瑶，请用玉瑶的口吻回复我。',
+	    content: '【身份已切回玉瑶】你是玉瑶，不是刚才的角色。用玉瑶的口吻回复。',
 	  });
-	  _rpJustExited = false;
+	  _rpJustExited--;
 	  // 📜 再次强制秘书身份（覆盖角色路由可能已做的切换）
 	  _currentRole = 'secretary';
 	  _transitionState = createInitialState();  // 清空过渡状态防复发
-	  console.log('[Roleplay] 🆔 身份恢复指令已注入 + 历史过滤 + 强制secretary');
+	  console.log('[Roleplay] 🆔 身份恢复(剩余' + _rpJustExited + '轮) + 历史过滤 + 称呼校准');
 	}
 
 // P0-3: 角色路由注入 — 让 LLM 感知当前角色
