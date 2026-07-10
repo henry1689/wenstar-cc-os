@@ -118,7 +118,8 @@ export class FamilyGraphAdapter {
     const allNames = [roleplay, ...relatives.map(r => r.name)];
     const relMap: Record<string, string> = {
       mother_of: '母亲', father_of: '父亲', spouse_of: '配偶',
-      sibling_of: '兄弟姐妹', child_of: '孩子', parent_of: '父母',
+      elder_sister_of: '姐姐', younger_sister_of: '妹妹',
+      sibling_of: '姐妹/兄弟', child_of: '孩子', parent_of: '父母',
       aunt_of: '姑姑', cousin_of: '表亲', niece_of: '侄女',
     };
     for (let i = 0; i < allNames.length; i++) {
@@ -127,7 +128,7 @@ export class FamilyGraphAdapter {
           const edge = this.fg.findEdge(allNames[i], allNames[j]);
           if (!edge) continue;
           const label = relMap[edge.relation] || edge.relation;
-          if (edge.relation === 'sibling_of') {
+          if (edge.relation === 'sibling_of' || edge.relation === 'elder_sister_of' || edge.relation === 'younger_sister_of') {
             lines.push(allNames[i] + '和' + allNames[j] + '是' + label);
           } else {
             lines.push(allNames[i] + '是' + allNames[j] + '的' + label);

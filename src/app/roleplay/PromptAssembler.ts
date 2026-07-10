@@ -36,8 +36,8 @@ export function assemblePrompt(input: AssembleInput): string {
   // 2. 结构化事实库（独立区块，不与闲聊混同）
   parts.push(buildFactDatabase(roleplay, layer1Text, layer2Text, data));
 
-  // 3. 记忆+知识
-  if (layer3Text) parts.push('【过往记忆】\n' + layer3Text);
+  // 3. 记忆+知识（📅 时间锚点：标注为过去发生的事，不是当前场景）
+  if (layer3Text) parts.push('【过往记忆（以下都是过去发生的事，不是现在）】\n' + layer3Text);
   if (layer4Text) parts.push('【知识背景】\n' + layer4Text);
 
   let assembled = parts.join('\n\n---\n\n');
@@ -59,6 +59,9 @@ function buildCoreRules(roleplay: string, data: FourLayerData): string {
   lines.push('   ① 对话场景由上下文决定。如果你刚在办公室谈话，继续在办公室。每轮不需要重新描述起身/开门/敲门。');
   lines.push('   ② 用户说短词（是的/嗯/对/好/行/知道了）是普通的肯定回应，不是叫你名字，不要因此中断当前场景。');
   lines.push('   ③ 不要在每轮回复开头插入新的场景描写。只用延续上一轮的对话状态，除非用户明确提到新地点。');
+  lines.push('   ④ 🔴【时间锚点铁律 — 过去就是过去】下方的【过往记忆】中记录的事发生在过去，不是现在。');
+  lines.push('       禁止把过去发生的事当成正在发生的场景。可以用过去语气提一下，但不能跳场景。');
+  lines.push('       例如：用户正在办公室谈话，就不能因为记忆中有浴缸场景就跳回浴缸。');
   lines.push('5. 输出格式硬性要求：');
   lines.push('   用户询问家人/亲属类问题，第一行直接给出对应亲属姓名与关系。情绪描写仅做少量补充。');
   lines.push('</core_rules>');
