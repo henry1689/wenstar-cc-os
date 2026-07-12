@@ -95,6 +95,7 @@ import { handleTianquanRoutes } from './server-tianquan-routes.js';
 import { handleFamilyRoutes } from './server-family-routes.js';
 import { handleEngineRoutes } from './server-engine-routes.js';
 import { handleChatRoutes } from './server-chat-routes.js';
+import { handleJinghuanRoutes } from './server-jinghuan-routes.js';
 import { MasterHarris, initMasterHarris, loadDomainSpecs } from '../tianquan/index.js';
 import type { SpecLoadResult } from '../tianquan/index.js';
 
@@ -995,6 +996,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (await handleKnowledgeFileRoutes({
     req, res, url, knowledgeBase, readBody, dataDir: DATA_DIR,
   })) return;
+
+  if (await handleJinghuanRoutes({ knowledgeBase }, req, res, url)) return;
 
   if (await handleTianquanRoutes({
     masterHarris, specLoadResults, projectRoot: PROJECT_ROOT, readBody,
