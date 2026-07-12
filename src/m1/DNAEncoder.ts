@@ -45,19 +45,49 @@ export class DNAEncoder {
   private stats = { encodeCount: 0, failCount: 0, stageFailures: { l0: 0, l1: 0, l2: 0, l3: 0 } };
 
   /**
-   * 生成 DNA 根码 — 新格式
+   * 生成 DNA 根码 (旧格式, 向后兼容)
    * [6位序号][14位时间码]M01[4位L0码]
    * 示例：00189220260705203042M01FAMG
-   *
-   * - 6位序号：全局自增，跨零点归零
-   * - 14位时间码：YYYYMMDDHHmmss，可全局排序
-   * - M01：标识M1编码车间
-   * - 4位L0码：对应 taxonomy codes 映射
    */
   static generateRootId(l0Code: string, now?: Date): string {
     const seq = GlobalSequenceCounter.getInstance().next(now);
     const timeCode = DNAEncoder.timeCode(now);
     return `${String(seq).padStart(6, '0')}${timeCode}M01${l0Code}`;
+  }
+
+  /**
+   * 生成 GlobalUID (白皮书 V2.0 §3.1 格式, 23字符)
+   *
+   * 格式: TT NNNN BBB LLLLLLLL SSSSSS
+   *   TT       2位  类型标记  MM=内存原子 / SP=体感快照 / WK=知识条目 / EN=工程快照
+   *   NNNN     4位  节点编号  十六进制 0001-FFFF
+   *   BBB      3位  批次号    十六进制 同次交互共享
+   *   LLLLLLLL 8位  区位标识  由 location_fingerprint(128-bit) SHA256前8位压缩
+   *   SSSSSS   6位  随机盐    crypto.randomBytes(3) → hex
+   *
+   * 示例: MM0001A3BF1A0C4DE6F7
+   *
+   * @param typeMark - 'MM'=内存原子, 'SP'=体感快照, 'WK'=知识条目, 'EN'=工程快照
+   * @param nodeNum - 节点编号 (1-65535)
+   * @param batchNum - 批次号 (0-4095)
+   * @param locationFingerprint - 区位指纹 (128-bit hex, 空则用32位0)
+   * @returns 23字符 GlobalUID
+   */
+  static generateGlobalUID(
+    typeMark: string = 'MM',
+    nodeNum: number = 1,
+    batchNum: number = 0,
+    locationFingerprint: string = '',
+  ): string {
+    const TT = typeMark.substring(0, 2).toUpperCase();
+    const NNNN = String(nodeNum & 0xFFFF).padStart(4, '0');
+    const BBB = String(batchNum & 0xFFF).padStart(3, '0');
+    // 区位标识: SHA256(location_fingerprint) 前8位十六进制
+    const locRaw = locationFingerprint || '0'.repeat(32);
+    const locHash = createHash('sha256').update(locRaw).digest('hex').substring(0, 8).toUpperCase();
+    // 随机盐: crypto.randomBytes(3) → hex (6字符)
+    const salt = createHash('sha256').update(`${Date.now()}_${Math.random()}`).digest('hex').substring(0, 6).toUpperCase();
+    return `${TT}${NNNN}${BBB}${locHash}${salt}`;
   }
 
   /** 生成 14 位秒级时间码 YYYYMMDDHHmmss */

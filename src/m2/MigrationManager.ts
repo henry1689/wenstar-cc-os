@@ -88,6 +88,72 @@ const MIGRATIONS: Migration[] = [
       } catch (e) { console.warn('[Migration] ambient_weather_context 表创建失败:', e); }
     },
   },
+  // v4: 双螺旋存储三底座 — state_spines + atom_address_timeline + atom_repair_index
+  //     适配: DNA双螺旋编码规范V2.0 / 大一统架构V1.0 / 天权底座V1.0
+  {
+    version: 4,
+    description: '双螺旋存储三底座 — 语义向量分片库+寻址治理存储池+修复索引表',
+    apply: (db: any) => {
+      // ── 底座1: 语义向量分片库 (HNSW 网状索引, 蓝皮书 §3.1) ──
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS state_spines (
+          global_uid          TEXT NOT NULL,
+          dimension_id        INTEGER NOT NULL CHECK(dimension_id BETWEEN 1 AND 32),
+          value               REAL NOT NULL,
+          consistency_mark    TEXT NOT NULL DEFAULT 'consistent',
+          location_fingerprint TEXT,
+          timestamp_ms        INTEGER NOT NULL,
+          checksum            TEXT,
+          dna_branch          BLOB,
+          PRIMARY KEY (global_uid, dimension_id)
+        ) WITHOUT ROWID`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_spines_dim ON state_spines(dimension_id, timestamp_ms)");
+      } catch (e) { console.warn('[Migration] state_spines 创建失败:', e); }
+
+      // ── 底座2: 寻址治理存储池 (B+Tree 线性时序索引, 蓝皮书 §3.2) ──
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS atom_address_timeline (
+          global_uid          TEXT PRIMARY KEY,
+          global_time_seq     INTEGER NOT NULL,
+          absolute_timestamp  INTEGER NOT NULL,
+          time_slice_tag      TEXT NOT NULL,
+          vine_group_id       TEXT,
+          entity_belong_id    TEXT,
+          event_branch_id     TEXT,
+          route_stamp_list    BLOB,
+          hot_cold_level      TEXT DEFAULT 'W',
+          crc_checksum        TEXT NOT NULL,
+          state_flag          TEXT DEFAULT 'N',
+          created_at          INTEGER NOT NULL DEFAULT (unixepoch())
+        ) WITHOUT ROWID`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_atl_ts      ON atom_address_timeline(absolute_timestamp)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_atl_group   ON atom_address_timeline(vine_group_id)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_atl_entity  ON atom_address_timeline(entity_belong_id)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_atl_slice   ON atom_address_timeline(time_slice_tag)");
+      } catch (e) { console.warn('[Migration] atom_address_timeline 创建失败:', e); }
+
+      // ── 底座3: 原子修复索引表 (海胆断裂重组, 蓝皮书 §3.2) ──
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS atom_repair_index (
+          global_uid              TEXT PRIMARY KEY,
+          spine_storage_position  TEXT NOT NULL DEFAULT '',
+          flesh_storage_position  TEXT NOT NULL DEFAULT '',
+          last_verified_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+          repair_count            INTEGER DEFAULT 0,
+          FOREIGN KEY (global_uid) REFERENCES atom_address_timeline(global_uid)
+        ) WITHOUT ROWID`);
+      } catch (e) { console.warn('[Migration] atom_repair_index 创建失败:', e); }
+
+      // ── 底座隔离纪律（日志输出供运营确认） ──
+      try {
+        console.log('[Migration] v4 ✅ 双螺旋三底座已就绪');
+        console.log('  🔴 纪律: state_spines 仅HNSW — 禁止时序排序');
+        console.log('  🔴 纪律: atom_address_timeline 仅B+Tree+倒排 — 禁止存语义向量');
+        console.log('  🔴 纪律: 原始数据层 — 禁止直接做语义检索');
+        console.log('  🔴 纪律: 三底座仅通过 GlobalUID 关联');
+      } catch (e) { /* 日志不影响迁移 */ }
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════

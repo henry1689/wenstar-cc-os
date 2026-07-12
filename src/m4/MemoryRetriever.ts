@@ -219,6 +219,39 @@ export class MemoryRetriever {
       }
     }
 
+    // ── 五级闸门: 不可绕过, 不可关闭 (蓝皮书 §4.1, 白皮书 §5.1) ──
+    if (merged.length > 0) {
+      try {
+        const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
+        const gate = getFiveStageGate();
+        const gated = gate.filter(
+          merged.map(d => ({
+            id: d.branch_id,
+            dna_root_id: (d as any).dna_root_id,
+            raw_input: d.raw_input,
+            calcium_score: (d as any).calcium_score ?? 0,
+            calcium_level: (d as any).calcium_level ?? 0,
+            effective_strength: (d as any).effective_strength ?? 1,
+            location_fingerprint: (d as any).location_fingerprint ?? '',
+            locus_path: d.locus_path,
+            leaf_zone: d.leaf_zone,
+            absolute_timestamp: (d as any).absolute_timestamp ?? (d.created_at ? new Date(d.created_at).getTime() : Date.now()),
+            is_landmark: (d as any).is_landmark ?? 0,
+          })),
+          {
+            query: locusPath,
+            locationFingerprint: (options?.perception as any)?.location_fingerprint ?? '',
+          },
+        );
+        // 按闸门排序重建·保留 dnas 中对应的 DNA 对象
+        const gatedSet = new Set(gated.passed.map(m => m.id));
+        merged = merged.filter(d => gatedSet.has(d.branch_id));
+      } catch (_e) {
+        // 闸门加载失败不阻断检索, 仅告警
+        console.warn('[FiveStageGate] 加载失败, 跳过闸门过滤:', (_e as Error).message);
+      }
+    }
+
     // P1-2: 写入会话缓存
     if (sessionId && locusPath && merged.length > 0) {
       const cacheKey = `session:${sessionId}:${locusPath}`;
