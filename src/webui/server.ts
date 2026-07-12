@@ -373,6 +373,12 @@ async function initPipeline(): Promise<void> {
   }).then(specResults => {
     specLoadResults = specResults;
     console.log(`  [MasterHarris] 5层调度器已启动 ✓ (tianquan=${masterHarris?.tianquanReady})`);
+
+    // ── 双核启动 (蓝皮书 §1.1, BIOS/Mind 编译期分离) ──
+    try {
+      const { bootstrapDualCore } = await import('../m1/bootstrap-dual-core.js');
+      bootstrapDualCore({ encoder, perceptionAnalyzer: m3, llmProvider, selfModel: getSelfModel() });
+    } catch (e) { console.warn('[DualCore] 启动失败:', (e as Error).message); }
   }).catch(e => { console.warn('[MasterHarris] 初始化失败（降级运行）:', (e as Error).message); masterHarris = null; });
 
   memoryVault = new MemoryVault();

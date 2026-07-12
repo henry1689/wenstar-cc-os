@@ -35,16 +35,27 @@ export function toNormalizedVector(p: Perception24D): Float64Array {
 // ──────────────────────────────────────────────
 
 /**
- * calcium = ||v|| / sqrt(24)
+ * calcium = ||v|| / sqrt(N)
  *
- * 平坦中性（所有 ~0.5）→ ~0.35
- * 极端强烈（所有 ~1.0）→ 1.0
+ * 蓝皮书 V2.0 §5.2 公式:
+ *   target:  ||32D|| / sqrt(32)   ← P3 阶段切换目标
+ *   current: ||24D|| / sqrt(24)   ← 当前 24D 过渡方案
+ *
+ * P3 切换步骤:
+ *   1. 瑶灵 32D 向量上线后, DIM_COUNT 从 24 → 32
+ *   2. builtPerceptionJson() 扩展到 32D
+ *   3. 这里 sqrt(24) → sqrt(32)
+ *   4. 存量 memories.perception_json 需批量重计算
+ *
+ * @param p - 当前 24D 感知向量 (P3 改为 32D)
+ * @returns calcium score (0-1) + level (0-3)
  */
 export function computeCalcium(p: Perception24D): { score: number; level: 0 | 1 | 2 | 3 } {
   const v = toNormalizedVector(p);
+  const dimCount = 24; // P3: → 32
   let sumSq = 0;
-  for (let d = 0; d < 24; d++) sumSq += v[d] * v[d];
-  const score = Math.sqrt(sumSq) / Math.sqrt(24);
+  for (let d = 0; d < dimCount; d++) sumSq += v[d] * v[d];
+  const score = Math.sqrt(sumSq) / Math.sqrt(dimCount);
 
   let level: 0 | 1 | 2 | 3;
   if (score < 0.3) level = 0;
