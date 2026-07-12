@@ -149,7 +149,7 @@ export class ConversationDB {
     const compactVal = options?.isCompacted ?? 0;
     this.db.run(
       `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, global_uid, location_fingerprint, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [role, content, timestamp, seqPos, options?.topic || '', entityNames, perceptionSummary,
        options?.calciumScore || 0, options?.dnaRootId || null, options?.globalUid || null, options?.locationFingerprint || null,
        options?.dialogGroupId || null, options?.dialogRound ?? null, options?.isTest ?? 0, compactVal, compactVal,
