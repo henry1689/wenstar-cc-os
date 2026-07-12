@@ -74,6 +74,9 @@ function jsonToGenes(json: string): EntityGene[] {
 export class SQLiteAdapter {
   private db: SqlJsDatabase | null = null;
   private dbPath: string;
+
+  /** 获取 sql.js 原始实例 — 供 DualHelixWriter 底层写入使用 */
+  get rawDb(): SqlJsDatabase | null { return this.db; }
   private ready = false;
   private blackDiamondFtsReady = false;
   /**

@@ -168,6 +168,26 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     hadError = true;
   }
 
+  // ── Step 3.5: 双螺旋三底座同步 (蓝皮书 §3.1-3.3) ──
+  if (input.dna.global_uid) {
+    const dhsqlite = input.ctx.storage.getSQLite();
+    try {
+      const { writeToDualHelix } = await import('../../m2/DualHelixWriter.js');
+      writeToDualHelix(dhsqlite.rawDb, {
+        globalUid: input.dna.global_uid,
+        perceptionJson: buildPerceptionJson(input.p),
+        seqPos: input.seqPos,
+        createdAt: new Date().toISOString(),
+        locationFingerprint: input.dna.location_fingerprint,
+        locusPath: input.dna.locus_path || (input.dna as any).locus_path,
+        dnaRootId: input.dna.dna_root_id || (input.dna as any).dna_root_id,
+        entityNames: input.dna.entity_genes?.filter((g: any) => g.type !== 'self').map((g: any) => g.name),
+        calciumScore: input.decision.enhanced.calcium_score,
+      });
+    } catch (e) { console.warn('[DualHelix] 写入跳过:', (e as Error).message); }
+    try { dhsqlite.flush(); } catch { /* flush optional */ }
+  }
+
   // ── Step 4: 写后读验证（改造③ — 彻底杜绝静默数据丢失） ──
   try {
     const verifySqlite = input.ctx.storage.getSQLite();
