@@ -92,6 +92,8 @@ import { setProbeWriter } from '../app/roleplay/RoleplayProbeReporter.js';
 import { SQLiteStorage } from '../engine/storage/SQLiteStorage.js';
 import type { ChatContext } from './chat.js';
 import { handleTianquanRoutes } from './server-tianquan-routes.js';
+import { handleFamilyRoutes } from './server-family-routes.js';
+import { handleEngineRoutes } from './server-engine-routes.js';
 import { MasterHarris, initMasterHarris, loadDomainSpecs } from '../tianquan/index.js';
 import type { SpecLoadResult } from '../tianquan/index.js';
 
@@ -1431,183 +1433,21 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
     }
 
-    // ── 引擎 Heart 状态（S2 仿生核心实时快照） ──
-    if (req.method === 'GET' && url.pathname === '/api/engine/heart') {
-      try {
-        const heartStore = orchestrator?.getHeartStore();
-        if (!heartStore) { res.writeHead(404); res.end(JSON.stringify({ error: 'Heart 未初始化' })); return; }
-        const state = heartStore.getState();
-        const auditLog = heartStore.getAuditLog();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({
-          state: {
-            emotionVector: state.emotionVector,
-            relationState: state.relationState,
-            atmosphere: state.atmosphere,
-            memoryPermission: state.memoryPermission,
-            relationMetrics: state.relationMetrics,
-            emotionLabel: heartStore.getEmotionLabel(),
-            updatedAt: state.updatedAt,
-          },
-          desireHints: heartStore.getDesireHints(),
-          emergenceHint: heartStore.getEmergenceHint(),
-          auditLog: auditLog.slice(-10),
-          mode: orchestrator?.getMode() ?? 'legacy',
-        }));
-      } catch (err) {
-        res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); return;
-      }
-      return;
-    }
+    // ── 引擎诊断路由 (已拆分至 server-engine-routes.ts) ──
+    if (await handleEngineRoutes({ orchestrator }, req, res, url)) return;
+    // ── 引擎已拆至 server-engine-routes.ts ──
+    // ── 家族图谱已拆至 server-family-routes.ts ──
 
-    // ── 引擎组装提示词（验证 PromptComposer 链路） ──
-    if (req.method === 'GET' && url.pathname === '/api/engine/prompt') {
-      try {
-        if (!orchestrator) { res.writeHead(404); res.end(JSON.stringify({ error: '引擎未初始化' })); return; }
-        const prompt = orchestrator.composePrompt();
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end(prompt);
-        return;
-      } catch (err) {
-        res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); return;
-      }
-    }
-
-    // ── 家族图谱自检 ──
-    if (req.method === 'GET' && url.pathname === '/api/family/self-check') {
-      try {
-        const fg = m4?.getFamilyGraph();
-        const stats = fg?.getStats();
-        const backupDirPath = path.join(PROJECT_ROOT, "data", "backups");
-        let backupFiles: string[] = [];
-        try { backupFiles = fs.readdirSync(backupDirPath).filter(f => f.startsWith('family_graph')); } catch (e: any) { console.error('[server] error:', e?.message); }
-        const successRate = backupStats.totalAttempts > 0
-          ? (backupStats.successCount / backupStats.totalAttempts * 100).toFixed(1) + '%'
-          : 'N/A';
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({
-          status: 'ok',
-          fg: stats || { personCount: 0, edgeCount: 0 },
-          backup: {
-            lastBackupTime: backupStats.lastBackupTime,
-            backupSuccessRate: successRate,
-            backupCount: backupFiles.length,
-          },
-        }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
-
-    // ── 家族图谱手动备份 ──
-    if (req.method === 'POST' && url.pathname === '/api/family/backup') {
-      try {
-        const { execSync } = require('child_process');
-        const result = execSync('node scripts/family-graph-backup.cjs 2>&1', { encoding: 'utf8', timeout: 10000 });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', report: result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err instanceof Error ? err.message : String(err)) }));
-      }
-    }
-
-    // ── FG 从备份恢复 ──
-    if (req.method === 'POST' && url.pathname === '/api/family/restore') {
-      try {
-        let body = '';
-        req.on('data', (chunk: string) => body += chunk);
-        await new Promise<void>(resolve => req.on('end', resolve));
-        const { backupPath } = JSON.parse(body || '{}');
-        if (!backupPath) {
-          res.writeHead(400); res.end(JSON.stringify({ status: 'error', message: 'backupPath 必填' }));
-        }
-        const fg = m4?.getFamilyGraph();
-        if (!fg || typeof fg.restoreFromBackup !== 'function') {
-          res.writeHead(503); res.end(JSON.stringify({ status: 'error', message: 'FG 未就绪' }));
-        }
-        const result = await fg.restoreFromBackup(backupPath);
-        res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: result.success ? 'ok' : 'error', ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
-
-    // ── FG→知识库 人物档案同步 ──
-    if (req.method === 'POST' && url.pathname === '/api/family/sync-knowledge') {
-      try {
-        const fg = m4?.getFamilyGraph();
-        const kb = knowledgeBase;
-        if (!fg || !kb) {
-          res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ status: 'error', message: 'FamilyGraph 或 KnowledgeBase 未就绪' }));
-        }
-        const result = await syncFamilyGraphToKnowledgeBase(fg, kb);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
-
-    // ── FG↔知识库 同步校验 ──
-    if (req.method === 'GET' && url.pathname === '/api/family/verify-sync') {
-      try {
-        const fg = m4?.getFamilyGraph();
-        const kb = knowledgeBase;
-        if (!fg || !kb) {
-          res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ status: 'error', message: 'FamilyGraph 或 KnowledgeBase 未就绪' }));
-        }
-        const result = await verifyFamilyGraphSync(fg, kb);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
-
-    // ── FG dossier 存量迁移（幂等） ──
-    if (req.method === 'POST' && url.pathname === '/api/family/migrate-dossier') {
-      try {
-        const fg = m4?.getFamilyGraph();
-        if (!fg) { res.writeHead(503); res.end(JSON.stringify({ status: 'error', message: 'FG 未就绪' })); return; }
-        const result = await fg.migrateProfilesToDossier();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', ...result }));
-      } catch (err) {
-        res.writeHead(500); res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
-
-    // ── FG 获取完整档案 ──
-    if (req.method === 'GET' && url.pathname.startsWith('/api/family/full-profile/')) {
-      try {
-        const personName = decodeURIComponent(url.pathname.substring('/api/family/full-profile/'.length));
-        const fg = m4?.getFamilyGraph();
-        if (!fg) { res.writeHead(503); res.end(JSON.stringify({ status: 'error', message: 'FG 未就绪' })); return; }
-        const dossier = fg.getFullProfile(personName);
-        const profile = fg.getPersonProfile(personName);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', name: personName, dossier, profile }));
-      } catch (err) {
-        res.writeHead(500); res.end(JSON.stringify({ status: 'error', message: (err as Error).message }));
-      }
-    }
+    // ── 家族图谱路由 (已拆分至 server-family-routes.ts) ──
+    if (await handleFamilyRoutes({ m4, knowledgeBase, backupStats, projectRoot: PROJECT_ROOT }, req, res, url)) return;
+    // ── 家族图谱已拆至 server-family-routes.ts ──
 
     // ── 手动触发对话压缩 ──
     if (req.method === 'POST' && url.pathname === '/api/maintenance/compact') {
       const result = await maintenance.triggerCompaction();
-      // persistence handled in server-observability-routes.ts
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', ...result }));
     }
-
     // ── 对话历史 ──
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
       try {
