@@ -61,6 +61,7 @@ export class MasterHarris extends EventEmitter {
   private _bus: GlobalBusClient | null = null;
   private _started = false;
   private _dispatchCount = 0;
+  private _degradation = new DegradationManager();
 
   get isStarted() { return this._started; }
   get tianquanReady() { return this._tianquan?.isReady ?? false; }
@@ -88,9 +89,13 @@ export class MasterHarris extends EventEmitter {
     } catch (e) { console.warn('[MasterHarris] 总线未连接 (瑶灵/瑶光离线):', (e as Error).message); this._bus = null; }
 
     this._started = true;
+    this._degradation.evaluate(this.busConnected, this.tianquanReady);
     const tianquanAct = ROUTE_TABLE.filter(r => r.active && r.domain === TaskDomain.TIANQUAN).map(r => r.tag).join(', ');
     const crossAct = ROUTE_TABLE.filter(r => r.active && r.domain !== TaskDomain.TIANQUAN).map(r => `${r.domain}/${r.tag}`).join(', ');
     console.log(`[MasterHarris] ✓ 调度器就绪 · 天权: ${tianquanAct} · 跨域: ${crossAct}`);
+    if (this._degradation.activeScenarios.length > 0) {
+      console.log(`[MasterHarris] ⚠️ 降级激活: ${this._degradation.activeScenarios.join(', ')}`);
+    }
   }
 
   async stop() {
@@ -126,7 +131,8 @@ export class MasterHarris extends EventEmitter {
         return { success: result.code === 0, domain: route.domain, routeTag: route.tag, result, elapsedMs: Date.now() - t0 };
       }
 
-      // ── 跨域: GlobalBus TCP ──
+      // ── 跨域: GlobalBus TCP (降级检查) ──
+      if (this._degradation.isDegraded('tcp_bus_disconnect')) throw new Error('总线离线, 跨域指令不可用 (降级已激活)');
       if (!this._bus?.connected) throw new Error('总线离线, 跨域指令不可用');
       const domainTag = route.domain === TaskDomain.YAOLING ? 'l' : 'g';
       const busResult = await this._bus.sendCommand(domainTag, 'run_workflow', {
@@ -166,10 +172,74 @@ export class MasterHarris extends EventEmitter {
       tianquanPid: this._tianquan?.pid ?? null, dispatchCount: this._dispatchCount,
       activeTianquanRoutes: ROUTE_TABLE.filter(r => r.active && r.domain === TaskDomain.TIANQUAN).map(r => r.tag),
       activeCrossRoutes: ROUTE_TABLE.filter(r => r.active && r.domain !== TaskDomain.TIANQUAN).map(r => `${r.domain}/${r.workflowId}`),
+      degradation: this._degradation.activeScenarios,
     };
   }
 }
 
 let _instance: MasterHarris | null = null;
 export function getMasterHarris(): MasterHarris { if (!_instance) _instance = new MasterHarris(); return _instance; }
+// ════════════════════════════════════════════════════════
+// L5: 分层降级矩阵 (蓝皮书 §11.1, 8种故障×8种策略)
+// ════════════════════════════════════════════════════════
+
+export enum DegradationLevel { NONE = 'none', SOFT = 'soft', HARD = 'hard', FATAL = 'fatal' }
+
+export interface DegradationEvent {
+  scenario: string;
+  level: DegradationLevel;
+  strategy: string;
+  timestamp: string;
+  active: boolean;
+}
+
+export class DegradationManager {
+  private _events: DegradationEvent[] = [];
+  private _active: Set<string> = new Set();
+
+  /** 标记降级场景激活 */
+  activate(scenario: string): void { this._active.add(scenario); }
+
+  /** 查询是否处于某降级状态 */
+  isDegraded(scenario: string): boolean { return this._active.has(scenario); }
+
+  /** 获取当前所有激活的降级场景 */
+  get activeScenarios(): string[] { return [...this._active]; }
+
+  /** 8种降级场景定义 (蓝皮书 §11.1) */
+  static readonly SCENARIOS: ReadonlyArray<{ scenario: string; level: DegradationLevel; strategy: string }> = [
+    { scenario: 'yaoling_offline',     level: DegradationLevel.SOFT,  strategy: '屏蔽跨域瑶灵指令, 返回友好提示, 不阻塞工程/对话' },
+    { scenario: 'yaoguang_offline',    level: DegradationLevel.SOFT,  strategy: '屏蔽跨域瑶光指令, G2时空校验全PASS告警' },
+    { scenario: 'tianquan_rpc_crash',  level: DegradationLevel.HARD,  strategy: '自动重启子进程 + 3次任务重试 + 兜底LLM应答' },
+    { scenario: 'tcp_bus_disconnect',  level: DegradationLevel.HARD,  strategy: '自动隔离双外设, 太虚+天权完整保留, 告警通知' },
+    { scenario: 'hnsw_corrupted',      level: DegradationLevel.HARD,  strategy: '降级为关键词LIKE搜索, 禁用HNSW, 通知运营' },
+    { scenario: 'bptree_corrupted',    level: DegradationLevel.HARD,  strategy: '自动切换纯语义检索 (禁用时序索引), 通知运营' },
+    { scenario: 'single_urchin_corrupt', level: DegradationLevel.SOFT, strategy: '同维度历史均值替代 + 隔离标记 + 不阻塞全链' },
+    { scenario: 'full_dual_helix_loss', level: DegradationLevel.FATAL, strategy: '纯LLM无记忆应答 (最强底线), 停止所有存储写入' },
+  ];
+
+  /** 评估当前系统状态并激活对应降级 */
+  evaluate(busConnected: boolean, tianquanReady: boolean): DegradationEvent[] {
+    const events: DegradationEvent[] = [];
+
+    if (!busConnected) {
+      this.activate('tcp_bus_disconnect');
+      this.activate('yaoling_offline');
+      this.activate('yaoguang_offline');
+    }
+
+    if (!tianquanReady) {
+      this.activate('tianquan_rpc_crash');
+    }
+
+    for (const s of DegradationManager.SCENARIOS) {
+      if (this._active.has(s.scenario)) {
+        events.push({ ...s, timestamp: new Date().toISOString(), active: true });
+      }
+    }
+
+    return events;
+  }
+}
+
 export async function initMasterHarris(): Promise<MasterHarris> { const mh = getMasterHarris(); if (!mh.isStarted) await mh.start(); return mh; }
