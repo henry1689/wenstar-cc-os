@@ -94,6 +94,7 @@ import type { ChatContext } from './chat.js';
 import { handleTianquanRoutes } from './server-tianquan-routes.js';
 import { handleFamilyRoutes } from './server-family-routes.js';
 import { handleEngineRoutes } from './server-engine-routes.js';
+import { handleChatRoutes } from './server-chat-routes.js';
 import { MasterHarris, initMasterHarris, loadDomainSpecs } from '../tianquan/index.js';
 import type { SpecLoadResult } from '../tianquan/index.js';
 
@@ -988,6 +989,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   if (await handleTianquanRoutes({
     masterHarris, specLoadResults, projectRoot: PROJECT_ROOT, readBody,
+  }, req, res, url)) return;
+
+  if (await handleChatRoutes({
+    processChat, resetPipeline: async () => { maintenance.stop(); await initPipeline(); },
+    conversationHistory, conversationDB, storage, familyGraph, m6, maintenance,
+    DATA_DIR, PROJECT_ROOT, PROJECT_DIR: path.join(__dirname, '..', '..'),
+    saveConversationHistory, listApiKeys: listKeys as any, setApiKey: setKey as any,
+    deleteApiKey: deleteKey as any, getApiKey: getKeyValue as any,
   }, req, res, url)) return;
 
   try {
