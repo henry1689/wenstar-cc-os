@@ -4,6 +4,7 @@
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import { TianquanRPCClient, createTianquanClient, type WorkflowResult, type LintReport, type ArchReport, type SQLAuditReport, type SnapshotResult, type HealthStatus } from './TianquanRPCClient.js';
+import { GlobalBusClient } from './GlobalBusClient.js';
 
 export enum TaskDomain { TIANQUAN = 'tianquan', YAOLING = 'yaoling', YAOGUANG = 'yaoguang' }
 export enum RouteTag { CODE_REVIEW = 'code_review', ARCH_REFACTOR = 'arch_refactor', SQL_MANAGE = 'sql_manage', KNOWLEDGE_SORT = 'knowledge_sort', TEST_GOVERN = 'test_govern', CHANGE_REPORT = 'change_report', DEP_AUDIT = 'dep_audit', LOG_ANALYSIS = 'log_analysis', CONFIG_DRIFT = 'config_drift', RESOURCE_SCAN = 'resource_scan', SENSATION_PIPELINE = 'sensation_pipeline', SAFETY_GATE = 'safety_gate', BODY_ADJUST = 'body_adjust', PHYSICAL_CONTROL = 'physical_control', TIME_TICK = 'time_tick', SCENE_SIM = 'scene_sim', WORLD_SNAPSHOT = 'world_snapshot' }
@@ -12,6 +13,7 @@ export interface MasterTask { userMessage: string; description?: string; constra
 export interface DispatchResult { success: boolean; domain: TaskDomain; routeTag: RouteTag; result: WorkflowResult | null; elapsedMs: number; }
 
 const ROUTE_TABLE: ReadonlyArray<{ tag: RouteTag; domain: TaskDomain; workflowId: string; active: boolean }> = [
+  // ── 天权域 — 工程任务 ──
   { tag: RouteTag.CODE_REVIEW, domain: TaskDomain.TIANQUAN, workflowId: 'wf_code_review', active: true },
   { tag: RouteTag.ARCH_REFACTOR, domain: TaskDomain.TIANQUAN, workflowId: 'wf_arch_refactor', active: true },
   { tag: RouteTag.SQL_MANAGE, domain: TaskDomain.TIANQUAN, workflowId: 'wf_sql_governance', active: true },
@@ -22,6 +24,17 @@ const ROUTE_TABLE: ReadonlyArray<{ tag: RouteTag; domain: TaskDomain; workflowId
   { tag: RouteTag.LOG_ANALYSIS, domain: TaskDomain.TIANQUAN, workflowId: 'wf_log_analysis', active: true },
   { tag: RouteTag.CONFIG_DRIFT, domain: TaskDomain.TIANQUAN, workflowId: 'wf_config_drift', active: true },
   { tag: RouteTag.RESOURCE_SCAN, domain: TaskDomain.TIANQUAN, workflowId: 'wf_resource_scan', active: true },
+
+  // ── 瑶灵域 — 躯体感知 (GlobalBus → :9100) ──
+  { tag: RouteTag.SENSATION_PIPELINE, domain: TaskDomain.YAOLING, workflowId: 'wf_sensation_pipeline', active: true },
+  { tag: RouteTag.SAFETY_GATE, domain: TaskDomain.YAOLING, workflowId: 'wf_safety_gate', active: true },
+  { tag: RouteTag.BODY_ADJUST, domain: TaskDomain.YAOLING, workflowId: 'wf_body_adjust', active: false },
+  { tag: RouteTag.PHYSICAL_CONTROL, domain: TaskDomain.YAOLING, workflowId: 'wf_physical_control', active: false },
+
+  // ── 瑶光域 — 世界模型 (GlobalBus → :9100) ──
+  { tag: RouteTag.TIME_TICK, domain: TaskDomain.YAOGUANG, workflowId: 'wf_objective_env_sample', active: true },
+  { tag: RouteTag.SCENE_SIM, domain: TaskDomain.YAOGUANG, workflowId: 'wf_location_fingerprint', active: true },
+  { tag: RouteTag.WORLD_SNAPSHOT, domain: TaskDomain.YAOGUANG, workflowId: 'wf_perception_filter', active: true },
 ];
 
 export function classifyIntent(message: string): IntentClassification {
@@ -41,15 +54,19 @@ export function classifyIntent(message: string): IntentClassification {
 
 export class MasterHarris extends EventEmitter {
   private _tianquan: TianquanRPCClient | null = null;
+  private _bus: GlobalBusClient | null = null;
   private _started = false;
   private _dispatchCount = 0;
 
   get isStarted() { return this._started; }
   get tianquanReady() { return this._tianquan?.isReady ?? false; }
+  get busConnected() { return this._bus?.connected ?? false; }
   get dispatchCount() { return this._dispatchCount; }
 
   async start(): Promise<void> {
     if (this._started) return;
+
+    // 天权 RPC
     this._tianquan = createTianquanClient();
     try {
       await this._tianquan.start();
@@ -57,30 +74,70 @@ export class MasterHarris extends EventEmitter {
       console.log(`[MasterHarris:L3] 天权内核已连接 — ${h.workflows_loaded.length} workflows, PID=${h.pid}`);
       this.emit('tianquan:connected', h);
     } catch (e) { console.error('[MasterHarris] 天权连接失败:', (e as Error).message); this.emit('tianquan:error', e); }
+
+    // 全局总线
+    this._bus = new GlobalBusClient({ debug: process.env.GLOBAL_BUS_DEBUG === 'true' });
+    try {
+      await this._bus.connect();
+      console.log('[MasterHarris:L3] 全局总线已连接 — 瑶灵/瑶光可通信');
+      this.emit('bus:connected');
+    } catch (e) { console.warn('[MasterHarris] 总线未连接 (瑶灵/瑶光离线):', (e as Error).message); this._bus = null; }
+
     this._started = true;
-    const active = ROUTE_TABLE.filter(r => r.active).map(r => r.tag).join(', ');
-    console.log(`[MasterHarris] ✓ 调度器就绪 · 激活: ${active}`);
+    const tianquanAct = ROUTE_TABLE.filter(r => r.active && r.domain === TaskDomain.TIANQUAN).map(r => r.tag).join(', ');
+    const crossAct = ROUTE_TABLE.filter(r => r.active && r.domain !== TaskDomain.TIANQUAN).map(r => `${r.domain}/${r.tag}`).join(', ');
+    console.log(`[MasterHarris] ✓ 调度器就绪 · 天权: ${tianquanAct} · 跨域: ${crossAct}`);
   }
 
-  async stop() { this._started = false; if (this._tianquan) { await this._tianquan.stop(); this._tianquan = null; } }
+  async stop() {
+    this._started = false;
+    if (this._tianquan) { await this._tianquan.stop(); this._tianquan = null; }
+    if (this._bus) { await this._bus.disconnect(); this._bus = null; }
+  }
 
   async dispatch(task: MasterTask): Promise<DispatchResult> {
     const t0 = Date.now(); this._dispatchCount++;
     const intent = classifyIntent(task.userMessage);
-    const route = ROUTE_TABLE.find(r => r.tag === intent.routeTag);
+    const route = ROUTE_TABLE.find(r => r.tag === intent.routeTag && r.domain === intent.domain);
     if (!route || !route.active) {
       return { success: false, domain: intent.domain, routeTag: intent.routeTag, result: null, elapsedMs: Date.now() - t0 };
     }
 
     try {
-      const result = await this._tianquan!.runWorkflow(route.workflowId, task.description || task.userMessage, {
-        project_root: task.projectRoot || process.cwd(), ...(task.constraints || {}),
+      // ── 天权域: 本地 RPC ──
+      if (route.domain === TaskDomain.TIANQUAN) {
+        const result = await this._tianquan!.runWorkflow(route.workflowId, task.description || task.userMessage, {
+          project_root: task.projectRoot || process.cwd(), ...(task.constraints || {}),
+        });
+        return { success: result.code === 0, domain: route.domain, routeTag: route.tag, result, elapsedMs: Date.now() - t0 };
+      }
+
+      // ── 跨域: GlobalBus TCP ──
+      if (!this._bus?.connected) throw new Error('总线离线, 跨域指令不可用');
+      const domainTag = route.domain === TaskDomain.YAOLING ? 'l' : 'g';
+      const busResult = await this._bus.sendCommand(domainTag, 'run_workflow', {
+        workflow_id: route.workflowId,
+        task: task.description || task.userMessage,
+        dna_root_id: task.constraints?.dna_root_id || 'TT00000001M01SYS0000000',
+        location_fingerprint: task.constraints?.location_fingerprint || '0'.repeat(32),
+        ...(task.constraints || {}),
       });
-      return { success: result.code === 0, domain: route.domain, routeTag: route.tag, result, elapsedMs: Date.now() - t0 };
+      // 包装为统一格式
+      const wrapped: WorkflowResult = {
+        code: 0, workflow_id: route.workflowId,
+        data: busResult as Record<string, unknown>,
+        trace: [], metrics: {}, stamps: 1, degraded: false, degradation_reason: null,
+      };
+      return { success: true, domain: route.domain, routeTag: route.tag, result: wrapped, elapsedMs: Date.now() - t0 };
     } catch {
       return { success: false, domain: intent.domain, routeTag: intent.routeTag, result: null, elapsedMs: Date.now() - t0 };
     }
   }
+
+  /** 直接向瑶灵发指令 */
+  async sendToYaoling(cmd: string, payload: Record<string, unknown>) { if (this._bus?.connected) return this._bus.sendCommand('l', cmd, payload); throw new Error('总线离线'); }
+  /** 直接向瑶光发指令 */
+  async sendToYaoguang(cmd: string, payload: Record<string, unknown>) { if (this._bus?.connected) return this._bus.sendCommand('g', cmd, payload); throw new Error('总线离线'); }
 
   async health(): Promise<HealthStatus | null> { return this._tianquan?.isReady ? this._tianquan.health() : null; }
   async lintCheck(root: string): Promise<LintReport> { if (!this._tianquan?.isReady) throw new Error('天权离线'); return this._tianquan.lintCheck(root); }
@@ -90,7 +147,12 @@ export class MasterHarris extends EventEmitter {
   async getSpec(): Promise<string | null> { if (!this._tianquan?.isReady) return null; return (await this._tianquan.getSpec()).content; }
 
   getStatus(): Record<string, unknown> {
-    return { started: this._started, tianquanReady: this.tianquanReady, tianquanPid: this._tianquan?.pid ?? null, dispatchCount: this._dispatchCount, activeRoutes: ROUTE_TABLE.filter(r => r.active).map(r => r.tag) };
+    return {
+      started: this._started, tianquanReady: this.tianquanReady, busConnected: this.busConnected,
+      tianquanPid: this._tianquan?.pid ?? null, dispatchCount: this._dispatchCount,
+      activeTianquanRoutes: ROUTE_TABLE.filter(r => r.active && r.domain === TaskDomain.TIANQUAN).map(r => r.tag),
+      activeCrossRoutes: ROUTE_TABLE.filter(r => r.active && r.domain !== TaskDomain.TIANQUAN).map(r => `${r.domain}/${r.workflowId}`),
+    };
   }
 }
 

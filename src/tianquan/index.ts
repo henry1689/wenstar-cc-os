@@ -4,3 +4,5 @@ export { MasterHarris, getMasterHarris, initMasterHarris, classifyIntent, TaskDo
 export type { MasterTask, DispatchResult, IntentClassification } from './MasterHarris.js';
 export { SpecLoader, getSpecLoader, loadDomainSpecs } from './spec_loader.js';
 export type { SpecLoadResult } from './spec_loader.js';
+export { GlobalBusClient } from './GlobalBusClient.js';
+export type { BusMessage, BusConfig } from './GlobalBusClient.js';
