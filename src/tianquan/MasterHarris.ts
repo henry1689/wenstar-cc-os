@@ -53,6 +53,7 @@ export function classifyIntent(message: string): IntentClassification {
   if (/身体|躯体|体感|知觉|心率|血压|内分泌|触觉|生理|器官|肌肉|疼痛|代谢|本能|欲望|依恋|亲密|心跳|激素/.test(l)) return { domain: TaskDomain.YAOLING, routeTag: RouteTag.SENSATION_PIPELINE, confidence: 0.7, reason: '躯体感知' };
   // ── 瑶光域: 世界模型 ──
   if (/环境|温度|光线|噪声|噪音|指纹|时空|场景|采集|采样|天气|季节|空间|周围|湿度|光照|位置/.test(l)) return { domain: TaskDomain.YAOGUANG, routeTag: RouteTag.TIME_TICK, confidence: 0.7, reason: '环境感知' };
+  // ── 纯聊天: 不走任何工作流, 直接 M5 生成 ──
   return { domain: TaskDomain.TIANQUAN, routeTag: RouteTag.CODE_REVIEW, confidence: 0.3, reason: '默认工程路由' };
 }
 
