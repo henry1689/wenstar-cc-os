@@ -62,6 +62,8 @@ import { researchTopic } from '../app/knowledge/WebResearchService.js';
 import { decideMode, buildGuard, type MemoryGateOutput } from '../app/conversation/MemoryGate.js';
 
 import { generateCandidates, type CandidateSet } from '../m5/CandidateSelector.js';
+import { getTopicRepeatCount, isValidPersonName, isSelfNameQuestion, collectFactSnapshot, buildDirectFactReply, buildFactStatementAck, collectFactLookupTerms, isNonEmptyString, isDirectedEmotion, FALLBACK_REPLIES, LEVEL_NAMES, PERC_LABELS } from './chat-utils.js';
+import type { FactSnapshot } from './chat-utils.js';
 
 // 仿生智脑适配器（可选依赖 — 不可用时降级）
 
