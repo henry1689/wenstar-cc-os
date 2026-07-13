@@ -46,7 +46,7 @@ import type { ConversationTurn } from '../m5/types/index.js';
 import type { M3Decision, Perception24D } from '../m3/types/perception.js';
 import type { KnowledgeItem } from '../app/knowledge/types.js';
 
-import type { SelfModelV1 } from '../m1/types/dna.js';
+import type { SelfModelV1, DNA } from '../m1/types/dna.js';
 
 import { EngineContext } from '../engine/EngineContext.js';
 import { ENABLE_TEMPORAL_RULE_ENGINE, worldRuleMode } from '../engine/temporal/TemporalConfig.js';
@@ -883,11 +883,11 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
       const biosResult = await runBIOSPhase({
         message, dna, decision, perception: p,
-        emotionalMemories,
+        emotionalMemories: emotionalMemories as any,
         locationFingerprint: dna.location_fingerprint,
         currentRoleplay: _currentRoleplay,
       }, getFiveStageGate());
-      biosGatedMemories = biosResult.gatedMemories;
+      biosGatedMemories = biosResult.gatedMemories as any;
     } catch (e) { console.warn('[BIOS] 闸门跳过:', (e as Error).message); }
 
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);

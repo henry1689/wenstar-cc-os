@@ -30,7 +30,7 @@ export interface BIOSPhaseInput {
   dna: DNA;
   decision: M3Decision;
   perception: Perception24D;
-  emotionalMemories: DNA[];
+  emotionalMemories: any[];
   locationFingerprint?: string;
   currentRoleplay: string | null;
 }
@@ -70,20 +70,20 @@ export async function runBIOSPhase(
   }
 
   try {
-    const gated = gateModule.filter(
-      input.emotionalMemories.map(m => ({
-        id: m.branch_id,
-        dna_root_id: (m as any).dna_root_id,
-        raw_input: m.raw_input,
-        calcium_score: (m as any).calcium_score ?? 0,
-        calcium_level: (m as any).calcium_level ?? 0,
-        effective_strength: (m as any).effective_strength ?? 1,
-        location_fingerprint: input.locationFingerprint || (m as any).location_fingerprint || '',
-        locus_path: m.locus_path,
-        leaf_zone: m.leaf_zone,
-        absolute_timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
-        is_landmark: (m as any).is_landmark ?? 0,
-      })) as ScoredMemory[],
+    const memoriesAsScored = input.emotionalMemories.map(m => ({
+      id: m.branch_id,
+      dna_root_id: (m as any).dna_root_id,
+      raw_input: m.raw_input,
+      calcium_score: (m as any).calcium_score ?? 0,
+      calcium_level: (m as any).calcium_level ?? 0,
+      effective_strength: (m as any).effective_strength ?? 1,
+      location_fingerprint: input.locationFingerprint || (m as any).location_fingerprint || '',
+      locus_path: m.locus_path,
+      leaf_zone: m.leaf_zone,
+      absolute_timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
+      is_landmark: (m as any).is_landmark ?? 0,
+    })) as any as ScoredMemory[];
+    const gated = gateModule.filter(memoriesAsScored,
       {
         query: input.message,
         locationFingerprint: input.locationFingerprint || '0'.repeat(32),
@@ -92,7 +92,7 @@ export async function runBIOSPhase(
 
     // 重建原始 DNA 对象列表
     const passedIds = new Set(gated.passed.map(m => m.id));
-    const gatedMemories = input.emotionalMemories.filter(m => passedIds.has(m.branch_id));
+    const gatedMemories = input.emotionalMemories.filter(m => passedIds.has(m.branch_id)) as DNA[];
 
     console.log(`[BIOS] 闸门: ${input.emotionalMemories.length}→${gated.passed.length} (G1→G5)`);
 
@@ -137,7 +137,7 @@ export async function runMindPhase(
   input: MindPhaseInput,
 ): Promise<{ reply: string; m4Result: any }> {
   // M4: 基于闸门过滤后的记忆编排
-  const m4Result = await input.m4Orchestrator.orchestrate(input.decision, input.gatedMemories);
+  const m4Result = await input.m4Orchestrator.orchestrate(input.decision, input.gatedMemories as any);
 
   // M5: LLM 生成 (不使用存储, 只使用 M4 组装好的上下文)
   const reply = await input.m5Orchestrator.orchestrate(
@@ -145,7 +145,7 @@ export async function runMindPhase(
     [],                         // enrichedHistory — BIOS已处理
     input.knowledgeBaseText,    // 知识上下文 — BIOS已检索
     input.message,
-    input.currentRoleplay,
+    input.currentRoleplay as any,
   );
 
   return { reply, m4Result };
