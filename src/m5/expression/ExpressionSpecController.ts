@@ -102,17 +102,17 @@ export function calcExpressionSpec(snapshot: {
     };
   }
 
-  // 低强度：30-80字，轻快口语
+  // 日常对话：30-200字，自然口语
   return {
     wordCountTarget: 'short',
-    wordCountMin: 15,
-    wordCountMax: 80,
-    literaryDensity: 0.2,
+    wordCountMin: 30,
+    wordCountMax: 200,
+    literaryDensity: 0.3,
     pauseLevel: 'light',
     requireEmbodiedResponse: false,
     requireSensoryDetail: false,
     requireEmotionalElevation: false,
-    forbiddenPatterns: [],
+    forbiddenPatterns: ['我记住了', '收到', '好哒'],
     recommendedPhrases: [],
   };
 }

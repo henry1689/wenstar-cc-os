@@ -27,7 +27,7 @@ import { validateRoleOutput, getFallbackRole } from '../app/role/RoleGuard.js';
 // 改造④：不在模块级读 process.env，构造函数中通过 ConfigService 运行时获取
 import { ConfigService } from '../config/ConfigService.js';
 
-const BASE_URL = 'https://api.deepseek.com/v1';
+const BASE_URL = process.env['LLM_API_BASE_URL'] || 'https://api.deepseek.com/v1';
 const MAX_HISTORY_TURNS = 200;
 // FIX-3: 工作消息时缩减历史（防止亲密历史污染工作上下文）
 function getHistoryLimit(txt: string): number {
@@ -48,13 +48,13 @@ interface DeepSeekResponse {
   usage?: { prompt_tokens: number; completion_tokens: number };
 }
 
-/** 运行时获取 API Key（优先环境变量，其次运行时存储） */
+/** 运行时获取 API Key（多 Provider 兼容） */
 function resolveApiKey(): string | undefined {
-  return process.env['DEEPSEEK_API_KEY'] || getKeyValue('DEEPSEEK_API_KEY') || undefined;
+  return process.env['DEEPSEEK_API_KEY'] || process.env['LLM_API_KEY'] || getKeyValue('DEEPSEEK_API_KEY') || getKeyValue('LLM_API_KEY') || undefined;
 }
 
 export function isAvailable(): boolean {
-  return !!(process.env['DEEPSEEK_API_KEY'] || getKeyValue('DEEPSEEK_API_KEY'));
+  return !!(process.env['DEEPSEEK_API_KEY'] || process.env['LLM_API_KEY'] || getKeyValue('DEEPSEEK_API_KEY') || getKeyValue('LLM_API_KEY'));
 }
 
 export class DeepSeekLLMProvider implements LLMProvider {
@@ -71,7 +71,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
   private persona: IPersona;
 
   constructor(model?: string, persona?: IPersona) {
-    this.model = model || process.env['DEEPSEEK_MODEL'] || ConfigService.get('DEEPSEEK_MODEL', 'deepseek-v4-flash');
+    this.model = model || process.env['LLM_MODEL'] || process.env['DEEPSEEK_MODEL'] || ConfigService.get('DEEPSEEK_MODEL', 'deepseek-v4-flash');
     // 默认玉瑶人设
     this.persona = persona ?? {
       id: 'yuyao',
@@ -328,8 +328,8 @@ export class DeepSeekLLMProvider implements LLMProvider {
       contextBlock += `\n[亲密回应示例] ${intimateSceneExample}`;
     }
 
-    // 软约束
-    contextBlock += `\n[注意: 如果上面有[内心:...]开头的片段，那是你内心的感觉，不是回忆列表。不要直接复述它，而是自然地转化为关切的语气或行动。]`;
+    // 软约束 + 自然回复长度要求
+    contextBlock += `\n[注意: 如果上面有[内心:...]开头的片段，那是你内心的感觉，不是回忆列表。不要直接复述它，而是自然地转化为关切的语气或行动。]\n[回复长度: 像正常微信聊天一样回复，30到80字左右。不要说"好的""行""嗯"就结束——问问他在做什么、感受如何、有什么需要的。]`;
 
     // 🔥 前戏→激情呓语模式 — 当level≥2或raw_input包含强烈亲密词时激活（学术话题不进入）
     const _academicGuard = isAcademic(rawInput);

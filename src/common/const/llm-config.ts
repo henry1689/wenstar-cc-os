@@ -25,8 +25,8 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   /** 日常对话：中性情绪、工作、闲聊 */
   daily: {
     temperature: 0.9,
-    maxTokens: 1200,
-    timeoutMs: 10_000,
+    maxTokens: 2000,
+    timeoutMs: 15_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
   },
