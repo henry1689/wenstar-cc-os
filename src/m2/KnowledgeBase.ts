@@ -43,7 +43,7 @@ export class KnowledgeBase {
     title?: string; content?: string; tags?: string[]; locked?: boolean;
   }): Promise<boolean> { return this.engine.update(id, params); }
 
-  delete(id: string): boolean { return this.engine.delete(id); }
+  async delete(id: string): Promise<boolean> { return this.engine.delete(id); }
 
   async search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }): Promise<KnowledgeItem[]> {
     return this.engine.search(keyword, limit, emotionalContext);

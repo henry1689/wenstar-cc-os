@@ -101,10 +101,16 @@ ${entry.source_name ? `source_name: "${entry.source_name}"\n` : ''}${entry.file_
 }
 
 // ── 模块级单例（跨多次 createKnowledgeEngine 调用持久化） ──
-// P2 切换: 替换为 ZvecAdapter
-//   import { getZvecAdapter } from '../../m2/ZvecAdapter.js';
-//   const vectorStore = getZvecAdapter();  // HNSW + RaBitQ 32×压缩 + WAL持久化
-const vectorStore = new VectorStore();  // 当前: 内存Map, 重启丢失
+// P2 ✅ 已切换: @zvec/zvec 0.5.0 C++ N-API — HNSW + COSINE + WAL
+import { getZvecAdapter, type IZvecAdapter } from '../../m2/ZvecAdapter.js';
+let _zvecAdapter: IZvecAdapter | null = null;
+async function ensureZvecReady(): Promise<IZvecAdapter> {
+  if (!_zvecAdapter) {
+    _zvecAdapter = getZvecAdapter();
+    await _zvecAdapter.init();
+  }
+  return _zvecAdapter;
+}
 /** P2: 检索缓存（30秒TTL） */
 const searchCache = new LocalCache<string, KnowledgeItem[]>({ ttlMs: 30_000, namespace: 'kb_search' });
 const embedProvider = createLocalEmbedding();
@@ -132,7 +138,7 @@ function rowToEntry(r: Record<string, any>): KnowledgeItem {
 }
 
 /** 确保向量索引已加载（懒加载，轻量模式跳过） */
-function ensureIndex(sqlite: SQLiteAdapter): void {
+async function ensureIndex(sqlite: SQLiteAdapter): Promise<void> {
   if (_indexReady) return;
   if (process.env['TIANQUAN_LITE'] === 'true') { _indexReady = true; return; }
   try {
@@ -143,7 +149,7 @@ function ensureIndex(sqlite: SQLiteAdapter): void {
       const emb = row.embedding as string;
       if (emb) {
         try {
-          vectorStore.upsert(row.id as string, JSON.parse(emb));
+          (await ensureZvecReady()).upsert(row.id as string, JSON.parse(emb));
         } catch (err) { console.warn("[KE] embedding损坏:", err); }
       }
     }
@@ -160,14 +166,15 @@ async function indexContent(
   knId: string,
   content: string,
 ): Promise<void> {
-  ensureIndex(sqlite);
+  await ensureIndex(sqlite);
   if (process.env['TIANQUAN_LITE'] === 'true') return; // 轻量模式跳过向量索引
   const chunkResult = fileChunker.chunkWithSummary({ text: content, source: knId });
   if (chunkResult.chunks.length === 0) return;
 
   // 清除旧分块
   sqlite.writeRaw(`DELETE FROM knowledge_chunks WHERE kn_id = ?`, knId);
-  const removed = vectorStore.removeByPrefix(knId);
+  const store = await ensureZvecReady();
+  const removed = await store.removeByPrefix(knId);
 
   // P0: 批量嵌入 — 减少 API 调用次数
   const chunkTexts = chunkResult.chunks.map(function(c) { return c.content; });
@@ -188,7 +195,7 @@ async function indexContent(
 
     // 存向量索引
     if (embedding.length > 0) {
-      vectorStore.upsert(chunkId, embedding);
+      (await ensureZvecReady()).upsert(chunkId, embedding);
     }
   }
 }
@@ -344,14 +351,15 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
   }
 
   /** 删除（同时清理索引 + MD 文件） */
-  function remove(id: string): boolean {
+  async function remove(id: string): Promise<boolean> {
     const existing = getById(id);
     if (!existing) return false;
-    syncToCabinet(existing, true); // 删除知识柜文件
-    syncToMd(existing, true); // 删除 MD 文件
+    syncToCabinet(existing, true);
+    syncToMd(existing, true);
     sqlite.writeRaw(`DELETE FROM knowledge_base WHERE id=?`, id);
     sqlite.writeRaw(`DELETE FROM knowledge_chunks WHERE kn_id=?`, id);
-    vectorStore.removeByPrefix(id);
+    const zvs = await ensureZvecReady();
+    zvs.removeByPrefix(id).catch(() => {});
     return true;
   }
 
@@ -400,10 +408,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
 
     // 3. 如果嵌入可用，走混合搜索（但不会覆盖关键词搜索结果）
     if (embedProvider.isAvailable()) {
-      ensureIndex(sqlite);
-      if (vectorStore.size() > 0) {
+      await ensureIndex(sqlite);
+      const zvs = await ensureZvecReady();
+      if (zvs.size > 0) {
         try {
-          const hybridResults = await hybridSearch(trimmed, embedProvider, vectorStore, keywordSearch, limit, emotionalContext);
+          const hybridResults = await hybridSearch(trimmed, embedProvider, zvs as any, keywordSearch, limit, emotionalContext);
           if (hybridResults.length > 0) return hybridResults;
         } catch (err) {
           console.warn('[KnowledgeEngine] 混合搜索失败，降级:', err);
@@ -445,7 +454,7 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
 
   /** 强制重新索引所有已有知识条目（维护用） */
   async function reindexAll(): Promise<number> {
-    ensureIndex(sqlite);
+    await ensureIndex(sqlite);
     const all = list(500);
     let indexed = 0;
     for (const item of all) {
@@ -457,10 +466,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
   }
 
   /** 向量搜索调试（返回原始分块匹配） */
-  function vectorSearchDebug(queryVec: number[], topK = 5): Array<{
+  async function vectorSearchDebug(queryVec: number[], topK = 5): Promise<Array<{
     chunkId: string; text: string; score: number; knId: string;
-  }> {
-    const hits = vectorStore.similaritySearch(queryVec, topK);
+  }>> {
+    const zvs = await ensureZvecReady();
+    const hits = await zvs.search(queryVec, topK);
     const results: Array<{ chunkId: string; text: string; score: number; knId: string }> = [];
     for (const hit of hits) {
       const rows = sqlite.queryAll(`SELECT kn_id, chunk_text FROM knowledge_chunks WHERE id = ?`, [hit.id]);
@@ -756,7 +766,7 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
   return {
     add, list, getById, update, delete: remove,
     search, count, upload, reindexAll,
-    vectorSearchDebug, embedProvider, vectorStore,
+    vectorSearchDebug, embedProvider, zvecAdapter: ensureZvecReady,
     updateClassification, getUnclassified,
     getUnclassifiedOlderThan, deleteExpiredUnclassified,
     searchByScene, searchByInteraction,
