@@ -26,7 +26,7 @@ export const M5_CONFIG = {
   // ── 策略模板参数 ──
   strategy: {
     templates: {
-      'mem-general': { description: '简短确认，无需深度回应', maxLength: 80 },
+      'mem-general': { description: '日常对话，自然随性', maxLength: 200 },
       'ask-curious': { description: '好奇追问，主动表达兴趣', maxLength: 80 },
       'com-warm':    { description: '温暖支持，共情回应', maxLength: 100 },
       'mem-ask':     { description: '先确认再追问', maxLength: 60 },

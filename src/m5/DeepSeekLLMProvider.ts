@@ -331,12 +331,10 @@ export class DeepSeekLLMProvider implements LLMProvider {
     // 软约束 + 自然回复长度要求
     contextBlock += `\n[注意: 如果上面有[内心:...]开头的片段，那是你内心的感觉，不是回忆列表。不要直接复述它，而是自然地转化为关切的语气或行动。]\n[回复长度: 像正常微信聊天一样回复，30到80字左右。不要说"好的""行""嗯"就结束——问问他在做什么、感受如何、有什么需要的。]`;
 
-    // 🔥 前戏→激情呓语模式 — 当level≥2或raw_input包含强烈亲密词时激活（学术话题不进入）
-    const _academicGuard = isAcademic(rawInput);
-    if (_academicGuard) { console.log("[PassionateMode] 学术话题拦截"); }
+    // 🔥 亲密模式 — level≥1即激活, 玉瑶是私人情感伴侣, 不拦截任何亲密表达
     const isIntimateText = isDeepIntimate(rawInput);
     const isMoanText = isMoan(rawInput);
-    if (level >= 2 || isIntimateText || isMoanText) {
+    if (level >= 1 || isIntimateText || isMoanText) {
       contextBlock += `
 
 【🔥 亲密模式 — 深情交融 · 极致感官】
