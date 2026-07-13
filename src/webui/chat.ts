@@ -876,7 +876,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     } catch (err) { console.warn('[ClueAssistant] 失败:', err); }
 
     // 🎭 角色扮演时传递分支FG，使家族关系写入分支而非主FG
-    const ctx_m4 = await ctx.m4.orchestrate(decision, emotionalMemories);
+    // ── BIOS 核: 五级闸门过滤 (蓝皮书 §1.1, §4.1) ──
+    let biosGatedMemories = emotionalMemories;
+    try {
+      const { runBIOSPhase } = await import('../m1/DualCorePipeline.js');
+      const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
+      const biosResult = await runBIOSPhase({
+        message, dna, decision, perception: p,
+        emotionalMemories,
+        locationFingerprint: dna.location_fingerprint,
+        currentRoleplay: _currentRoleplay,
+      }, getFiveStageGate());
+      biosGatedMemories = biosResult.gatedMemories;
+    } catch (e) { console.warn('[BIOS] 闸门跳过:', (e as Error).message); }
+
+    const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
 
     // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体（角色扮演时跳过，避免污染主FG）
     if (!_currentRoleplay) {
