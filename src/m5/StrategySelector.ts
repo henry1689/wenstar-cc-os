@@ -54,11 +54,14 @@ export class StrategySelector {
     return Math.max(tc.minTemperature, Math.min(tc.maxTemperature, Math.round(temp * 100) / 100));
   }
 
-  private selectTemplate(actions: M3Action[], _cognition: CognitionObject): string {
+  private selectTemplate(actions: M3Action[], cognition: CognitionObject): string {
     if (actions.includes('act')) return 'act-core';
     if (actions.includes('comfort')) return 'com-warm';
     if (actions.includes('ask') && actions.includes('memorize')) return 'mem-ask';
     if (actions.includes('ask')) return 'ask-curious';
+    // P0 修复: 消息>5字或有实体 → 升级到 com-warm (maxLength=100)
+    const msgLen = (cognition.current.raw_input ?? '').length;
+    if (msgLen > 5 || (cognition.current.key_entities ?? []).length > 0) return 'com-warm';
     return 'mem-general';
   }
 }

@@ -287,7 +287,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
       : new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 
     const _role = params.role || DeepSeekLLMProvider._currentRole;
-    const _effectiveRole = (_strategyMaxLen > 0 && _strategyMaxLen <= 30) ? 'secretary' : _role;
+    const _effectiveRole = (_strategyMaxLen > 0 && _strategyMaxLen <= 15) ? 'secretary' : _role;
     const systemPrompt = buildCoreSystemPrompt(timeStr, buildRoleSystemPrompt(_effectiveRole, level as -2|-1|0|1|2, params.knowledgeBase));
     console.log("==SPLIT=="); console.log(systemPrompt.substring(0,500)); console.log("==SPLIT_END==");
     const _kb = params.knowledgeBase || '';
