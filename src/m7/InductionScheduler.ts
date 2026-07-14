@@ -65,6 +65,9 @@ export class InductionScheduler {
   }
 
   async runInduction(): Promise<void> {
+    // 确保目录存在（不再依赖 start() 创建）
+    if (!existsSync(this.inductionPath)) mkdirSync(this.inductionPath, { recursive: true });
+
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 

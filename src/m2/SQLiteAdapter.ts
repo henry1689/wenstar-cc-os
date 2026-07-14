@@ -165,6 +165,7 @@ export class SQLiteAdapter {
     try { this.db.run("ALTER TABLE memories ADD COLUMN dna_root_id TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN memory_kind TEXT DEFAULT 'episodic'"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN lifecycle_state TEXT DEFAULT 'candidate'"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN perception_v2 TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN confidence_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN stability_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN last_verified_at TEXT"); } catch { /* 列已存在 */ }
@@ -197,6 +198,38 @@ export class SQLiteAdapter {
     // S2-6: 知识库印象值 + 最近召回时间
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN impression_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN last_recalled_at TEXT"); } catch { /* 列已存在 */ }
+
+    // 🧠 海马体稀疏索引表（V3.0）：不存记忆内容，只存 context_signature → memory_locations 指针映射
+    try {
+      this.db.run(`CREATE TABLE IF NOT EXISTS hippocampal_index (
+        context_signature TEXT PRIMARY KEY,
+        memory_locations TEXT NOT NULL,
+        calcium_boost REAL DEFAULT 0.05,
+        last_activated_at TEXT NOT NULL,
+        hit_count INTEGER DEFAULT 1,
+        experience_summary TEXT,
+        created_at TEXT NOT NULL
+      )`);
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_hippocampal_boost ON hippocampal_index(calcium_boost DESC)");
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_hippocampal_activated ON hippocampal_index(last_activated_at)");
+    } catch (e) { console.warn('[SQLite] hippocampal_index 表创建失败:', e); }
+
+    // 🧠 场景认知地图表（V3.1）：位置细胞+网格细胞 → 用户主观经验空间
+    try {
+      this.db.run(`CREATE TABLE IF NOT EXISTS scene_map (
+        scene_id TEXT PRIMARY KEY,
+        scene_label TEXT NOT NULL,
+        parent_scene TEXT,
+        adjacency TEXT DEFAULT '[]',
+        visit_count INTEGER DEFAULT 1,
+        last_visited_at TEXT NOT NULL,
+        associated_topics TEXT DEFAULT '[]',
+        fg_events TEXT DEFAULT '[]',
+        kb_entries TEXT DEFAULT '[]'
+      )`);
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_scene_visit ON scene_map(visit_count DESC)");
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_scene_label ON scene_map(scene_label)");
+    } catch (e) { console.warn('[SQLite] scene_map 表创建失败:', e); }
 
     // 记事记忆：复用 memories 表，新增 type 字段区分
     try { this.db.run("ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'dialog'"); } catch { /* 列已存在 */ }

@@ -271,6 +271,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
   console.log('[CHAT_ENTRY] _currentRoleplay=' + (_currentRoleplay || 'null') + ' _rpJustExited=' + _rpJustExited + ' msg=' + message.substring(0,30));
 
   try {
+    // 🔥 天权海马体节律调度: 进入 θ 节律（活跃对话），暂停离线巩固
+    (globalThis as any).__hippocampusCoordinator?.onUserMessage();
+
     // ChatEntry — entry guard pipeline (extracted)
     const _entryState = {
       _currentRoleplay, _currentRPBranch, _currentCharacterClass,
@@ -486,7 +489,24 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       console.warn('[ProfileExtract] 答案提取失败:', (err as Error).message);
     }
 
+    // 🧠 海马体新颖度检测: M1 编码后评估信息新颖度 → 调整钙化优先级
+    let _noveltyMultiplier = 1.0;
+    try {
+      const _nsql = ctx.storage.getSQLite?.();
+      if (_nsql && dna && dna.raw_input) {
+        const { NoveltyDetector } = await import('../app/brain/NoveltyDetector.js');
+        const _nd = new NoveltyDetector(_nsql);
+        const _nresult = _nd.assess(dna);
+        _noveltyMultiplier = _nresult.calciumMultiplier;
+      }
+    } catch {} /* 新颖度检测失败不阻塞 */
+
     const decision = ctx.m3.decide(dna, { current_time: new Date().toISOString(), current_location: '深圳' });
+
+    // 应用新颖度系数到钙化分
+    if (_noveltyMultiplier !== 1.0) {
+      decision.enhanced.calcium_score = Math.min(10, (decision.enhanced.calcium_score || 0.5) * _noveltyMultiplier);
+    }
 
     // P0-1: 角色路由（模块级状态持久化）
     const p = decision.enhanced.perception;
@@ -877,20 +897,20 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     // 🎭 角色扮演时传递分支FG，使家族关系写入分支而非主FG
     // ── BIOS 核: 五级闸门过滤 (蓝皮书 §1.1, §4.1) ──
-    // ⚠️ 默认关闭 — 需 G2区位指纹+G3衰减数据上线后开启
+    // 🔴 V3.0: 闸门默认激活，不可关闭。仅 ENABLE_FIVE_STAGE_GATE='false' 时可紧急降级
     let biosGatedMemories = emotionalMemories;
-    if (process.env['ENABLE_FIVE_STAGE_GATE'] === 'true') {
-    try {
-      const { runBIOSPhase } = await import('../m1/DualCorePipeline.js');
-      const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
-      const biosResult = await runBIOSPhase({
-        message, dna, decision, perception: p,
-        emotionalMemories: emotionalMemories as any,
-        locationFingerprint: dna.location_fingerprint,
-        currentRoleplay: _currentRoleplay,
-      }, getFiveStageGate());
-      biosGatedMemories = biosResult.gatedMemories as any;
-    } catch (e) { console.warn('[BIOS] 闸门跳过:', (e as Error).message); }
+    if (process.env['ENABLE_FIVE_STAGE_GATE'] !== 'false') {
+      try {
+        const { runBIOSPhase } = await import('../m1/DualCorePipeline.js');
+        const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
+        const biosResult = await runBIOSPhase({
+          message, dna, decision, perception: p,
+          emotionalMemories: emotionalMemories as any,
+          locationFingerprint: dna.location_fingerprint,
+          currentRoleplay: _currentRoleplay,
+        }, getFiveStageGate());
+        biosGatedMemories = biosResult.gatedMemories as any;
+      } catch (e) { console.warn('[BIOS] 闸门异常，降级使用原记忆:', (e as Error).message); }
     }
 
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
@@ -1724,9 +1744,87 @@ let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('
 // 剥离场景描写：raw_input 里存着 LLM 自己生成的"（我趴在浴缸边…）"等动作描写，
 // 原样注入回去会让 LLM 读到自己的场景文本并自动进入那个场景——形成循环引用。
 // 场景是生成的产物，不是记忆的内容。只保留语义/对话内容，不留场景。
-memoryText = memoryText.replace(/（[^）]*）/g, '');
-let finalKnowledgeText = knowledgeBaseText;
+memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = knowledgeBaseText;
 
+      // 🔥 Core Memory: 注入核心记忆块（海马体快速访问缓存）
+      // 🔥 睡眠期巩固: 记录活跃时间（每次用户消息都更新时间戳）
+      try {
+        const { SleepTimeConsolidator } = await import('../app/brain/SleepTimeConsolidator.js');
+        const _stSqlite = ctx.storage.getSQLite?.();
+        if (_stSqlite) {
+          (globalThis as any).__sleepTimeConsolidator =
+            (globalThis as any).__sleepTimeConsolidator || new SleepTimeConsolidator(ctx.storage);
+          (globalThis as any).__sleepTimeConsolidator.recordActivity();
+        }
+      } catch {} /* 记录失败不阻塞 */
+
+      try {
+        const { CoreMemoryManager } = await import('../app/brain/CoreMemoryManager.js');
+        if (!(globalThis as any).__coreMemory) {
+          const _cm = new CoreMemoryManager(ctx.storage.getSQLite?.(), ctx.knowledgeBase as any);
+          (globalThis as any).__coreMemory = _cm;
+          _cm.refreshFromProfile().catch(() => {});
+        }
+        const _cm = (globalThis as any).__coreMemory;
+        if (seqPos % 10 === 0) _cm.refreshFromProfile().catch(() => {});
+        _cm.refreshFromSession(message.substring(0, 80));
+        const coreCtx = _cm.getContextWindow();
+        if (coreCtx && finalKnowledgeText) {
+          finalKnowledgeText = coreCtx + String.fromCharCode(10,10) + finalKnowledgeText;
+        } else if (coreCtx) {
+          finalKnowledgeText = coreCtx;
+        }
+      } catch {} /* Core Memory 不可用不阻塞 */
+
+      // 🧠 海马体经验摘要: 查询 δ 节律归纳的多源融合经验，注入 LLM 上下文
+      try {
+        const _eSqlite = ctx.storage.getSQLite?.();
+        if (_eSqlite && message) {
+          const { HippocampalIndex } = await import('../app/brain/HippocampalIndex.js');
+          const _hIdx = new HippocampalIndex(_eSqlite);
+          // 用消息中首个有区分度的词查经验摘要
+          const _firstWord = (message.match(/[一-龥]{2,4}/g) || []).find((w: string) => w.length >= 2 && !'的了在是我有不和就'.includes(w));
+          if (_firstWord) {
+            const _exp = _hIdx.lookupExperienceByKeyword(_firstWord);
+            if (_exp) {
+              finalKnowledgeText = '【相关经验】\n' + _exp + String.fromCharCode(10,10) + (finalKnowledgeText || '');
+            }
+          }
+        }
+      } catch {} /* 经验摘要不可用不阻塞 */
+
+      // 🧠 V3.1 记忆驱动情绪调节: 查相似经验→输出安抚建议→注入LLM柔性调节
+      try {
+        const _rSqlite = ctx.storage.getSQLite?.();
+        if (_rSqlite && emotionalMemories.length > 0 && p) {
+          const { EmotionRegulator } = await import('../app/brain/EmotionRegulator.js');
+          const _reg = new EmotionRegulator(_rSqlite);
+          const _regulation = _reg.regulate(p, emotionalMemories as any);
+          if (_regulation.shouldSoothe && _regulation.basis) {
+            const _regCtx = _reg.formatForContext(_regulation);
+            if (_regCtx) {
+              finalKnowledgeText = _regCtx + String.fromCharCode(10,10) + (finalKnowledgeText || '');
+            }
+          }
+        }
+      } catch {} /* 情绪调节不可用不阻塞 */
+
+      // 🔥 选择性遗忘: 检测用户"忘掉""不提""删除"指令 (V3.0: 模糊搜索匹配)
+      try {
+        const { SelectiveForgettingEngine } = await import('../app/brain/SelectiveForgettingEngine.js');
+        const _fsql = ctx.storage.getSQLite?.();
+        if (_fsql) {
+          const _fe = new SelectiveForgettingEngine(_fsql);
+          const _intent = _fe.detectForgetIntent(message);
+          if (_intent) {
+            // V3.0: 使用 forgetByKeyword 模糊搜索 → 实际匹配并遗忘
+            const _result = await _fe.forgetByKeyword(_intent.target, _intent.action);
+            if (_result.forgotten > 0 && typeof finalKnowledgeText === 'string') {
+              finalKnowledgeText = `【系统】${_result.summary}。` + String.fromCharCode(10,10) + (finalKnowledgeText || '');
+            }
+          }
+        }
+      } catch {} /* 遗忘指令检测失败不阻塞 */
 if (isFactualRecallQuery) {
   finalKnowledgeText = factualRecallGuard + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
 }
@@ -2639,6 +2737,9 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         anomalies: _anomalies,
       });
     } catch (_ae) { /* 审计日志不阻塞主线 */ }
+
+    // 🔥 天权海马体节律调度: 回复完成，释放离线锁，按需切 SWR/DELTA
+    (globalThis as any).__hippocampusCoordinator?.afterResponse();
 
     return {
 

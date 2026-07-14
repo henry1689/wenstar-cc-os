@@ -402,7 +402,7 @@ export interface CalciumConfig {
 
 // M3 的钙化计算：以 M2 L2 范数为基础，叠加 M3 上下文调整
 // 为什么统一：同一事件两个分数会导致记忆晋升/遗忘与对话决策不一致
-function calculateCalcium(p: Perception24D, config?: CalciumConfig, entityGenes?: Array<{ name: string; type: string }>): CalciumResult {
+function calculateCalcium(p: Perception24D, config?: CalciumConfig, entityGenes?: Array<{ name: string; type: string }>, baseline?: { pleasure: number; arousal: number; intimacy: number }): CalciumResult {
   // ① NaN/undefined 安全钳
   const pleasure = safeVal(p.pleasure);
   const arousal = safeVal(p.arousal);
@@ -420,7 +420,7 @@ function calculateCalcium(p: Perception24D, config?: CalciumConfig, entityGenes?
   const sexualAttraction = safeVal((p as any).sexual_attraction);
 
   // 使用 M2 的 L2 范数作为钙化基准分（单一事实源）
-  const base = m2ComputeCalcium(p);
+  const base = m2ComputeCalcium(p, baseline);
   let score = base.score;
 
   // M3 上下文调整层（不改变基础计算方式，只做场景微调）
@@ -585,6 +585,8 @@ export class PerceptionAnalyzer {
       scene_tags: sceneTags,
     };
     const enhanced = this.analyze(mockDNA);
+    // V3.0: 惊讶度因子使用情绪基线（由 EmotionBaseline 持久化）
+    // 基线在 EmotionBaseline.update() 时写入 engine_store
     const calcium = calculateCalcium(enhanced.perception);
     enhanced.calcium_score = calcium.score;
     enhanced.calcium_level = calcium.level;

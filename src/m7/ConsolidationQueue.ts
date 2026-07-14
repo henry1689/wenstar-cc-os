@@ -35,7 +35,7 @@ export class ConsolidationQueue {
   }
 
   start(): void {
-    console.log('[Consolidation] 启动巩固队列');
+    console.log('[Consolidation] 启动巩固队列 (独立定时器模式)');
     const loop = () => {
       const idle = Date.now() - this.lastActivity;
       if (idle > this.IDLE_THRESHOLD) {
@@ -50,7 +50,11 @@ export class ConsolidationQueue {
     if (this.idleTimer) clearTimeout(this.idleTimer);
   }
 
-  private async runConsolidation(): Promise<void> {
+  /**
+   * 公开触发一次巩固（由 HippocampusRhythmCoordinator 统一调度）
+   * 返回晋升为地标的数量
+   */
+  async runConsolidation(): Promise<number> {
     try {
       const sqlite = this.storage.getSQLite();
 
@@ -93,8 +97,10 @@ export class ConsolidationQueue {
       if (promoted > 0) {
         console.log(`[Consolidation] 晋升 ${promoted} 条记忆为地标`);
       }
+      return promoted;
     } catch (err) {
       console.warn('[Consolidation] 巩固失败:', err);
+      return 0;
     }
   }
 }

@@ -37,25 +37,37 @@ export function toNormalizedVector(p: Perception24D): Float64Array {
 /**
  * calcium = ||v|| / sqrt(N)
  *
- * 蓝皮书 V2.0 §5.2 公式:
- *   target:  ||32D|| / sqrt(32)   ← P3 阶段切换目标
- *   current: ||24D|| / sqrt(24)   ← 当前 24D 过渡方案
+ * 蓝皮书 V3.0 §5.2 公式（含惊讶度因子）:
+ *   calcium = ||24D|| / sqrt(24) + w_surprise × surprise
+ *   V2.0 基础上增加惊讶度，偏离基线越远越优先巩固
  *
- * P3 切换步骤:
- *   1. 瑶灵 32D 向量上线后, DIM_COUNT 从 24 → 32
- *   2. builtPerceptionJson() 扩展到 32D
- *   3. 这里 sqrt(24) → sqrt(32)
- *   4. 存量 memories.perception_json 需批量重计算
+ * 惊讶度原理: 越偏离用户日常情绪基线的信息，越值得巩固。
+ * 这与生物学中"惊讶驱动学习"一致——意外的经历更容易被记住。
  *
  * @param p - 当前 24D 感知向量 (P3 改为 32D)
+ * @param baseline - 用户情绪基线（可选），含 pleasure/arousal/intimacy
  * @returns calcium score (0-1) + level (0-3)
  */
-export function computeCalcium(p: Perception24D): { score: number; level: 0 | 1 | 2 | 3 } {
+export function computeCalcium(
+  p: Perception24D,
+  baseline?: { pleasure: number; arousal: number; intimacy: number },
+): { score: number; level: 0 | 1 | 2 | 3 } {
   const v = toNormalizedVector(p);
   const dimCount = 24; // P3: → 32
   let sumSq = 0;
   for (let d = 0; d < dimCount; d++) sumSq += v[d] * v[d];
-  const score = Math.sqrt(sumSq) / Math.sqrt(dimCount);
+  let score = Math.sqrt(sumSq) / Math.sqrt(dimCount);
+
+  // V3.0: 惊讶度因子 — 偏离情绪基线的程度
+  if (baseline) {
+    const surprise = (
+      Math.abs(p.pleasure - baseline.pleasure) +
+      Math.abs(p.arousal - baseline.arousal) +
+      Math.abs(p.intimacy - baseline.intimacy)
+    ) / 3;  // 归一化到 [0, 1]
+    const W_SURPRISE = 0.3;  // 惊讶度权重系数
+    score = Math.min(1.0, score + W_SURPRISE * surprise);
+  }
 
   let level: 0 | 1 | 2 | 3;
   if (score < 0.3) level = 0;
@@ -64,6 +76,22 @@ export function computeCalcium(p: Perception24D): { score: number; level: 0 | 1 
   else level = 3;
 
   return { score: Math.round(score * 1000) / 1000, level };
+}
+
+/**
+ * 计算惊讶度因子 — 当前感知偏离情绪基线的程度
+ * 用于记忆优先级排序，偏离越大的信息越值得巩固
+ */
+export function surpriseFactor(
+  current: { pleasure: number; arousal: number; intimacy: number },
+  baseline: { pleasure: number; arousal: number; intimacy: number },
+): number {
+  const surprise = (
+    Math.abs(current.pleasure - baseline.pleasure) +
+    Math.abs(current.arousal - baseline.arousal) +
+    Math.abs(current.intimacy - baseline.intimacy)
+  ) / 3;
+  return Math.min(1, Math.max(0, surprise));
 }
 
 // ──────────────────────────────────────────────

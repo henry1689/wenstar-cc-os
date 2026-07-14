@@ -6,7 +6,7 @@
  * 五级管道 (不可绕过, 不可关闭):
  *   G1 语义初筛    → HNSW Top-K, cosine ≥ 0.3
  *   G2 时空一致性  → location_fingerprint 比对, PASS/P1/P2/P3 分级
- *   G3 仿生遗忘    → decayed = weight × exp(-λ × hrs), λ=0.01/0.03, floor=0.05
+ *   G3 仿生遗忘    → applyDecay (math.ts 统一公式), floor=0.05
  *   G4 意图区分    → active_recall vs passive_chat (regex 触发)
  *   G5 话题壁垒    → 跨话题记忆 ×0.1 冻结
  *
@@ -19,6 +19,10 @@
  *   import { fiveStageGate } from '../m3/FiveStageGate.js';
  *   const filtered = fiveStageGate.filter(memories, query, context);
  */
+
+// ── 类型 ────────────────────────────────────────────────
+
+import { applyDecay } from '../m2/math.js';
 
 // ── 类型 ────────────────────────────────────────────────
 
@@ -83,8 +87,6 @@ const G2_SCORE_THRESHOLDS = {
   P3: Infinity,// >0.8: 严重抑制, 近乎剔除
 };
 const G2_SUPPRESSION_WEIGHTS = { P1: 0.7, P2: 0.4, P3: 0.05 };
-const G3_DECAY_LAMBDA_NORMAL = 0.01;
-const G3_DECAY_LAMBDA_SWITCH = 0.03;
 const G3_DECAY_FLOOR = 0.05;
 const G4_ACTIVE_RECALL_REGEX = /(?:还记得|以前|那次|当时|什么时候|在哪里|和谁|告诉过我|记不记得)/;
 const G5_TOPIC_FREEZE_WEIGHT = 0.1;
@@ -168,20 +170,15 @@ export class FiveStageGate {
     // ═══════ G3 仿生遗忘 ═══════
     stats.g3In = pool.length;
     if (pool.length > 0) {
-      const getHours = context.hoursSinceCreation || ((ts: number) => {
-        return (Date.now() - ts) / 3_600_000;
-      });
-
       pool = pool.map(m => {
         const strength = m.effective_strength || 1;
         const calcium = m.calcium_score || 0;
-        const λ = calcium >= 3.0 ? 0.02 / 24 :  // 强情感: -0.02/天 → 换算成小时
-                  (m.locus_path || '').includes('work') ? 0.05 / 24 :  // 工作: -0.05/天
-                  G3_DECAY_LAMBDA_NORMAL;  // 中性: -0.01/天
 
+        // 统一使用 math.ts 的 applyDecay 公式 (蓝皮书 §5.2)
         const ts = m.absolute_timestamp || m.timestamp_ms || Date.now();
-        const hrs = getHours(ts);
-        const decayed = Math.max(G3_DECAY_FLOOR, strength * Math.exp(-λ * hrs));
+        const daysSinceUpdate = (Date.now() - ts) / 86400000;
+        const recallCount = (m as any).recall_count || 0;
+        const decayed = Math.max(G3_DECAY_FLOOR, applyDecay(strength, calcium, Math.max(0.01, daysSinceUpdate), recallCount));
 
         // 回溯增强 (白皮书 §4.2): 每次检索 +0.2, 上限10
         const recallBoost = Math.min((m.calcium_score || 0) + 0.2, 10);

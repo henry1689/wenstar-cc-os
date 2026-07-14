@@ -10,6 +10,7 @@ import type { Perception24D } from '../m3/types/perception.js';
 import type { MemorySummary } from './types/index.js';
 import { RETRIEVAL_THRESHOLDS, BATCH_SIZES, MIN_MATCHED_FOR_BREAK } from '../m2/retrieval-constants.js';
 import { LocalCache } from '../app/tools/LocalCache.js';
+import { HippocampalIndex } from '../app/brain/HippocampalIndex.js';
 
 // 关键词检索缓存：相同关键词 30 秒内复用结果
 const keywordCache = new LocalCache<string, DNA[]>({ ttlMs: 30_000, namespace: 'm4_keyword' });
@@ -80,6 +81,24 @@ export class MemoryRetriever {
         return cached.slice(0, limit);
       }
     }
+
+    // ─── 🧠 0. 海马体稀疏索引查询（先查索引，再扫库）───
+    let indexHit = false;
+    let indexedIds: string[] = [];
+    try {
+      const sqlite = (this.storage as any).getSQLite?.();
+      if (sqlite && options?.perception) {
+        const hIndex = new HippocampalIndex(sqlite);
+        const sig = hIndex.computeSignature(locusPath, entities, options.perception);
+        const locs = hIndex.lookup(sig);
+        if (locs && locs.length > 0) {
+          indexHit = true;
+          indexedIds = locs;
+          // 如果经验摘要已存在（δ 节律归纳后回写），直接注入上下文
+          // 此处仅记录命中状态，经验摘要由 M4Orchestrator 处理
+        }
+      }
+    } catch { /* 索引查询失败不阻塞 */ }
 
     // ─── 1. 按话题前缀检索（基于分类树路由） ───
     const byLocus = await this.storage.findByLocus(locusPath, { limit: 20 });
@@ -159,10 +178,63 @@ export class MemoryRetriever {
       }
     }
 
-    // 4. 合并去重
+    // 🔥 3.5 双螺旋 state_spines 检索：从语义向量分片库直接读取候选
+    const bySpine: DNA[] = [];
+    if (options?.perception) {
+      try {
+        const sqlite = (this.storage as any).getSQLite?.();
+        if (sqlite && typeof sqlite.queryAll === 'function') {
+          const p = options.perception;
+          const spineRows = sqlite.queryAll(
+            `SELECT s.global_uid, s.dimension_id, s.value, s.timestamp_ms
+             FROM state_spines s
+             WHERE s.dimension_id IN (1, 2, 5, 13)
+               AND s.timestamp_ms > ?
+             ORDER BY s.timestamp_ms DESC LIMIT 200`,
+            [Date.now() - 30 * 86400000]
+          );
+          if (spineRows && spineRows.length > 0) {
+            const spineMap = new Map<string, { dims: Map<number, number>; ts: number }>();
+            for (const row of spineRows) {
+              const uid = row.global_uid as string;
+              if (!spineMap.has(uid)) spineMap.set(uid, { dims: new Map(), ts: row.timestamp_ms as number });
+              const entry = spineMap.get(uid)!;
+              entry.dims.set(row.dimension_id as number, row.value as number);
+            }
+            const targetDims = [p.pleasure ?? 0, p.arousal ?? 0, p.intimacy ?? 0, p.intimacy ?? 0];
+            for (const [uid, entry] of spineMap) {
+              const vec: number[] = [
+                entry.dims.get(1) ?? 0.5,
+                entry.dims.get(2) ?? 0.5,
+                entry.dims.get(5) ?? 0.5,
+                entry.dims.get(13) ?? 0.5,
+              ];
+              let dot = 0, nA = 0, nB = 0;
+              for (let i = 0; i < 4; i++) { dot += vec[i] * targetDims[i]; nA += vec[i] * vec[i]; nB += targetDims[i] * targetDims[i]; }
+              const sim = nA && nB ? (dot / (Math.sqrt(nA) * Math.sqrt(nB)) + 1) / 2 : 0.5;
+              if (sim > 0.3) {
+                bySpine.push({
+                  branch_id: uid, locus_path: '', taxonomy_version: '1.0',
+                  seq_pos: 0, leaf_zone: 'language_semantic_zone', ref: '',
+                  entity_genes: [], raw_input: '', created_at: new Date(entry.ts).toISOString(),
+                  calcium_score: sim * 10, calcium_level: Math.min(3, Math.floor(sim / 0.25)),
+                } as any);
+              }
+            }
+            if (bySpine.length > 0) {
+              console.log('[M4-DualHelix] state_spines: ' + bySpine.length + ' candidates');
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[M4-DualHelix] 检索失败:', err);
+      }
+    }
+
+    // 4. 合并去重（加入 bySpine 源）
     const seen = new Set<string>();
     let merged: DNA[] = [];
-    for (const dna of [...byEmotion, ...byKeyword, ...byLocus]) {
+    for (const dna of [...byEmotion, ...byKeyword, ...bySpine, ...byLocus]) {
       if (!seen.has(dna.branch_id) && merged.length < limit) {
         seen.add(dna.branch_id);
         merged.push(dna);
@@ -258,7 +330,97 @@ export class MemoryRetriever {
       sessionCache.set(cacheKey, merged).catch(() => {});
     }
 
+    // 🧠 海马体索引: 命中时优先排序 / 未命中时回写索引
+    if (indexHit && indexedIds.length > 0) {
+      // 索引命中的记忆排到最前面
+      const idSet = new Set(indexedIds);
+      const indexed: DNA[] = [];
+      const others: DNA[] = [];
+      for (const d of merged) {
+        (idSet.has(d.branch_id) ? indexed : others).push(d);
+      }
+      merged = [...indexed, ...others];
+    } else if (!indexHit && merged.length > 0) {
+      // 未命中 → 写入索引，下次就能走快通道
+      try {
+        const sqlite = (this.storage as any).getSQLite?.();
+        if (sqlite && options?.perception) {
+          const hIndex = new HippocampalIndex(sqlite);
+          const sig = hIndex.computeSignature(locusPath, entities, options.perception);
+          hIndex.store(sig, merged.slice(0, 5).map(d => d.branch_id));
+        }
+      } catch { /* 索引写入失败不阻塞 */ }
+    }
+
+    // 🧠 V3.1 记忆再巩固: 检索后异步更新元数据（同session去重，只改元数据不篡改内容）
+    if (merged.length > 0) {
+      setImmediate(() => this._reconsolidateAsync(merged, options?.perception));
+    }
+
     return merged;
+  }
+
+  /** V3.1 记忆再巩固: 检索触发突触更新（人脑 reconsolidation 机制） */
+  private _reconsolidateAsync(memories: DNA[], currentPerception?: Perception24D): void {
+    try {
+      const sqlite = (this.storage as any).getSQLite?.();
+      if (!sqlite) return;
+
+      // 同session去重: 使用内存 Set 防止每轮重复更新同一条
+      if (!(this as any).__reconsolidatedIds) (this as any).__reconsolidatedIds = new Set<string>();
+      const done: Set<string> = (this as any).__reconsolidatedIds;
+
+      for (const mem of memories) {
+        const id = mem.branch_id || (mem as any).seq_pos?.toString();
+        if (!id || done.has(id)) continue;
+        done.add(id);
+
+        try {
+          // ① recall_count +1
+          sqlite.writeRaw(
+            "UPDATE memories SET recall_count = COALESCE(recall_count, 0) + 1 WHERE id = ?", [id]
+          );
+
+          // ② 钙化小幅增强
+          const newCa = Math.min(10, (mem.calcium_score || 0.5) + 0.15);
+          sqlite.writeRaw(
+            "UPDATE memories SET calcium_score = MAX(calcium_score, ?) WHERE id = ?", [newCa, id]
+          );
+
+          // ③ 强度平滑迭代: 基于情感匹配度微调强度
+          if (currentPerception) {
+            const oldStrength = (mem as any).effective_strength || 1.0;
+            // 比较当前 arousal 与记忆原始 arousal（同尺度 [-1,1]），而非 calcium_score
+            let origArousal = 0.5;
+            try {
+              const orig = JSON.parse((mem as any).perception_json || '{}');
+              if (typeof orig.arousal === 'number') origArousal = orig.arousal;
+            } catch {}
+            const arousalDiff = Math.abs((currentPerception.arousal || 0) - origArousal);
+            const matchScore = Math.max(0, 1 - arousalDiff);
+            const newStrength = oldStrength * 0.95 + 0.05 * matchScore;
+            sqlite.writeRaw(
+              "UPDATE memories SET effective_strength = ?, strength_updated_at = ? WHERE id = ?",
+              [newStrength, new Date().toISOString(), id]
+            );
+
+            // ④ 情绪差异感知追加: 当前 pleasure ≠ 原始时叠加新维度
+            const origPleasure = (() => { try { return JSON.parse((mem as any).perception_json || '{}').pleasure || 0; } catch { return 0; } })();
+            const currPleasure = currentPerception.pleasure || 0;
+            if (Math.abs(currPleasure - origPleasure) > 0.3) {
+              const v2 = JSON.stringify({ pleasure: currPleasure, arousal: currentPerception.arousal, dominance: currentPerception.dominance, tagged_at: new Date().toISOString() });
+              sqlite.writeRaw(
+                "UPDATE memories SET perception_v2 = ? WHERE id = ?",
+                [v2, id]
+              );
+            }
+          }
+        } catch { /* 单条失败不阻塞 */ }
+      }
+
+      // 防泄漏: >500条时清理旧记录
+      if (done.size > 500) { const arr = [...done]; done.clear(); arr.slice(-200).forEach((s: string) => done.add(s)); }
+    } catch { /* 再巩固整体失败不阻塞 */ }
   }
 
   /**

@@ -19,6 +19,11 @@ import { FamilyGraph } from './FamilyGraph.js';
 import { rerank } from './Reranker.js';
 import { decompose } from './QueryDecomposer.js';
 
+// 海马体三突触回路组件
+import { PatternSeparator } from '../app/brain/PatternSeparator.js';
+import { PatternCompleter } from '../app/brain/PatternCompleter.js';
+import { HippocampalIndex } from '../app/brain/HippocampalIndex.js';
+
 // P0-4: FG 摘要 30s 缓存
 interface FGCacheEntry {
   familySummary: any;
@@ -123,6 +128,64 @@ export class M4Orchestrator {
         } as DNA)).filter(Boolean);
       } catch (err) {
         console.warn('[M4] Reranker 失败，使用原顺序:', err);
+      }
+    }
+
+    // ── 🧠 海马体三突触回路: DG → CA3 → CA1 ──
+    // DG（齿状回）：模式分离 — 去重相似记忆，选出最具区分度的
+    // CA3：模式补全 — 从片段线索补全缺失的上下文维度
+    // CA1：输出整合 — 排优先级，返回最终记忆列表
+    let hippocampalResult: {
+      indexHit: boolean; dgDeduped: number; ca3CompletedDimensions: string[];
+      ca3EnhancedQuery: string; finalIds: string[];
+    } = { indexHit: false, dgDeduped: 0, ca3CompletedDimensions: [], ca3EnhancedQuery: '', finalIds: [] };
+
+    if (memories.length > 0) {
+      try {
+        const sqlite = (this.memoryRetriever as any).storage?.getSQLite?.();
+        if (sqlite) {
+          const hIndex = new HippocampalIndex(sqlite);
+          const separator = new PatternSeparator();
+          const completer = new PatternCompleter();
+
+          // DG: 模式分离
+          const dgResult = separator.separate(memories, 5);
+
+          // CA3: 模式补全
+          const ca3Result = completer.complete(rawInput, dgResult.distinct);
+
+          // CA1: 输出整合
+          const ca1Result = hIndex.integrate(dgResult, ca3Result, false);
+
+          hippocampalResult = {
+            indexHit: ca1Result.indexHit,
+            dgDeduped: ca1Result.dgDeduped,
+            ca3CompletedDimensions: ca1Result.ca3CompletedDimensions,
+            ca3EnhancedQuery: ca1Result.ca3EnhancedQuery,
+            finalIds: ca1Result.finalIds,
+          };
+
+          // 按 CA1 输出重新排序 memories
+          if (ca1Result.finalIds.length > 0) {
+            const idSet = new Set(ca1Result.finalIds);
+            const reordered = ca1Result.finalIds
+              .map(id => memories.find(m => (m.branch_id || m.seq_pos?.toString()) === id))
+              .filter(Boolean) as DNA[];
+            // 追加未被 CA1 选中的但仍有价值的
+            for (const m of memories) {
+              if (!idSet.has(m.branch_id || m.seq_pos?.toString() || '')) {
+                reordered.push(m);
+              }
+            }
+            memories = reordered;
+          }
+
+          if (hippocampalResult.dgDeduped > 0) {
+            console.log(`[M4·海马体] DG 去重 ${hippocampalResult.dgDeduped} 条 | CA3 补全 ${hippocampalResult.ca3CompletedDimensions.length} 维 | CA1 输出 ${hippocampalResult.finalIds.length} 条`);
+          }
+        }
+      } catch (err) {
+        console.warn('[M4·海马体] 三突触回路异常，降级使用 Reranker 输出:', err);
       }
     }
 

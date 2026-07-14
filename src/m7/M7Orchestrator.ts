@@ -102,6 +102,7 @@ export class M7Orchestrator {
       { key: 'hot_topics',    fn: () => this.linkHotTopics() },
       { key: 'self_evolve',   fn: () => this.extractUserPrefAndOptimizeSelf() },
       { key: 'person_review', fn: () => this.digImportantPersonEvent() },
+      { key: 'behavior_pattern', fn: () => this.extractBehaviorPatterns() },
     ];
     for (const mod of modules) {
       if (this.isModuleCircuitBroken(mod.key)) continue;
@@ -416,4 +417,110 @@ export class M7Orchestrator {
     }
   }
 
+  /** Module 5: 行为规律提炼 → 写入知识库 (Phase 2 自学习) */
+  private async extractBehaviorPatterns(): Promise<void> {
+    if (this.alreadyRanToday('m5')) return;
+    const storage = this._storageRef;
+    const kb = this.knowledgeBase;
+    if (!storage || !kb) return;
+    try {
+      const sqlite = typeof storage.getSQLite === 'function' ? storage.getSQLite() : null;
+      if (!sqlite) return;
+
+      const patterns: Array<{ title: string; content: string; tags: string[] }> = [];
+
+      // ① 从高钙记忆提取睡眠/作息模式
+      const lateNights = sqlite.queryAll(
+        `SELECT raw_input, created_at FROM memories
+         WHERE (raw_input LIKE '%失眠%' OR raw_input LIKE '%睡不着%' OR raw_input LIKE '%熬夜%' OR raw_input LIKE '%没睡好%')
+           AND calcium_score >= 0.3
+         ORDER BY created_at DESC LIMIT 20`
+      );
+      if (lateNights && lateNights.length >= 3) {
+        patterns.push({
+          title: '行为模式: 睡眠问题',
+          content: `用户在近期对话中${lateNights.length}次提到睡眠问题（失眠/熬夜/没睡好），`
+                 + `最近一次提及：${(lateNights[0]?.raw_input || '').substring(0, 80)}。`
+                 + `建议在夜间对话中主动关心用户睡眠状态。`,
+          tags: ['behavior_pattern', 'sleep', 'health'],
+        });
+      }
+
+      // ② 从高钙记忆提取饮食/作息模式
+      const meals = sqlite.queryAll(
+        `SELECT raw_input FROM memories
+         WHERE (raw_input LIKE '%吃饭%' OR raw_input LIKE '%饿了%' OR raw_input LIKE '%没吃%' OR raw_input LIKE '%早餐%' OR raw_input LIKE '%午餐%' OR raw_input LIKE '%晚餐%')
+           AND calcium_score >= 0.3
+         ORDER BY created_at DESC LIMIT 15`
+      );
+      if (meals && meals.length >= 3) {
+        patterns.push({
+          title: '行为模式: 饮食规律',
+          content: `用户在近期对话中${meals.length}次提及饮食相关话题，`
+                 + `最近：${(meals[0]?.raw_input || '').substring(0, 80)}。`
+                 + `可关注用户的饮食习惯变化。`,
+          tags: ['behavior_pattern', 'diet', 'daily'],
+        });
+      }
+
+      // ③ 从高钙记忆提取工作/疲劳模式
+      const workFatigue = sqlite.queryAll(
+        `SELECT raw_input FROM memories
+         WHERE (raw_input LIKE '%加班%' OR raw_input LIKE '%累了%' OR raw_input LIKE '%好累%' OR raw_input LIKE '%疲惫%' OR raw_input LIKE '%忙完%')
+           AND calcium_score >= 0.3
+         ORDER BY created_at DESC LIMIT 15`
+      );
+      if (workFatigue && workFatigue.length >= 2) {
+        patterns.push({
+          title: '行为模式: 工作疲劳',
+          content: `用户在近期对话中${workFatigue.length}次提到疲劳/加班，工作压力较大。`
+                 + `最近：${(workFatigue[0]?.raw_input || '').substring(0, 80)}。`
+                 + `在用户提到工作时注意安抚情绪。`,
+          tags: ['behavior_pattern', 'work', 'fatigue'],
+        });
+      }
+
+      // ④ 从近期对话频率估算"活跃时段"
+      const recentMessages = sqlite.queryAll(
+        `SELECT created_at FROM conversations ORDER BY created_at DESC LIMIT 50`
+      );
+      if (recentMessages && recentMessages.length >= 10) {
+        const hourCounts: Record<number, number> = {};
+        for (const msg of recentMessages) {
+          const h = new Date(msg.created_at as string).getHours();
+          hourCounts[h] = (hourCounts[h] || 0) + 1;
+        }
+        const peakHours = Object.entries(hourCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([h]) => `${h}时`);
+        patterns.push({
+          title: '行为模式: 活跃时段',
+          content: `用户最近${recentMessages.length}条消息的活跃高峰时段为：${peakHours.join('、')}。`
+                 + `在高峰时段可主动发起对话。`,
+          tags: ['behavior_pattern', 'activity', 'routine'],
+        });
+      }
+
+      // 写入知识库
+      let written = 0;
+      for (const p of patterns) {
+        const existing = await kb.search(p.title, 1);
+        if (existing && existing.length > 0) continue;
+        await kb.add({
+          title: p.title,
+          content: p.content,
+          source_type: 'dream_behavior',
+          tags: p.tags,
+          classification: '梦境洞察',
+          interaction_type: 'other',
+        });
+        written++;
+      }
+
+      console.log(`[Dream] 行为模式提炼: ${written}/${patterns.length} 条新洞察`);
+    } catch (err) {
+      console.warn('[Dream] 行为模式提炼失败:', err);
+    }
+  }
 }

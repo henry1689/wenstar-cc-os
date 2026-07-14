@@ -86,6 +86,8 @@ import { handleVaultRoutes } from './server-vault-routes.js';
 import { handleOpsRoutes } from './server-ops-routes.js';
 import { handleKnowledgeRoutes } from './server-knowledge-routes.js';
 import { handleKnowledgeFileRoutes } from './server-knowledge-file-routes.js';
+import { handleBrainRoutes } from './server-brain-routes.js';
+import { handleFGRoutes } from './server-fg-routes.js';
 import { exportHookMonitor, importHookMonitor, startBackupDaemon } from '../hooks/backup-daemon.js';
 import { Orchestrator } from '../engine/orchestrator.js';
 import { setProbeWriter } from '../app/roleplay/RoleplayProbeReporter.js';
@@ -386,6 +388,7 @@ async function initPipeline(): Promise<void> {
   await memoryVault.initialize();
   familyGraph = new FamilyGraph(DB_PATH);
   await familyGraph.initialize();
+  (globalThis as any).__familyGraph = familyGraph;
   m4 = new M4Orchestrator(storage, familyGraph, knowledgeBase);
   await m4.initialize();
   // 使用与 FusionStorageAdapter 共享的 ConversationDB（三段存储③砂金库）
@@ -428,21 +431,47 @@ async function initPipeline(): Promise<void> {
     storageRef: storage,
   });
 
+  // ── 海马体组件实例化（不再启动独立定时器，统一由 HippocampusRhythmCoordinator 调度）──
   inductionScheduler = new InductionScheduler(storage, m7.queue);
-  inductionScheduler.start();
-  console.log('  归纳调度器已启动 ✓');
+  // inductionScheduler.start() — 已由 coordinator 的 InductionScheduler 任务替代
+  console.log('  归纳调度器已就绪 ✓');
   consolidationQueue = new ConsolidationQueue(storage, m7.queue);
-  consolidationQueue.start();
-  console.log('  巩固队列已启动 ✓');
+  // consolidationQueue.start() — 已由 coordinator 的 ConsolidationQueue 任务替代
+  console.log('  巩固队列已就绪 ✓');
 
-  m7Timer = startM7Interval(m7);
-  console.log('  梦境引擎已启动 ✓');
+  // m7Timer = startM7Interval(m7) — 已由 coordinator 的 M7-DreamEngine 任务替代
+  console.log('  梦境引擎已就绪 ✓');
+
+  // 每日维护调度器 — 创建实例但不启动独立定时器，coordinator 通过 dm.runOnce() 触发
+  try {
+    const { DailyMaintenanceScheduler } = await import('../app/learning/DailyMaintenanceScheduler.js');
+    const dailyMaint = new DailyMaintenanceScheduler(storage, null);
+    // dailyMaint.start() — 已由 coordinator 的 DailyMaintenance 任务替代
+    (globalThis as any).__dailyMaintenanceScheduler = dailyMaint;
+    console.log('  每日维护调度器已就绪 ✓');
+  } catch (err) {
+    console.warn('  每日维护调度器就绪失败:', err);
+  }
 
   m6 = new M6Orchestrator();
   // 延迟注入 M6 到 M7（修复梦境→演化链路）
   if (m7) m7.setM6(m6);
+  // 🔥 注入 M6 到每日维护调度器（人格反哺链路）
+  const _dailyMaint = (globalThis as any).__dailyMaintenanceScheduler;
+  if (_dailyMaint) _dailyMaint.setM6(m6);
   // 注入 M8 到 M6（疤痕冲突检查）
   m6.setM8(m8);
+
+  // 🔥 天权海马体节律调度器 — 统一调度所有海马体组件
+  try {
+    const { assembleAndStartHippocampus } = await import('../app/brain/assembleHippocampus.js');
+    const hrc = assembleAndStartHippocampus({
+      storage, m7, consolidationQueue, inductionScheduler,
+    });
+    console.log('  天权海马体节律调度器已启动 ✓');
+  } catch (err) {
+    console.warn('  天权海马体节律调度器启动失败:', err);
+  }
 
   // P0: 角色切换广播 — 系统级隔离
   PersonaRegistry.onSwitch(function(personaId) {
@@ -990,7 +1019,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   })) return;
 
   if (await handleKnowledgeRoutes({
-    req, res, url, knowledgeBase, readBody,
+    req, res, url, knowledgeBase, storage, readBody,
+  })) return;
+
+  if (await handleBrainRoutes({
+    req, res, url, knowledgeBase, storage, masterProfile, readBody,
+  })) return;
+
+  if (await handleFGRoutes({
+    req, res, url, storage, readBody,
   })) return;
 
   if (await handleKnowledgeFileRoutes({
