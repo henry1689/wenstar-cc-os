@@ -140,14 +140,13 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     return true;
   }
 
-  // ── 清除对话历史 ──
+  // ── 清除对话历史（仅清前端缓存，不动数据库） ──
   if (req.method === 'POST' && url.pathname === '/api/chat/clear') {
     try {
-      const sqlite = storage.getSQLite();
-      if (sqlite) {
-        sqlite.writeRaw("DELETE FROM conversations WHERE is_test = 0 OR is_test IS NULL");
-        deps.conversationHistory.length = 0;
-      }
+      // 只清内存中的 conversationHistory，不删数据库
+      deps.conversationHistory.length = 0;
+      deps.saveConversationHistory();
+      console.log('[Clear] 前端缓存已清除');
       res.writeHead(200); res.end(JSON.stringify({ ok: true }));
     } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: String(err) })); }
     return true;
@@ -175,21 +174,21 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     return true;
   }
 
-  // ── 对话历史 ──
+  // ── 对话历史（优先返回 conversationHistory，被清除后返回空） ──
   if (req.method === 'GET' && url.pathname === '/api/conversation') {
     try {
-      const sqlite = storage?.getSQLite();
-      if (sqlite) {
-        const rows = sqlite.queryAll("SELECT role, content, timestamp FROM conversations WHERE is_test = 0 OR is_test IS NULL ORDER BY rowid DESC LIMIT 200");
-        if (rows.length > 0) {
-          const turns = rows.reverse().map(r => ({ role: r.role, content: r.content, timestamp: r.timestamp }));
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ turns }));
-          return true;
-        }
+      // 🔑 优先返回内存中的 conversationHistory（尊重用户清除操作）
+      //    如果内存为空（用户点过清除按钮或新窗口），不再回退到数据库
+      if (deps.conversationHistory.length === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ turns: [] }));
+        return true;
       }
+      const turns = deps.conversationHistory
+        .filter((t: any) => t.role === 'user' || t.role === 'assistant')
+        .map((t: any) => ({ role: t.role, content: t.content, timestamp: t.timestamp }));
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ turns: [] }));
+      res.end(JSON.stringify({ turns }));
     } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
     return true;
   }

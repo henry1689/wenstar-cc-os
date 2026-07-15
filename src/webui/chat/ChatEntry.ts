@@ -65,6 +65,8 @@ export async function runChatEntry(
       const allNamesFiltered = allNames.filter(function(n: string) { return !COMMON_PHRASES.has(n); });
       for (const name of allNamesFiltered) {
         if (name === '我' || name.length < 2) continue;
+        // FG真人禁止扮演（读 getPersonProfile.roleplay_forbidden）
+        try { const _p = fg.getPersonProfile(name); if ((_p as any)?.roleplay_forbidden) continue; } catch {}
         if (message.startsWith(name + '，') || message.startsWith(name + ',') ||
             message.startsWith(name + ' ') || message.startsWith(name + ':')) {
           state._currentRoleplay = name;

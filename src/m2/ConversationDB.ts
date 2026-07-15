@@ -203,7 +203,7 @@ export class ConversationDB {
   findByTimeRange(start: string, end: string, limit = 10): ConversationRow[] {
     this.ensureReady();
     const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp FROM conversations WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?`,
+      `SELECT id, role, content, timestamp FROM conversations WHERE timestamp >= ? AND timestamp <= ? AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp ASC LIMIT ?`,
     );
     stmt.bind([start, end, limit]);
     const rows: ConversationRow[] = [];

@@ -163,6 +163,115 @@ let _currentCharacterClass: 'A'|'B'|'C'|null = null;
 let _currentPortrait: string | null = null;
 let _lastRpInteractionTime = 0;  // 📜 上次角色扮演互动时间（用于15分钟超时自动退出）
 
+/**
+ * 🎭 构建当前扮演角色的关系上下文（供 CoreMemory 覆写 + prompt 注入）
+ * 读取 FG 图谱中该角色与鸿艺的关系、年龄、家族网络，生成称呼铁律。
+ */
+function _buildRoleRelationContext(ctx_m4: any, charName: string): string {
+  try {
+    const fg = ctx_m4?.getFamilyGraph?.();
+    if (!fg) return '';
+    const prof = fg.getPersonProfile(charName);
+    if (!prof) return '';
+    const age = prof.age || 0;
+    const rel = prof.relation_to_user || '';
+    const parts: string[] = [];
+
+    // 基础身份
+    parts.push(`你是${charName}`);
+    if (age) parts.push(`${age}岁`);
+    if (rel) parts.push(`与鸿艺的关系是"${rel.replace(/[（(].*$/, '')}"`);
+
+    // 称呼铁律
+    if (rel.includes('同事') || rel.includes('客户') || rel.includes('老板') || (age >= 16 && !rel.includes('妹妹') && !rel.includes('弟弟'))) {
+      parts.push('你叫鸿艺"鸿艺"或"艺哥"（你们是平辈）');
+    } else if (age < 16 || rel.includes('妹妹') || rel.includes('弟弟')) {
+      parts.push('你叫鸿艺"鸿叔"（你年纪小）');
+    }
+
+    // 家族成员
+    if (typeof fg.getRelatedPersons === 'function') {
+      const related = fg.getRelatedPersons(charName);
+      if (related && related.length > 0) {
+        const familyMap: Record<string, string> = {
+          mother_of: '妈妈', father_of: '爸爸', elder_sister_of: '姐姐',
+          younger_sister_of: '妹妹', daughter: '女儿', son: '儿子',
+          aunt_of: '阿姨', uncle_of: '叔叔', cousin_of: '堂/表亲',
+        };
+        const names = related.slice(0, 5).map((r: any) => {
+          const label = familyMap[r.relation] || r.relation || '亲属';
+          return `${r.name}(${label})`;
+        });
+        if (names.length) parts.push('你的家人：' + names.join('、'));
+      }
+    }
+
+    return '。' + parts.join('。') + '。';
+  } catch { return ''; }
+}
+
+/**
+ * 🔋 Token节省模式 — 时间/天气/生理按需一枪式触发
+ * 仅在用户消息中提到时间/天气/生理反应时才运行对应计算，完成后立即停止。
+ */
+function _lazyTemporalFire(message: string, ctx: any): void {
+  if (!(globalThis as any).__lazyTemporalState) {
+    (globalThis as any).__lazyTemporalState = { lastQueryTs: Date.now() };
+  }
+  const state = (globalThis as any).__lazyTemporalState;
+  const now = Date.now();
+
+  // 🕐 时间查询
+  if (/几点了|时间|几点|现在.*时间|今天.*几号|星期几|什么时候/.test(message)) {
+    const deltaMs = now - state.lastQueryTs;
+    const deltaStr = deltaMs > 3600000
+      ? `（距上次时间查询已过 ${Math.round(deltaMs / 3600000)} 小时 ${Math.round((deltaMs % 3600000) / 60000)} 分钟）`
+      : deltaMs > 60000
+      ? `（距上次查询 ${Math.round(deltaMs / 60000)} 分钟）`
+      : '';
+    state.lastQueryTs = now;
+    // 写入 engine_store 供 LLM 读取
+    try {
+      const esql = ctx.storage?.getSQLite?.();
+      esql?.writeRaw?.(
+        "INSERT OR REPLACE INTO engine_store (key, value) VALUES ('last_time_query', ?)",
+        [new Date(now).toISOString()]
+      );
+    } catch {}
+    console.log(`[LazyTemporal] 🕐 时间查询触发 ${deltaStr}`);
+  }
+
+  // 🌤 天气查询
+  if (/天气|下雨|晴天|阴天|刮风|下雪|气温|温度|热不热|冷不冷/.test(message)) {
+    try {
+      const esql = ctx.storage?.getSQLite?.();
+      if (esql) {
+        esql.writeRaw?.(
+          "INSERT OR REPLACE INTO engine_store (key, value) VALUES ('last_weather_query', ?)",
+          [new Date(now).toISOString()]
+        );
+      }
+    } catch {}
+    console.log('[LazyTemporal] 🌤 天气查询触发');
+  }
+
+  // 💓 生理反应查询
+  if (/心跳|脉搏|血压|体温|发烧|生理期|经期|月经|排卵|怀孕/.test(message)) {
+    try {
+      const esql = ctx.storage?.getSQLite?.();
+      if (esql) {
+        esql.writeRaw?.(
+          "INSERT OR REPLACE INTO engine_store (key, value) VALUES ('last_physiology_query', ?)",
+          [new Date(now).toISOString()]
+        );
+      }
+    } catch {}
+    console.log('[LazyTemporal] 💓 生理查询触发');
+  }
+
+  state.lastQueryTs = now;
+}
+
 // 🏗️ P1-1: 角色情感快照隔离
 
 import { runChatEntry } from './chat/ChatEntry.js';
@@ -291,6 +400,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     let _ruleEngineBlocked = entryResult.ruleEngineBlocked;
     let _ruleEngineReply = entryResult.ruleEngineReply;
     const _weatherContext = entryResult.weatherContext || '';
+
+    // 🔋 Token节省模式 — 时间/天气/生理按需一枪式触发
+    _lazyTemporalFire(message, ctx);
 
     // 📸 人物全方位档案提取
     console.log('[PersonProfile] 检查开始, ctx.m4=' + (!!ctx.m4) + ' m4类型=' + (typeof ctx.m4));
@@ -489,7 +601,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       console.warn('[ProfileExtract] 答案提取失败:', (err as Error).message);
     }
 
-    // 🧠 海马体新颖度检测: M1 编码后评估信息新颖度 → 调整钙化优先级
+    // 🧠 海马体新颖度检测 (V4.0 @deprecated: 长期迁移到 SceneSnapshotBuilder)
     let _noveltyMultiplier = 1.0;
     try {
       const _nsql = ctx.storage.getSQLite?.();
@@ -1148,6 +1260,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         _lastRpInteractionTime = 0;  // 📜 重置超时计时器
         _rpLoadedPersons.clear();
         clearRPCache();  // 🏗️ 清除角色扮演域缓存
+        // 恢复 CoreMemory 的玉瑶 persona
+        try { (globalThis as any).__coreMemory?.clearRoleplayOverride?.(); } catch {}
         _rpJustExited = 3;  // 🎭 三轮冷却：每次递减，退出后持续3轮注入身份恢复
         console.log('[Roleplay] 退出角色扮演，完整清理完成');
     }
@@ -1262,6 +1376,14 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     if (rpMatch) {
       const character = rpMatch[1].replace(/[吧呗了试试看看一下玩玩]$/, '').trim();
       if (character.length >= 2) {
+        // FG真人禁止扮演（读 getPersonProfile.roleplay_forbidden）
+        let _rpForbidden = false;
+        try { const _fp = ctx.m4?.getFamilyGraph?.()?.getPersonProfile(character); if ((_fp as any)?.roleplay_forbidden) _rpForbidden = true; } catch {}
+        if (_rpForbidden) {
+          console.log('[Roleplay] 🚫 禁止扮演FG真人: ' + character);
+          _currentRoleplay = null;
+          // 跳过所有角色扮演进入逻辑，继续处理为普通对话
+        } else {
         // 🏗️ P1-2: 角色切换屏障 — 从 A→B 时清理 A 的残留
         const _rpSwitching = _currentRoleplay && _currentRoleplay !== character;
         if (_rpSwitching) {
@@ -1361,6 +1483,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           }
         } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }
       }
+      } // _rpForbidden else
     }
 
     // ── 跨轮次角色扮演锁定（通过角色扮演域管线） ──
@@ -1662,7 +1785,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
       if (!reply && isFactualRecallQuery) {
         const factTexts = new Set<string>();
-        for (const turn of ctx.conversationHistory.filter((t) => t.role === 'user')) {
+        for (const turn of ctx.conversationHistory.filter((t: any) => t.role === 'user' && !t.rpChar)) {
           if (turn.content) factTexts.add(turn.content);
         }
         for (const memory of emotionalMemories) {
@@ -1690,7 +1813,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           try {
             for (const term of factTerms) {
               const rows = ctx.conversationDB?.queryAll?.(
-                "SELECT content FROM conversations WHERE role = 'user' AND content LIKE ? ORDER BY timestamp DESC LIMIT 8",
+                "SELECT content FROM conversations WHERE role = 'user' AND content LIKE ? AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp DESC LIMIT 8",
                 ['%' + term + '%']
               ) || [];
               for (const row of rows as Array<{ content?: string }>) {
@@ -1746,8 +1869,8 @@ let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('
 // 场景是生成的产物，不是记忆的内容。只保留语义/对话内容，不留场景。
 memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = knowledgeBaseText;
 
-      // 🔥 Core Memory: 注入核心记忆块（海马体快速访问缓存）
-      // 🔥 睡眠期巩固: 记录活跃时间（每次用户消息都更新时间戳）
+      // 🔥 Core Memory (V4.0 @deprecated: 长期迁移到 PFC directive.payload)
+      // 🔥 睡眠期巩固 (V4.0 @deprecated: 长期迁移到 PFC.process())
       try {
         const { SleepTimeConsolidator } = await import('../app/brain/SleepTimeConsolidator.js');
         const _stSqlite = ctx.storage.getSQLite?.();
@@ -1769,14 +1892,22 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
         if (seqPos % 10 === 0) _cm.refreshFromProfile().catch(() => {});
         _cm.refreshFromSession(message.substring(0, 80));
         const coreCtx = _cm.getContextWindow();
-        if (coreCtx && finalKnowledgeText) {
+        // 🎭 角色扮演模式：用角色身份覆写 CoreMemory persona 块，阻止"你的名字是玉瑶"泄漏
+        if (_currentRoleplay && typeof _cm.setRoleplayOverride === 'function') {
+          const _rpRelCtx = _buildRoleRelationContext(ctx_m4, _currentRoleplay);
+          _cm.setRoleplayOverride(_currentRoleplay, _rpRelCtx);
+          const _rpCoreCtx = _cm.getContextWindow();
+          if (_rpCoreCtx && finalKnowledgeText) {
+            finalKnowledgeText = _rpCoreCtx + String.fromCharCode(10,10) + finalKnowledgeText;
+          }
+        } else if (coreCtx && finalKnowledgeText) {
           finalKnowledgeText = coreCtx + String.fromCharCode(10,10) + finalKnowledgeText;
         } else if (coreCtx) {
           finalKnowledgeText = coreCtx;
         }
       } catch {} /* Core Memory 不可用不阻塞 */
 
-      // 🧠 海马体经验摘要: 查询 δ 节律归纳的多源融合经验，注入 LLM 上下文
+      // 🧠 海马体经验摘要 (V4.0 @deprecated: 已迁入 KnowledgeAccessFacade)，注入 LLM 上下文
       try {
         const _eSqlite = ctx.storage.getSQLite?.();
         if (_eSqlite && message) {
@@ -1793,7 +1924,7 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
         }
       } catch {} /* 经验摘要不可用不阻塞 */
 
-      // 🧠 V3.1 记忆驱动情绪调节: 查相似经验→输出安抚建议→注入LLM柔性调节
+      // 🧠 V3.1 记忆驱动情绪调节 (V4.0 @deprecated: 长期迁移到 SceneSnapshotBuilder.attachEmotionRegulation): 查相似经验→输出安抚建议→注入LLM柔性调节
       try {
         const _rSqlite = ctx.storage.getSQLite?.();
         if (_rSqlite && emotionalMemories.length > 0 && p) {
@@ -1825,6 +1956,53 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
           }
         }
       } catch {} /* 遗忘指令检测失败不阻塞 */
+
+
+      // ================================================================
+      // V4.0 PFC 统一门控: 前额叶校验 + 守卫消息补充
+      //   旧 ad-hoc 路径全部保留为 fallback，PFC 不可用时不影响对话
+      //   环境变量 WS_DISABLE_PFC=true 可一键回退到旧路径
+      // ================================================================
+      const _pfcEnabled = !process.env['WS_DISABLE_PFC'];
+      (globalThis as any).__pfcDirective = null;
+      if (_pfcEnabled) try {
+        const _pfc = (globalThis as any).__prefrontalCortex;
+        if (_pfc && typeof _pfc.process === 'function') {
+          // 注入会话上下文供 PFC ConstraintValidator 校验使用
+          (globalThis as any).__pfcConversationContext =
+            enrichedHistory.slice(-10).map((t: any) => ({ role: t.role || 'user', content: (t.content || '').substring(0, 200) }));
+          (globalThis as any).__currentRoleplay = _currentRoleplay || null;
+
+          // 构建轻量 SceneSnapshot（不依赖 SnapshotBuilder，直接从上下文提取）
+          const _snap: any = {
+            snapshotId: 'pfc_' + Date.now().toString(36),
+            contextSignature: (dna.locus_path || 'root') + '|' + (p.pleasure > 0.2 ? 'pos' : (p.pleasure < -0.2 ? 'neg' : 'neu')),
+            temporal: { createdAt: new Date().toISOString(), sessionId: String(seqPos) || '', timeOfDay: 'morning', dayOfWeek: new Date().getDay() },
+            spatial: { sceneLabel: '对话中' },
+            entities: { persons: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我').map((g: any) => g.name), topics: [], objects: [] },
+            experienceSummary: (memoryFragments || []).join(' | ').substring(0, 200) || '(无)',
+            emotion: { pleasure: p.pleasure || 0, arousal: p.arousal || 0, intimacy: p.intimacy || 0, trend: 'stable' },
+            memoryPointers: emotionalMemories.map((m: any) => m?.record?.id || '').filter(Boolean),
+            knowledgeRefs: [] as string[],
+            fgEventRefs: [] as string[],
+            calciumScore: decision.enhanced?.calcium_score || 0.5,
+            novelty: { level: 'routine', similarity: 0.5, multiplier: 1.0 },
+          };
+
+          const _pfcInput = { snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message };
+          const _pfcResult = await _pfc.process(_pfcInput, decision);
+          (globalThis as any).__pfcDirective = _pfcResult?.directive || null;
+
+          // 补充 PFC 守卫消息（与现有 allGuardMsgs 叠加，不替换）
+          if (_pfcResult?.directive?.constraints?.violations?.length > 0) {
+            const _pfcGuards = _pfcResult.directive.constraints.violations.join('\n');
+            if (_pfcGuards) {
+              finalKnowledgeText = _pfcGuards + '\n\n' + (finalKnowledgeText || '');
+            }
+          }
+        }
+      } catch (_pfcErr) { /* PFC 不可用不阻塞，fallback 到旧路径 */ }
+
 if (isFactualRecallQuery) {
   finalKnowledgeText = factualRecallGuard + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
 }
@@ -1856,7 +2034,13 @@ if (_currentRoleplay && !getDomainStatus().structured && !finalKnowledgeText.sta
 if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.startsWith('【角色扮演】')) {
   const _rpParts = ctx.clientMsgId.split('||');
   const _rpChar = _rpParts[0].replace('【角色扮演】', '');
-  if (!_rpParts.includes('持续')) {
+  // FG真人禁止扮演
+  let _rpForbidden2 = false;
+  try { const _p2 = ctx.m4?.getFamilyGraph?.()?.getPersonProfile(_rpChar); if ((_p2 as any)?.roleplay_forbidden) _rpForbidden2 = true; } catch {}
+  if (_rpForbidden2) {
+    console.log('[ChatRP] 🚫 禁止扮演FG真人: ' + _rpChar);
+    _currentRoleplay = null;
+  } else if (!_rpParts.includes('持续')) {
     _currentRoleplay = _rpChar;
     console.log('[ChatRP] 🔒 首次角色扮演: ' + _rpChar);
   }
@@ -2603,7 +2787,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
     try {
       const _sql = ctx.storage.getSQLite();
       if (_sql && typeof _sql.queryAll === "function") {
-        const _promoted = autoPromoteCandidatesV2(_sql, 3);
+        const _promoted = /* V4.0 @deprecated: 保留为异步 fire-and-forget，不经过 PFC */ autoPromoteCandidatesV2(_sql, 3);
         for (const _entry of _promoted) {
           console.log("[Promotion] 金库→黑钻(统一状态机): " + (_entry.summary || "").substring(0, 40));
         }
@@ -2739,7 +2923,22 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
     } catch (_ae) { /* 审计日志不阻塞主线 */ }
 
     // 🔥 天权海马体节律调度: 回复完成，释放离线锁，按需切 SWR/DELTA
-    (globalThis as any).__hippocampusCoordinator?.afterResponse();
+    
+    // V4.0 PFC 元认知复盘: 交互后复盘（预测 vs 实际）
+    try {
+      const _pfc2 = (globalThis as any).__prefrontalCortex;
+      if (_pfc2 && typeof _pfc2.afterResponse === 'function' && (globalThis as any).__pfcDirective) {
+        const _outcome = {
+          userAccepted: reply && reply.length > 20,
+          emotionDelta: { pleasure: 0, arousal: 0, intimacy: 0 },
+          taskCompleted: reply && reply.length > 10,
+          notes: 'PFC Phase 1 auto-review',
+        };
+        _pfc2.afterResponse((globalThis as any).__pfcDirective, _outcome).catch(() => {});
+      }
+    } catch (_pfc2Err) { /* PFC 复盘不阻塞 */ }
+
+(globalThis as any).__hippocampusCoordinator?.afterResponse();
 
     return {
 

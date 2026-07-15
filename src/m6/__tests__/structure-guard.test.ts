@@ -207,11 +207,11 @@ describe('[M6守卫] 核心功能不变性', () => {
     expect(conflicts.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('NarrativeBuilder addLayer 钙质不足(calcium<2)不添加', () => {
+  it('NarrativeBuilder addLayer 钙质不足(calcium<1)不添加', () => {
     const manager = new SelfModelManager();
     const builder = new NarrativeBuilder(manager);
     const before = manager.getNarrativeLayers().length;
-    builder.addLayer('测试', '测试', 1);
+    builder.addLayer('测试', '测试', 0.5);
     expect(manager.getNarrativeLayers().length).toBe(before);
   });
 

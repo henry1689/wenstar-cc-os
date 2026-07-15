@@ -42,6 +42,14 @@ export class GlobalSequenceCounter {
     return GlobalSequenceCounter.instance;
   }
 
+  /** 重置实例（测试用） */
+  static resetInstance(): void {
+    const inst = new GlobalSequenceCounter();
+    inst.state = { date: new Date().toISOString().substring(0, 10).replace(/-/g, ''), counter: 0 };
+    inst.initialized = true;
+    GlobalSequenceCounter.instance = inst;
+  }
+
   /** 初始化：从持久化文件恢复状态 */
   init(): void {
     if (this.initialized) return;

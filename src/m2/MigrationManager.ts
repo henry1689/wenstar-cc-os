@@ -177,6 +177,42 @@ const MIGRATIONS: Migration[] = [
       console.log('[Migration] v6 ✅ conversations+global_uid+location_fingerprint');
     },
   },
+  // V4.0: 双脑架构 — 第二大脑→第一大脑同步
+  {
+    version: 7,
+    description: 'V4.0 第二大脑同步: memories.source_type + black_diamond V4字段 + source_tracking',
+    apply: (db: any) => {
+      // memories 表: 加 source_type 区分来源
+      try { db.run("ALTER TABLE memories ADD COLUMN source_type TEXT DEFAULT 'conversation'"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memories_source_type ON memories(source_type)"); } catch {}
+
+      // black_diamond 表: 加 V4 增强字段
+      try { db.run("ALTER TABLE black_diamond ADD COLUMN entry_channel TEXT DEFAULT 'auto'"); } catch {}
+      try { db.run("ALTER TABLE black_diamond ADD COLUMN entry_reason TEXT"); } catch {}
+      try { db.run("ALTER TABLE black_diamond ADD COLUMN stabilization_score REAL DEFAULT 1.0"); } catch {}
+      try { db.run("ALTER TABLE black_diamond ADD COLUMN manual_quota_consumed INTEGER DEFAULT 0"); } catch {}
+      try { db.run("ALTER TABLE black_diamond ADD COLUMN status TEXT DEFAULT 'active'"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_bd_status ON black_diamond(status)"); } catch {}
+
+      // source_tracking 表: MD源文件→记忆条目溯源
+      try {
+        db.run(`CREATE TABLE IF NOT EXISTS source_tracking (
+          id TEXT PRIMARY KEY,
+          source_path TEXT NOT NULL,
+          source_uuid TEXT NOT NULL,
+          source_hash TEXT NOT NULL,
+          memory_id TEXT NOT NULL,
+          synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+          status TEXT NOT NULL DEFAULT 'active'
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_st_source_path ON source_tracking(source_path)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_st_memory_id ON source_tracking(memory_id)");
+        db.run("CREATE INDEX IF NOT EXISTS idx_st_status ON source_tracking(status)");
+      } catch (e) { console.warn('[Migration] source_tracking 表创建失败:', e); }
+
+      console.log('[Migration] v7 ✅ V4.0 第二大脑同步字段');
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════

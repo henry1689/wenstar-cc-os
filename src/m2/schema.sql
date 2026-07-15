@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS memories (
     lunar_term TEXT,
 
     -- P1-4: 多租户命名空间
-    namespace TEXT DEFAULT 'default'
+    namespace TEXT DEFAULT 'default',
+
+    -- V4.0: 来源类型 (conversation | knowledge_vault | manual)
+    source_type TEXT DEFAULT 'conversation'
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_calcium ON memories(calcium_score DESC);
@@ -84,6 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(memory_kind);
 CREATE INDEX IF NOT EXISTS idx_memories_lifecycle ON memories(lifecycle_state);
 CREATE INDEX IF NOT EXISTS idx_memories_thread ON memories(thread_id);
+CREATE INDEX IF NOT EXISTS idx_memories_source_type ON memories(source_type);
 
 -- 实体表
 CREATE TABLE IF NOT EXISTS entities (
@@ -192,6 +196,13 @@ CREATE TABLE IF NOT EXISTS black_diamond (
 );
 CREATE INDEX IF NOT EXISTS idx_black_diamond_emotion ON black_diamond(emotion_tag);
 CREATE INDEX IF NOT EXISTS idx_black_diamond_created ON black_diamond(created_at DESC);
+-- V4.0: 黑钻库增强字段
+ALTER TABLE black_diamond ADD COLUMN entry_channel TEXT DEFAULT 'auto';
+ALTER TABLE black_diamond ADD COLUMN entry_reason TEXT;
+ALTER TABLE black_diamond ADD COLUMN stabilization_score REAL DEFAULT 1.0;
+ALTER TABLE black_diamond ADD COLUMN manual_quota_consumed INTEGER DEFAULT 0;
+ALTER TABLE black_diamond ADD COLUMN status TEXT DEFAULT 'active';
+
 CREATE INDEX IF NOT EXISTS idx_black_diamond_namespace ON black_diamond(namespace);
 
 -- 黑钻倒排索引
@@ -347,3 +358,23 @@ CREATE TABLE IF NOT EXISTS hallucination_log (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hallucination_created ON hallucination_log(created_at);
+
+-- V4.0 Phase 2: MD源文件→记忆条目溯源表
+CREATE TABLE IF NOT EXISTS source_tracking (
+    id TEXT PRIMARY KEY,
+    source_path TEXT NOT NULL,
+    source_uuid TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL DEFAULT 'active'
+);
+CREATE INDEX IF NOT EXISTS idx_st_source_path ON source_tracking(source_path);
+CREATE INDEX IF NOT EXISTS idx_st_memory_id ON source_tracking(memory_id);
+CREATE INDEX IF NOT EXISTS idx_st_status ON source_tracking(status);
+
+-- V4.0 Phase 3: memories 来源类型索引
+CREATE INDEX IF NOT EXISTS idx_memories_source_type ON memories(source_type);
+
+-- V4.0 Phase 5: 黑钻库 status 索引
+CREATE INDEX IF NOT EXISTS idx_bd_status ON black_diamond(status);

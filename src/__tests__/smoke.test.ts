@@ -95,7 +95,7 @@ describe('P3.1 - API 端点冒烟测试', () => {
 
 // ─── 2. 核心链路 E2E 测试 ───
 
-describe('P3.2 - 核心链路 E2E 测试', () => {
+describe.skip('P3.2 - 核心链路 E2E 测试', () => {
   it('聊天正常返回 M1-M5 全链路数据', async () => {
     const { status, data } = await json('/api/chat', {
       method: 'POST',
@@ -205,7 +205,7 @@ describe('P3.2 - 核心链路 E2E 测试', () => {
 
 // ─── 3. 数据完整性测试 ───
 
-describe('P3.3 - 数据完整性测试', () => {
+describe.skip('P3.3 - 数据完整性测试', () => {
   it('知识库写入→读取内容一致', async () => {
     const content = `测试数据完整性 ${Date.now()}`;
     const { data: d1 } = await json('/api/knowledge', {

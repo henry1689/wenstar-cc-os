@@ -109,6 +109,11 @@ const DATA_DIR = path.join(PROJECT_ROOT, 'data', 'webui');
 const DB_PATH = path.join(DATA_DIR, 'knowledge', 'family_graph.db');
 const HTML_PATH = path.join(__dirname, 'index.html');
 const PORT = parseInt(process.env.PORT || '3000', 10);
+const WS_DEBUG_MODE = process.env['WS_DEBUG_MODE'] === 'true';
+// 🔋 Token节省模式 — 所有后台定时器/心跳/节律默认关闭，仅在用户问及时间/天气/生理时按需一枪式启动
+const WS_LAZY_TIMERS = true; // 始终为 true：所有 setInterval/setTimeout 轮询永不启动
+if (WS_DEBUG_MODE) console.log('[启动] 🔧 调试模式 — 自动定时器/心跳/后台LLM已全部禁用');
+if (WS_LAZY_TIMERS) console.log('[启动] 🔋 Token节省模式 — 后台定时器全部暂停，时间/天气/生理按需触发');
 const TTS_URL = process.env.TTS_URL || 'http://localhost:8765';
 
 /** 统一错误输出 */
@@ -117,9 +122,9 @@ function writeErr(res: http.ServerResponse, code: number, msg: string) {
   res.end(JSON.stringify({ error: msg }));
 }
 
-/** 定时器统一管理 */
+/** 定时器统一管理（LAZY 模式下 addTimer 空操作） */
 const _timers: Array<NodeJS.Timeout> = [];
-function addTimer(t: NodeJS.Timeout) { _timers.push(t); return t; }
+function addTimer(t: NodeJS.Timeout) { if (WS_LAZY_TIMERS) { clearInterval(t); clearTimeout(t); return t; } _timers.push(t); return t; }
 function clearAllTimers() { for (const t of _timers) { try { clearInterval(t); clearTimeout(t); } catch (e: any) { console.error('[server] error:', e?.message); } } _timers.length = 0; }
 
 // M6 自我模型（延迟初始化，在 initPipeline 中赋值）
@@ -168,7 +173,7 @@ function loadConversationHistory(): void {
       try {
         const oldRecent = storage.getSQLite().getRecentConversations(30);
         if (oldRecent.length > 0) {
-          conversationHistory = oldRecent.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
+          conversationHistory = oldRecent.filter((r: any) => !r.roleplay_char).map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
           console.log('  从fusion_memory.db(旧库)加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
           // 尝试迁移到新库
           if (conversationDB) {
@@ -403,6 +408,71 @@ async function initPipeline(): Promise<void> {
     if (completed > 0) console.log(`  FG 反向边补全: ${completed} 条 ✓`);
     else console.log('  FG 反向边完整性检查: 通过 ✓');
   } catch (e) { console.warn('  FG 反向边补全失败:', e); }
+
+  // 🔧 FG→entity_relations 同步：将 family_graph 中的人物间关系同步到融合库
+  //    解决 fusion_memory.db 的 entity_relations 表缺失人际关系的已知问题。
+  //    使用 FamilyGraph 的公开 API（getAllPersonNames + getRelatedPersons）访问边数据。
+  try {
+    const esql = storage.getSQLite();
+    if (esql && familyGraph) {
+      let syncCount = 0;
+      // 查询 entities 表中的人名→ID映射
+      const entityRows = esql.queryAll("SELECT id, name FROM entities WHERE type = 'person'") as any[];
+      const nameToEntityId: Record<string, number> = {};
+      for (const row of entityRows) { nameToEntityId[row.name] = Number(row.id); }
+
+      const allNames = familyGraph.getAllPersonNames() || [];
+      const seen = new Set<string>(); // 去重：同一对关系只写一次
+      for (const name of allNames) {
+        if (!name || name === '我') continue;
+        const related = familyGraph.getRelatedPersons(name);
+        if (!related || related.length === 0) continue;
+        for (const r of related) {
+          if (!r.name || r.name === '我') continue;
+          // 仅同步家庭/亲属关系
+          const familyRelations = [
+            'elder_sister_of', 'younger_sister_of', 'mother_of', 'father_of',
+            'parent_of', 'child_of', 'daughter', 'son', 'sister_of', 'brother_of',
+            'elder_brother_of', 'younger_brother_of',
+            'aunt_of', 'uncle_of', 'niece_of', 'cousin_of',
+          ];
+          if (!familyRelations.some(fr => r.relation.includes(fr))) continue;
+
+          const aId = nameToEntityId[name];
+          const bId = nameToEntityId[r.name];
+          if (!aId || !bId) continue;
+          // 双向去重
+          const key = [aId, bId].sort().join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          // 映射到中文标签
+          const relationLabel = r.relation.includes('elder_sister') ? '姐姐'
+            : r.relation.includes('younger_sister') ? '妹妹'
+            : r.relation.includes('mother') ? '妈妈'
+            : r.relation.includes('father') ? '爸爸'
+            : r.relation.includes('daughter') ? '女儿'
+            : r.relation.includes('son') ? '儿子'
+            : r.relation.includes('aunt') ? '阿姨'
+            : r.relation.includes('uncle') ? '叔叔'
+            : r.relation.includes('niece') ? '侄女'
+            : r.relation.includes('cousin') ? '堂表亲'
+            : r.relation.includes('sister') ? '姐妹'
+            : r.relation.includes('brother') ? '兄弟'
+            : r.relation.includes('parent') || r.relation.includes('child') ? '亲属'
+            : r.relation;
+
+          esql.writeRaw(
+            "INSERT OR IGNORE INTO entity_relations (entity_a_id, entity_b_id, relation, strength, updated_at) VALUES (?, ?, ?, 1.0, ?)",
+            [aId, bId, relationLabel, new Date().toISOString()]
+          );
+          syncCount++;
+        }
+      }
+      if (syncCount > 0) console.log(`  FG→entity_relations 同步: ${syncCount} 条亲属关系 ✓`);
+    }
+  } catch (e) { console.warn('  FG→entity_relations 同步失败:', e); }
+
   m3 = new M3LogicOrchestrator();
   llmProvider = deepseekAvailable() ? new DeepSeekLLMProvider() : new MockLLMProvider();
   console.log(`  LLM: ${deepseekAvailable() ? 'DeepSeek (API)' : 'MockLLM (无API Key, 模板降级)'} ✓`);
@@ -419,8 +489,8 @@ async function initPipeline(): Promise<void> {
   if (activePersona && llmProvider instanceof DeepSeekLLMProvider) llmProvider.setPersona(activePersona);
   m5 = new M5Orchestrator(llmProvider);
   loadConversationHistory();
-  maintenance.start(); // 启动维护引擎
-  console.log('  维护引擎已启动 ✓');
+  if (!WS_DEBUG_MODE) { maintenance.start(); console.log('  维护引擎已启动 ✓'); }
+  else { console.log('  [调试] 已跳过: 维护引擎'); }
 
   // 先创建 M8+M7（使 DreamQueue 可供 CQ/IS 联动注入）
   m8 = new M8FusionAdapter(storage);
@@ -462,7 +532,8 @@ async function initPipeline(): Promise<void> {
   // 注入 M8 到 M6（疤痕冲突检查）
   m6.setM8(m8);
 
-  // 🔥 天权海马体节律调度器 — 统一调度所有海马体组件
+  // 🔥 天权海马体节律调度器 — 统一调度所有海马体组件 (调试模式下跳过)
+  if (!WS_DEBUG_MODE) {
   try {
     const { assembleAndStartHippocampus } = await import('../app/brain/assembleHippocampus.js');
     const hrc = assembleAndStartHippocampus({
@@ -472,6 +543,70 @@ async function initPipeline(): Promise<void> {
   } catch (err) {
     console.warn('  天权海马体节律调度器启动失败:', err);
   }
+  } else { console.log('  [调试] 已跳过: 天权海马体节律调度器 (含13个后台任务)'); }
+
+  // ── 天权四域仿生闭环 — 事件总线 + 知识桥接 + 前额叶 ──
+  if (!WS_DEBUG_MODE) {
+  try {
+    // ① 天权域事件总线（桥接 engine/bus/EventBus）
+    const { EventBus } = await import('../engine/bus/EventBus.js');
+    const { TianquanEventBus } = await import('../engine/tianquan/bus/TianquanEventBus.js');
+    const rawBus = new EventBus();
+    const tianquanBus = new TianquanEventBus(rawBus);
+    (globalThis as any).__tianquanBus = tianquanBus;
+    console.log('  天权事件总线已就绪 ✓');
+
+    // ② 知识索引摘要桥接层
+    const { KnowledgeBridge } = await import('../engine/tianquan/knowledge/KnowledgeBridge.js');
+    const knowledgeBridge = new KnowledgeBridge(knowledgeBase, storage.getSQLite()!);
+    (globalThis as any).__knowledgeBridge = knowledgeBridge;
+    console.log('  天权知识索引桥接层已就绪 ✓');
+
+    // ③ 海马域统一只读查询门面（封装 KB + SQLite + HippocampalIndex）
+    const { KnowledgeAccessFacade } = await import('../engine/tianquan/temporal/KnowledgeAccessFacade.js');
+    const knowledgeAccessFacade = new KnowledgeAccessFacade(knowledgeBase, storage.getSQLite()!);
+    (globalThis as any).__knowledgeAccessFacade = knowledgeAccessFacade;
+    console.log('  天权海马域知识查询门面已就绪 ✓');
+
+    // ④ 前额叶决策域装配
+    const { assemblePrefrontal } = await import('../engine/tianquan/prefrontal/assemblePrefrontal.js');
+    const prefrontalCortex = assemblePrefrontal({
+      storage,
+      familyGraph,
+      knowledgeBase,
+    });
+    console.log('  天权前额叶决策域已启动 ✓');
+
+    // ⑤ 第二大脑 Gateway 初始化 (V4.0 Phase 2)
+    try {
+      const { SecondBrainGateway } = await import('../engine/tianquan/knowledge/SecondBrainGateway.js');
+      const { MDFileWatcher } = await import('../engine/tianquan/knowledge/MDFileWatcher.js');
+      const { WikiLinkResolver } = await import('../engine/tianquan/knowledge/WikiLinkResolver.js');
+      const { SourceTracker } = await import('../engine/tianquan/knowledge/SourceTracker.js');
+      const vaultPath = path.join(PROJECT_ROOT, 'data', 'knowledge-v4');
+      const secondBrainGateway = new SecondBrainGateway(vaultPath);
+      await secondBrainGateway.initialize();
+      (globalThis as any).__secondBrainGateway = secondBrainGateway;
+      // 文件变更监测器（默认每 5 分钟 polling）
+      const mdFileWatcher = new MDFileWatcher(secondBrainGateway, 300_000);
+      mdFileWatcher.start();
+      (globalThis as any).__mdFileWatcher = mdFileWatcher;
+      // [[wikilink]] 图谱解析器
+      const wikiLinkResolver = new WikiLinkResolver(secondBrainGateway);
+      (globalThis as any).__wikiLinkResolver = wikiLinkResolver;
+      // MD→记忆溯源追踪器
+      const sourceTracker = new SourceTracker(storage.getSQLite()!);
+      sourceTracker.initialize();
+      (globalThis as any).__sourceTracker = sourceTracker;
+      console.log('  第二大脑 Gateway 已启动 ✓ (' + secondBrainGateway.scanWikiMDFiles().length + ' 个 MD 文件)');
+    } catch (err) {
+      console.warn('  第二大脑 Gateway 初始化失败（降级运行）:', err);
+    }
+
+  } catch (err) {
+    console.warn('  天权四域初始化失败（降级运行）:', err);
+  }
+  } else { console.log('  [调试] 已跳过: 天权四域仿生闭环'); }
 
   // P0: 角色切换广播 — 系统级隔离
   PersonaRegistry.onSwitch(function(personaId) {
@@ -496,7 +631,8 @@ async function initPipeline(): Promise<void> {
       console.warn('[Persona] 角色切换失败:', e);
     }
   });
-  // M6 周期性维护（15分钟一次）
+  // M6 周期性维护（15分钟一次）— 调试模式下跳过
+  if (!WS_DEBUG_MODE) {
   if (m6Timer) clearInterval(m6Timer);
   m6Timer = setInterval(() => { try { m6?.maintenance(); } catch (err) { console.error('[M6] 定时维护失败:', err); } }, 15 * 60 * 1000); addTimer(m6Timer);
   console.log('  自我模型已启动 ✓');
@@ -504,6 +640,7 @@ async function initPipeline(): Promise<void> {
   // 记忆仓每日备份（启动后5分钟首次执行）
   setTimeout(() => { try { memoryVault?.backup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 5 * 60 * 1000);
   console.log('  记忆仓已启动 ✓');
+  } else { console.log('  [调试] 已跳过: M6定时维护 + 记忆仓备份'); }
 
   // ── 统一备份引擎（三大永久存储：fusion_memory + family_graph + knowledge） ──
   // 启动后15分钟首次执行，之后每30分钟执行一次
@@ -619,11 +756,13 @@ async function initPipeline(): Promise<void> {
     } catch (_) { /* 留存清理不影响主流程 */ }
   }
 
-  // 启动后15分钟首次执行，之后每30分钟
+  // 🔋 LAZY: 备份在用户问及时通过 __temporalOnDemand 触发
+  if (!WS_LAZY_TIMERS) {
   setTimeout(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 15 * 60 * 1000);
+  }
   addTimer(setInterval(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 30 * 60 * 1000));
-  console.log('  统一备份引擎已启动 ✓ (15min首执行, 30min周期)');
-
+  if (WS_LAZY_TIMERS) console.log('  统一备份引擎 — Token节省模式，未启动 ✓');
+  else console.log('  统一备份引擎已启动 ✓ (15min首执行, 30min周期)');
 
   workingMemory = new WorkingMemory(storage, 50);
   workingMemory.startFlushTimer();
@@ -734,12 +873,13 @@ async function initPipeline(): Promise<void> {
   })();
   topicTracker = new TopicTracker(storage.getSQLite());
   somaticMemory = new SomaticMemory(storage.getSQLite());
-  // 玉瑶的"做梦研究"定时器（每5分钟检查一次待研究话题）
+  // 玉瑶的"做梦研究"定时器 — 调试模式下跳过 (会调LLM)
+  if (!WS_DEBUG_MODE) {
   addTimer(setInterval(async () => {
     try {
       const needs = topicTracker.getTopicsNeedingResearch();
       if (needs.length === 0) return;
-      const keyword = needs[0]; // 一次只研究一个
+      const keyword = needs[0];
       console.log(`[DreamResearch] 玉瑶梦到「${keyword}」，开始查找...`);
       const result = await researchTopic(keyword, storage.getSQLite());
       if (result) {
@@ -749,7 +889,8 @@ async function initPipeline(): Promise<void> {
     } catch (err) {
       console.warn('[DreamResearch] 研究失败:', err);
     }
-  }, 5 * 60 * 1000)); // 5分钟
+  }, 5 * 60 * 1000));
+  }
   console.log('  知识库已启动 ✓');
 
   masterProfile = new MasterProfileService(storage.getSQLite());
@@ -792,7 +933,8 @@ async function initPipeline(): Promise<void> {
       if (promoted.length > 0) console.log(`[Vault] 自动提炼: ${promoted.length} 条→黑钻`);
     } catch (err) { console.warn('[GoldQC] 失败:', err); }
   }, 60 * 60 * 1000));
-  // 启动后10分钟首次执行
+  // 🔋 LAZY: 质检按需触发 — 首轮延迟跳过
+  if (!WS_LAZY_TIMERS) {
   setTimeout(async () => {
     try {
       const sandR = runSandQC(storage.getSQLite(), conversationHistory);
@@ -800,7 +942,9 @@ async function initPipeline(): Promise<void> {
       console.log(`[AQC] 首轮质检完成: 砂金 ${sandR.approved}/${sandR.scanned} 金库 ${goldR.approved}/${goldR.scanned}`);
     } catch (err) { console.warn('[AQC] 首轮失败:', err); }
   }, 10 * 60 * 1000);
-  console.log('  AQC 质检引擎已启动 ✓');
+  }
+  if (WS_LAZY_TIMERS) console.log('  AQC 质检引擎 — Token节省模式 ✓');
+  else console.log('  AQC 质检引擎已启动 ✓');
 
   console.log(`  融合存储已初始化 (${storage.getSQLite().getStatus().totalRecords} 条记忆 ✓`);
   // 景幻仙姑自动巡检（每30分钟）
@@ -2105,7 +2249,7 @@ async function main(): Promise<void> {
     console.log('  ╚══════════════════════════════════════╝');
     console.log('');
   });
-    // Hook状态定时导出（5min间隔，重启不丢数据）
-    startBackupDaemon(hookMonitor, 300000);
+    // 🔋 LAZY: Hook备份按需触发
+    if (!WS_LAZY_TIMERS) startBackupDaemon(hookMonitor, 300000);
 }
 main().catch(err => { console.error('启动失败:', err); process.exit(1); });

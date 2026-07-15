@@ -1,22 +1,38 @@
 /**
- * AutoLearnPlugin — P3-a 增量自主学习插件
- *
+ * AutoLearnPlugin V2 — 多维度增量自主学习引擎
+ * ============================================
  * 每次对话结束时异步执行：
- *   ① 更新实体共现计数（entity_relations 表）
- *   ② 更新情感向量基准（根据当前感知偏移均值）
- *   ③ 更新 Reranker 权重微调（检索频次反馈）
+ *   ① 实体关联强度 (增强: 累计计数+衰减)
+ *   ② 情感向量在线校准 (学习率偏移基准)
+ *   ③ 收敛速度自适应 (高频×0.5, 低频×2)
+ *   ④ 冲突检测 (对立描述标记)
+ *   ⑤ 新知识冷启动助推 (72h×1.3)
  *
- * 不阻塞主回复流程（在 respond() 返回后调用的 fire-and-forget）。
+ * 不阻塞主回复流程（在 respond() 返回后 fire-and-forget）。
+ * 适配: 知识库自学习改善方案 Phase 1
  */
 import type { FusionStorageAdapter } from '../../m2/FusionStorageAdapter.js';
 import type { Perception24D } from '../../m3/types/perception.js';
 import type { EntityGene } from '../../m1/types/dna.js';
+import { EntityStrengthTracker } from './EntityStrengthTracker.js';
+import { EmotionBaseline } from './EmotionBaseline.js';
+import { ConflictDetector } from './ConflictDetector.js';
+import { LEARNING_CONFIG } from '../../config/learning-config.js';
 
 export class AutoLearnPlugin {
   private storage: FusionStorageAdapter;
+  private strengthTracker: EntityStrengthTracker;
+  private emotionBaseline: EmotionBaseline;
+  private conflictDetector: ConflictDetector;
+
+  /** 每会话话题频次统计 (高频/低频检测) */
+  private _topicCounts = new Map<string, { count: number; firstSeen: number }>();
 
   constructor(storage: FusionStorageAdapter) {
     this.storage = storage;
+    this.strengthTracker = new EntityStrengthTracker(storage);
+    this.emotionBaseline = new EmotionBaseline(storage);
+    this.conflictDetector = new ConflictDetector(storage);
   }
 
   /**
@@ -36,68 +52,87 @@ export class AutoLearnPlugin {
         .filter(e => e.type === 'person' && e.name !== '我' && e.name.length > 1)
         .map(e => e.name);
 
-      // ① 实体共现：同一轮消息中出现的多个实体互为关联
+      // ── ① 实体关联强度 (增强版: 累计+衰减+自适应学习率) ──
       if (personNames.length >= 2) {
         for (let i = 0; i < personNames.length; i++) {
           for (let j = i + 1; j < personNames.length; j++) {
-            this.ensureEntityRelation(sqlite, personNames[i], personNames[j], 'co_occurrence', 0.3);
+            const rate = this._getAdaptiveRate(personNames[i], personNames[j]);
+            await this.strengthTracker.boost(personNames[i], personNames[j], rate);
           }
         }
       }
 
-      // ② 实体-话题关联：消息中包含的实体与该消息话题建立轻度关联
+      // 非人物实体→人物关联
       const nonPersonEntities = entities
         .filter(e => e.type !== 'person' && e.name !== '某')
         .map(e => e.name);
       for (const p of personNames) {
         for (const np of nonPersonEntities) {
-          this.ensureEntityRelation(sqlite, p, np, 'discussed_with', 0.15);
+          await this.strengthTracker.boost(p, np, LEARNING_CONFIG.ENTITY_DISCUSSED_STRENGTH);
         }
       }
 
-      // ③ AutoLearn 不直接写入 inductons 表（该表由 M7 InductionScheduler 管理）
-      // 感知数据通过 MemoryAssessor 的后台调度自动沉淀
+      // ── ② 情感向量在线校准 ──
+      await this.emotionBaseline.update(perception);
 
-      console.log(`[AutoLearn] 更新: ${personNames.length} 实体, ${nonPersonEntities.length} 关联`);
+      // ── ③ 话题频次统计 (自适应学习率数据源) ──
+      const locusPath = (entities as any).locus_path || '';
+      if (locusPath) {
+        const now = Date.now();
+        const existing = this._topicCounts.get(locusPath) || { count: 0, firstSeen: now };
+        existing.count++;
+        this._topicCounts.set(locusPath, existing);
+      }
+
+      // ── ④ 冲突检测 ──
+      for (const entity of entities) {
+        if (entity.type !== 'person' && entity.type !== 'emotion') continue;
+        await this.conflictDetector.check(
+          entity.name,
+          message,
+          entity.type,
+          perception,
+        );
+      }
+
+      // ── ⑤ 新知识冷启动助推 (由 KnowledgeEngine 在检索时独立处理) ──
+      // 此处只需确保 knowledge_base.created_at 正确，检索时机由 KnowledgeEngine 决定
+
+      console.log(`[AutoLearn V2] 更新: ${personNames.length}实体, ${nonPersonEntities.length}关联, 情感基准校准`);
     } catch (err) {
-      console.warn('[AutoLearn] 学习失败:', err);
+      console.warn('[AutoLearn V2] 学习失败:', err);
     }
   }
 
-  private ensureEntityRelation(
-    sqlite: any,
-    entityA: string,
-    entityB: string,
-    relation: string,
-    strength: number,
-  ): void {
-    try {
-      // Ensure both entities exist
-      for (const name of [entityA, entityB]) {
-        const existing = sqlite.queryAll('SELECT id FROM entities WHERE name = ? LIMIT 1', [name]);
-        if (existing.length === 0) {
-          sqlite.writeRaw('INSERT INTO entities (id, name, type, created_at) VALUES (?, ?, ?, ?)', [
-            `auto_${name}_${Date.now()}`,
-            name,
-            'person',
-            new Date().toISOString(),
-          ]);
-        }
-      }
+  /**
+   * 自适应学习率: 高频话题降速, 低频话题加速
+   * 基于话题路径 (locus_path) 的频次统计
+   */
+  private _getAdaptiveRate(entityA: string, entityB: string): number {
+    const base = LEARNING_CONFIG.ENTITY_CO_OCCUR_STRENGTH;
 
-      // Insert or update relation
-      sqlite.writeRaw(
-        `INSERT INTO entity_relations (entity_a_id, entity_b_id, relation, strength, created_at)
-         VALUES (
-           (SELECT id FROM entities WHERE name = ? LIMIT 1),
-           (SELECT id FROM entities WHERE name = ? LIMIT 1),
-           ?, ?, ?
-         )
-         ON CONFLICT(entity_a_id, entity_b_id, relation) DO UPDATE SET
-           strength = MIN(1.0, strength + ?),
-           updated_at = ?`,
-        [entityA, entityB, relation, strength, new Date().toISOString(), strength * 0.5, new Date().toISOString()],
-      );
-    } catch { /* 并发写入冲突忽略 */ }
+    // 简单启发: 同一对话组高频共现 → 降低学习率
+    const key = `${entityA}:${entityB}`;
+    const stat = this._topicCounts.get(key);
+    if (!stat) return base;
+
+    const hoursElapsed = (Date.now() - stat.firstSeen) / 3_600_000;
+    const freqPerHour = hoursElapsed > 0 ? stat.count / hoursElapsed : stat.count;
+
+    // 高频 (>5次/小时) → 学习率×0.5
+    if (freqPerHour > 5) return base * 0.5;
+    // 低频 (<0.2次/小时) → 学习率×2
+    if (freqPerHour < 0.2) return Math.min(base * 2, 1.0);
+    return base;
+  }
+
+  /** 获取当前情感基准 (供外部读取) */
+  async getEmotionBaseline(): Promise<{ pleasure: number; arousal: number; intimacy: number } | null> {
+    return this.emotionBaseline.get();
+  }
+
+  /** 重置会话级统计 (每次新对话开始时调用) */
+  resetSession(): void {
+    this._topicCounts.clear();
   }
 }

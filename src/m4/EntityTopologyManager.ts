@@ -111,7 +111,8 @@ export class EntityTopologyManager {
 
   /**
    * 写入双向关系拓扑
-   * 自动写入正反两条记录：徐诗雨——sister→徐诗韵 + 徐诗韵——elder_sister→徐诗雨
+   * 自动写入正反两条记录：徐诗雨——elder_sister→徐诗韵 + 徐诗韵——younger_sister→徐诗雨
+   * （诗雨18岁是姐姐，诗韵14岁是妹妹）
    */
   addRelation(
     entityA: string,
@@ -241,6 +242,12 @@ export class EntityTopologyManager {
       mother_of: 'mother', father_of: 'father',
       child_of: 'daughter', parent_of: 'daughter',
       sibling_of: 'sibling',
+      elder_sister_of: 'elder_sister',
+      younger_sister_of: 'younger_sister',
+      sister_of: 'sister',
+      brother_of: 'brother',
+      elder_brother_of: 'elder_brother',
+      younger_brother_of: 'younger_brother',
       spouse_of: 'wife',
       aunt_of: 'aunt', uncle_of: 'uncle',
       niece_of: 'niece', nephew_of: 'nephew',

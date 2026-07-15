@@ -242,6 +242,16 @@ export async function ingestFromConversation(
   const candidates = extractCandidates(message, sceneTags);
   let count = 0;
 
+  // 🔥 LLM 辅助兜底: 规则提取到 0 条时尝试 LLM 提取（有限频）
+  if (candidates.length === 0 && message.length >= 6) {
+    try {
+      const llmCandidate = await _llmFallbackExtract(message, sceneTags);
+      if (llmCandidate) {
+        candidates.push(llmCandidate);
+      }
+    } catch { /* LLM 兜底失败不影响主流程 */ }
+  }
+
   for (const c of candidates) {
     const existing = await knowledgeEngine.search(c.title.substring(0, 15), 1);
     if (existing.length > 0) continue;
@@ -266,4 +276,41 @@ export async function ingestFromConversation(
   }
 
   return count;
+}
+/** LLM 辅助兜底: 规则提取不到时尝试 LLM 提取（有限频） */
+let _llmCallCount: { hourly: number; daily: number; lastHour: number; lastDay: string } = { hourly: 0, daily: 0, lastHour: 0, lastDay: '' };
+async function _llmFallbackExtract(message: string, sceneTags?: string[]): Promise<IngestionCandidate | null> {
+  const now = Date.now();
+  const today = new Date().toISOString().substring(0, 10);
+  if (_llmCallCount.lastDay !== today) { _llmCallCount.daily = 0; _llmCallCount.lastDay = today; }
+  if (now - _llmCallCount.lastHour > 3600000) { _llmCallCount.hourly = 0; _llmCallCount.lastHour = now; }
+  if (_llmCallCount.hourly >= 5 || _llmCallCount.daily >= 30) return null;
+  _llmCallCount.hourly++; _llmCallCount.daily++;
+  try {
+    const baseUrl = process.env['ANTHROPIC_BASE_URL'] || 'https://api.deepseek.com';
+    const apiKey = process.env['ANTHROPIC_AUTH_TOKEN'] || '';
+    const model = process.env['ANTHROPIC_MODEL'] || 'deepseek-chat';
+    if (!apiKey) return null;
+    const prompt = "从以下消息提取一条值得记住的信息。输出JSON: {type(preference|habit|plan|identity|memory|fact), content(10-30字), confidence(high|medium|low)} 或 null。消息: " + message;
+    // 兼容 DeepSeek 和 Anthropic Translate 两种网关
+    const apiUrl = baseUrl.includes('deepseek.com/anthropic') ? 'https://api.deepseek.com/v1/chat/completions' : baseUrl + '/v1/chat/completions';
+    const resp = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify({ model: model.replace('[1m]', ''), max_tokens: 150, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json() as any;
+    const raw = data?.choices?.[0]?.message?.content || data?.content?.[0]?.text || '';
+    const jsonMatch = raw.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!parsed?.content || parsed.content.length < 4) return null;
+    const typeMap: Record<string, string> = { preference: 'preference', habit: 'conversation', plan: 'conversation', identity: 'profile', memory: 'conversation', fact: 'other' };
+    const clsMap: Record<string, string> = { preference: '用户偏好', habit: '生活记录', plan: '生活记录', identity: '用户资料', memory: '生活记录', fact: '系统文档' };
+    const ct: string = parsed.type || 'fact';
+    const isHigh = parsed.confidence === 'high';
+    console.log('[Ingestion-LLM] ' + parsed.content.substring(0, 30) + ' (' + ct + ')');
+    return { title: ct + ': ' + parsed.content.substring(0, 20), content: message, source_type: 'conversation', tags: ['auto-ingested', 'llm', ct], interaction_type: typeMap[ct] || 'other', scene_tags: sceneTags || [], classification: clsMap[ct] || '其他', confident: isHigh };
+  } catch { return null; }
 }

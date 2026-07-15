@@ -136,9 +136,12 @@ export function extractRelations(text: string): DetectedRelationship[] {
     if (isName(name) && !seen.has(name)) {
       seen.add(name);
       const relation = isFamilyWord(relationWord) ? FAMILY_MAP[relationWord] : '认识的人';
+      // 🔴 姐妹/兄弟等不能自动关联"我" — 需要 relatedTo 才能确定是谁跟谁的关系
+      const LATERAL = new Set(['姐妹', '兄弟']);
+      const finalRelation = LATERAL.has(relation) ? '认识的人' : relation;
       results.push({
         personName: name,
-        relation,
+        relation: finalRelation,
         rawRelation: relationWord,
         context: extractContext(text, name),
       });
@@ -256,11 +259,12 @@ export function extractRelations(text: string): DetectedRelationship[] {
   }
 
   // ── 9. 家庭前缀模式: "我妈" / "我爸" / "我哥" / "我姐" — 精确映射
+  // 🔴 添加 isName() 检查 — 关系词不能作为人名存入 entities 表
   const familyPrefix = text.match(/我(妈|爸|哥|姐|弟|妹|儿子|女儿|老公|老婆|爷爷|奶奶|姥姥|姥爷|公公|婆婆|岳父|岳母)/);
   if (familyPrefix) {
     const relWord = familyPrefix[1];
     const mappedRel = FAMILY_MAP[relWord] || '';
-    if (mappedRel) {
+    if (mappedRel && isName(relWord)) {
       if (!seen.has(relWord)) {
         seen.add(relWord);
         results.push({
@@ -339,7 +343,13 @@ export function storeRelations(sqlite: any, relations: DetectedRelationship[], s
         sqlite.writeRaw(`INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)`, rel.personName, 'person');
       sqlite.writeRaw(`INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)`, '我', 'self');
 
-      // 实体关系
+      // 实体关系 — 🔴 防御: 姐妹/兄弟等平辈关系不自动关联到"我"
+      const LATERAL_RELATIONS = new Set(['姐妹', '兄弟', '兄妹', '姐弟', '哥哥', '姐姐', '弟弟', '妹妹']);
+      if (LATERAL_RELATIONS.has(rel.relation)) {
+        // 平辈关系需要 relatedTo 才知道是谁跟谁的关系，不能默认关联"我"
+        stored++;
+        continue;
+      }
       const aRows = sqlite.queryAll(`SELECT id FROM entities WHERE name = ? AND type = ?`, ['我', 'self']);
       const bRows = sqlite.queryAll(`SELECT id FROM entities WHERE name = ? AND type = ?`, [rel.personName, 'person']);
       if (aRows.length > 0 && bRows.length > 0) {

@@ -233,12 +233,43 @@ export class M8FusionAdapter implements M8Engine {
   // ── 疤痕仲裁 ──
 
   async markScar(memoryId: string, scarType: string): Promise<boolean> {
-    return this.storage.markScar(memoryId, scarType);
+    const ok = await this.storage.markScar(memoryId, scarType);
+    if (ok && scarType) {
+      try {
+        const sqlite = this.storage.getSQLite();
+        const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
+        if (mem?.[0]) {
+          const r = mem[0] as any;
+          const ts = r.created_at || new Date().toISOString();
+          const id = 'kn_milestone_' + Date.now().toString(36);
+          sqlite.writeRaw(
+            `INSERT OR IGNORE INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, scene_tags) VALUES (?, ?, ?, 'milestone', ?, ?, ?, 1, '人生地标', 0, 'other', 'milestone')`,
+            [id, `人生地标: ${scarType}`, (r.raw_input || '').substring(0, 500), JSON.stringify(['milestone', 'life_event', scarType]), ts, ts],
+          );
+        }
+      } catch { /* 不阻塞 */ }
+    }
+    return ok;
   }
 
-  /** 记忆沉淀：M7 梦境确认后晋升关联记忆为地标（与 markScar 对称） */
   async promoteMemory(memoryId: string, narrativeTag?: string, sensoryAnchor?: string): Promise<boolean> {
-    return this.storage.promoteToLandmark(memoryId, narrativeTag, sensoryAnchor);
+    const ok = await this.storage.promoteToLandmark(memoryId, narrativeTag, sensoryAnchor);
+    if (ok && narrativeTag) {
+      try {
+        const sqlite = this.storage.getSQLite();
+        const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
+        if (mem?.[0]) {
+          const r = mem[0] as any;
+          const ts = r.created_at || new Date().toISOString();
+          const id = 'kn_landmark_' + Date.now().toString(36);
+          sqlite.writeRaw(
+            `INSERT OR IGNORE INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, scene_tags) VALUES (?, ?, ?, 'landmark', ?, ?, ?, 1, '人生地标', 0, 'other', 'milestone')`,
+            [id, `记忆地标: ${narrativeTag}`, (r.raw_input || '').substring(0, 500), JSON.stringify(['landmark', 'memory', narrativeTag]), ts, ts],
+          );
+        }
+      } catch { /* 不阻塞 */ }
+    }
+    return ok;
   }
 
   async checkConflict(params: ConflictCheckParams): Promise<ConflictCheckResult> {

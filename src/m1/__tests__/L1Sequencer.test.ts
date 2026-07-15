@@ -2,11 +2,13 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { L1Sequencer } from '../L1Sequencer.js';
+import { GlobalSequenceCounter } from '../GlobalSequenceCounter.js';
 
 describe('L1Sequencer — 单调递增', () => {
   let seq: L1Sequencer;
 
   beforeEach(() => {
+    GlobalSequenceCounter.resetInstance();
     seq = new L1Sequencer();
   });
 

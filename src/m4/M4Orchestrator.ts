@@ -20,9 +20,12 @@ import { rerank } from './Reranker.js';
 import { decompose } from './QueryDecomposer.js';
 
 // 海马体三突触回路组件
-import { PatternSeparator } from '../app/brain/PatternSeparator.js';
-import { PatternCompleter } from '../app/brain/PatternCompleter.js';
-import { HippocampalIndex } from '../app/brain/HippocampalIndex.js';
+import { PatternSeparator } from '../engine/tianquan/temporal/PatternSeparator.js';
+import { PatternCompleter } from '../engine/tianquan/temporal/PatternCompleter.js';
+import { HippocampalIndex } from '../engine/tianquan/temporal/HippocampalIndex.js';
+import { SceneSnapshotBuilder } from '../engine/tianquan/temporal/SceneSnapshotBuilder.js';
+import type { SceneSnapshot, SceneSnapshotMaterials, EmotionTrend, NoveltyLevel } from '../engine/tianquan/temporal/types.js';
+import type { Perception24D } from '../m3/types/perception.js';
 
 // P0-4: FG 摘要 30s 缓存
 interface FGCacheEntry {
@@ -40,6 +43,10 @@ export class M4Orchestrator {
   private _familyGraphOverride: any = null;
   /** P0-3: 记忆检索回调（激活新引擎再巩固） */
   public _onMemoriesRetrieved: ((memories: Array<{ memoryId: string; dnaRootId: string; calciumScore: number; perception: any }>) => void) | null = null;
+  /** Phase B: 最近一次检索的原始记忆（供 retrieveAsSnapshot 使用） */
+  private _lastRetrieveMemories: DNA[] = [];
+  /** Phase B: 最近一次检索的材料（供 retrieveAsSnapshot 使用） */
+  private _lastRetrieveMaterials: { locusPath: string; entities: Array<{ name: string; type: string }>; rawInput: string } | null = null;
 
   constructor(storage: FusionStorageAdapter, familyGraph?: FamilyGraph, knowledgeBase?: any) {
     this.memoryRetriever = new MemoryRetriever(storage, knowledgeBase);
@@ -91,6 +98,10 @@ export class M4Orchestrator {
     let memories = await this.memoryRetriever.retrieveMemories(locusPath, enhancedEntities, {
       perception: decision.enhanced.perception,
     });
+
+    // Phase B: 缓存原始记忆（供 retrieveAsSnapshot 使用）
+    this._lastRetrieveMemories = [...memories];
+    this._lastRetrieveMaterials = { locusPath, entities: enhancedEntities, rawInput };
 
     // P0-3: 回调通知（激活新引擎记忆再巩固机制）
     if (memories.length > 0 && this._onMemoriesRetrieved) {
@@ -300,5 +311,57 @@ export class M4Orchestrator {
         has_decomposed: decomposed.subQueries.length > 0,
       },
     };
+  }
+
+  /**
+   * Phase B: 场景快照封装 — 以 SceneSnapshot 格式返回检索结果。
+   *
+   * 在 retrieve() 之后调用，将碎片化的 M4Context + 原始记忆封装为
+   * 海马体→前额叶的标准数据契约。
+   *
+   * 使用:
+   *   const ctx = await orchestrator.retrieve(decision, entities, emotionalSummaries, locusPath);
+   *   const snapshot = orchestrator.retrieveAsSnapshot(ctx, {
+   *     perception: decision.enhanced.perception,
+   *     sessionId,
+   *     rawInput: decision.enhanced.raw_input,
+   *   });
+   */
+  retrieveAsSnapshot(
+    m4Context: M4Context,
+    extra: {
+      perception: Perception24D;
+      sessionId: string;
+      rawInput?: string;
+      locationFingerprint?: string;
+    },
+  ): SceneSnapshot | null {
+    const materials = this._lastRetrieveMaterials;
+    if (!materials || this._lastRetrieveMemories.length === 0) {
+      return null;
+    }
+
+    try {
+      const sqlite = (this.memoryRetriever as any).storage?.getSQLite?.();
+      if (!sqlite) return null;
+
+      const builder = new SceneSnapshotBuilder(sqlite);
+      const rawInput = extra.rawInput ?? materials.rawInput;
+
+      const snapshotMaterials: SceneSnapshotMaterials = {
+        memories: this._lastRetrieveMemories,
+        m4Context,
+        perception: extra.perception,
+        sessionId: extra.sessionId,
+        rawInput,
+        entities: materials.entities,
+        locationFingerprint: extra.locationFingerprint,
+      };
+
+      return builder.build(snapshotMaterials);
+    } catch (err) {
+      console.warn('[M4] retrieveAsSnapshot 失败:', err);
+      return null;
+    }
   }
 }

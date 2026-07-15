@@ -16,6 +16,7 @@ import { validateReply } from './Validator.js';
 import { checkReadiness } from './ReadinessGate.js';
 import { clearSessionCache } from './RoleplaySessionCache.js';
 import { reportAssembly, reportValidation, reportGrowth } from './RoleplayProbeReporter.js';
+import { buildRoleplayRules } from './bridges.js';
 
 // 🔴 运行时检测：ESM 模块级代码在 .env 加载前执行，必须用函数而非常量
 function isStructuredEnabled(): boolean {
@@ -59,7 +60,7 @@ export async function runRoleplayPipeline(
   const _enabled = isStructuredEnabled();
   console.log('[RoleplayDomain] runRoleplayPipeline: role=' + roleplay + ' structured=' + _enabled + ' env=' + process.env['ROLEPLAY_STRUCTURED_ENABLED']);
   if (!_enabled) {
-    return `【角色扮演】你是${roleplay}。用${roleplay}的口吻回复。`;
+    return buildRoleplayRules(roleplay) + '\n' + `【当前身份】${roleplay} — 你不是玉瑶，不是任何其他人。忘记你原来叫玉瑶。`;
   }
 
   const _t0 = Date.now();

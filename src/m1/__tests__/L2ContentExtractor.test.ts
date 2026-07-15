@@ -10,10 +10,10 @@ describe('L2ContentExtractor — zone 映射', () => {
     expect(result.leaf_zone).toBe('emotion_valence_zone');
   });
 
-  it('family 话题应映射到 language_semantic_zone', () => {
+  it('family 话题应映射到 social_schema_zone', () => {
     const extractor = new L2ContentExtractor();
     const result = extractor.extract('user.family.conflict', '家里吵架');
-    expect(result.leaf_zone).toBe('language_semantic_zone');
+    expect(result.leaf_zone).toBe('social_schema_zone');
   });
 
   it('work 话题应映射到语言语义区', () => {

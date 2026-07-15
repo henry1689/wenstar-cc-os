@@ -347,10 +347,10 @@ export class FamilyGraphRoleBranch {
         nodesCreated++;
         details.push(`新建分支节点: ${name}`);
         console.log(`[FGRoleBranch] 新建角色「${this.rootName}」的新关系人「${name}」`);
-        // 写透到主FG（确保新人物持久化到数据库，退出角色后不丢失）
-        try {
-          (this.fg as any).integrateSocialRelation(name, 'acquaintance_of', rawInput);
-        } catch (_e) { /* 不阻塞 */ }
+        // 🔴 不写透到主FG — 角色扮演人物仅存在于分支内，退出后自动销毁
+        // 之前写透导致角色扮演的家族关系（徐诗韵→王全芬）永久污染主FG，
+        // 退出后玉瑶的 family_context/social_context 仍能看到这些人，造成角色混淆。
+        // 如果退出角色后用户再次提到这些人名，chat.ts 的 integrateFromEntity 会重新入库。
       }
     }
 

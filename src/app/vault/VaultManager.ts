@@ -252,6 +252,55 @@ export function searchBlackDiamonds(sqlite: SQLiteAdapter, keyword: string, limi
 
 // ─── 金库（memories表）访问 ───
 
+// ═══════════════════════════════════════════════════════
+//  V4.0 Phase 3: 第二大脑→金库写入
+// ═══════════════════════════════════════════════════════
+
+/**
+ * 从第二大脑（知识库 MD）萃取的内容写入金库（memories 表）。
+ * 标记 source_type='knowledge_vault' 以区别于对话产生的记忆。
+ *
+ * @returns 写入的记忆条目 ID，失败返回 null
+ */
+export function addGoldEntryFromKnowledgeVault(
+  sqlite: SQLiteAdapter,
+  params: {
+    sourcePath: string;
+    sourceUuid: string;
+    sourceHash: string;
+    summary: string;
+    tags?: string[];
+    confidence?: string;
+  },
+): string | null {
+  try {
+    const entryId = `kv_${params.sourceUuid}_${Date.now().toString(36)}`.substring(0, 64);
+    const now = new Date().toISOString();
+
+    // 🔴 memories 表有很多 NOT NULL 约束，必须全部提供
+    // seq_pos: 使用负数避免与正常对话的 seq_pos 冲突
+    const seqPos = -(Date.now() % 1000000);
+    const locusPath = 'knowledge_vault';
+    const leafZone = 'language_semantic_zone';
+    const perceptionJson = '{}';
+
+    sqlite.writeRaw(
+      `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_json, calcium_score, calcium_level,
+       locus_path, leaf_zone, effective_strength, created_at, lifecycle_state, memory_kind, recall_count,
+       last_recalled_at, source_type, strength_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?)`,
+      [entryId, seqPos, params.summary.substring(0, 500), perceptionJson, 0.5, 1,
+       locusPath, leafZone, 0.5, now, now]
+    );
+
+    console.log(`[Vault] 金库入库(knowledge_vault): ${entryId.substring(0, 20)}... ← ${params.sourcePath}`);
+    return entryId;
+  } catch (err) {
+    console.warn('[Vault] 金库入库失败:', (err as Error).message);
+    return null;
+  }
+}
+
 /** 金库概况 */
 export function getGoldSummary(sqlite: SQLiteAdapter): { total: number; avgStrength: number; highCalcium: number } {
   const rows = sqlite.queryAll(

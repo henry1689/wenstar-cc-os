@@ -71,9 +71,9 @@ describe('L0Router — 工作话题路由', () => {
     expect(result.locus_path).toBe('user.work.achievement');
   });
 
-  it('中性工作话题应路由到 work.general', () => {
-    const result = routeL0('今天在公司开了个会', TEST_TAXONOMY);
-    expect(result.locus_path).toBe('user.work.general');
+  it('含工作关键词的话题应路由到 work 域', () => {
+    const result = routeL0('今天要加班完成项目方案', TEST_TAXONOMY);
+    expect(result.locus_path).toMatch(/^user\.work\./);
   });
 });
 

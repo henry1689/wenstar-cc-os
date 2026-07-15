@@ -10,7 +10,7 @@ import type { Perception24D } from '../m3/types/perception.js';
 import type { MemorySummary } from './types/index.js';
 import { RETRIEVAL_THRESHOLDS, BATCH_SIZES, MIN_MATCHED_FOR_BREAK } from '../m2/retrieval-constants.js';
 import { LocalCache } from '../app/tools/LocalCache.js';
-import { HippocampalIndex } from '../app/brain/HippocampalIndex.js';
+import { HippocampalIndex } from '../engine/tianquan/temporal/HippocampalIndex.js';
 
 // 关键词检索缓存：相同关键词 30 秒内复用结果
 const keywordCache = new LocalCache<string, DNA[]>({ ttlMs: 30_000, namespace: 'm4_keyword' });

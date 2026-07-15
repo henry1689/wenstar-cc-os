@@ -1591,6 +1591,8 @@ export class FamilyGraph implements FamilyGraphInterface {
       mention_count: 0,
       ...props,
     } as PersonProfile;
+    // 🔴 FG真人标记: relation_to_user 非空则不可扮演
+    (result as any).roleplay_forbidden = !!(result.relation_to_user && result.relation_to_user !== '' && result.relation_to_user !== '无' && !result.relation_to_user.includes('虚构') && !result.relation_to_user.includes('扮演'));
     // 📜 信息权威铁律 · 等级S: 记录age字段是否有效
     if (result.age !== undefined && result.age !== null) {
       console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=' + result.age + ' (SOURCE: nodes.properties)');

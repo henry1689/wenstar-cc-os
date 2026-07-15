@@ -21,6 +21,7 @@ import { writeFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { LocalCache } from '../tools/LocalCache.js';
 import { fileURLToPath } from 'node:url';
+import { DNAEncoder } from '../../m1/DNAEncoder.js'; // 🔥 generateGlobalUID('WK', ...) 生成23字符GlobalUID
 
 // ── MD 同步路径 ──
 const __MD_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'data', 'knowledge-md');
@@ -103,6 +104,16 @@ ${entry.source_name ? `source_name: "${entry.source_name}"\n` : ''}${entry.file_
 // ── 模块级单例（跨多次 createKnowledgeEngine 调用持久化） ──
 // P2 ✅ 已切换: @zvec/zvec 0.5.0 C++ N-API — HNSW + COSINE + WAL
 import { getZvecAdapter, type IZvecAdapter } from '../../m2/ZvecAdapter.js';
+import { FtsSearch } from './FtsSearch.js';
+import { Reranker } from './Reranker.js';
+import { AutoClassifier } from '../learning/AutoClassifier.js';
+import { EmotionMatcher } from './EmotionMatcher.js';
+import { KnowledgeRelationGraph } from '../learning/KnowledgeRelationGraph.js';
+import { EnhancedKnowledgeGraph } from '../learning/EnhancedKnowledgeGraph.js';
+import { AutoEnhancer } from './AutoEnhancer.js';
+import { DedupService } from './DedupService.js';
+import { ImpressionModel } from '../learning/ImpressionModel.js';
+import { RetrieverCircuitBreaker } from './RetrieverCircuitBreaker.js';
 let _zvecAdapter: IZvecAdapter | null = null;
 async function ensureZvecReady(): Promise<IZvecAdapter> {
   if (!_zvecAdapter) {
@@ -259,7 +270,24 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     const fixedTitle = fixDoubleEncoded(params.title);
     const fixedContent = params.content ? fixDoubleEncoded(params.content) : params.content;
 
-    const id = `kn_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    // 🔥 FTS BM25 模糊去重：标题或内容高度相似则跳过
+    if (_ftsInitialized && fixedTitle.length >= 4) {
+      try {
+        const dupResults = _ftsSearch.search(fixedTitle, 1);
+        if (dupResults.length > 0 && dupResults[0].score > 2.5) {
+          const dup = dupResults[0];
+          console.log('[KE-Dedup] FTS命中重复: "' + fixedTitle.substring(0, 20) + '" ≈ "' + dup.title.substring(0, 20) + '" (score=' + dup.score.toFixed(2) + '), 跳过新增');
+          throw new Error('DEDUP_SKIP');
+        }
+      } catch (err: any) {
+        if (err.message === 'DEDUP_SKIP') throw err;
+        /* FTS 未就绪时跳过去重 */
+      }
+    }
+
+    // 🔥 生成 23 字符 GlobalUID (类型标记 WK=知识条目)
+    const _kbSeq = (Date.now() % 65535) || 1;
+    const id = DNAEncoder.generateGlobalUID('WK', _kbSeq, 0, '');
     const now = new Date().toISOString();
     const allTags = [...(params.tags ?? [])];
     if (params.emotionalContext) {
@@ -305,6 +333,31 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     indexContent(sqlite, id, fixedContent).catch(err =>
       console.warn(`[KnowledgeEngine] 索引失败 ${id}:`, err),
     );
+
+
+    // 🔥 AutoClassifier: 自动分类新知识
+    if (!params.classification) {
+      (async () => {
+        const clsResult = await _autoClassifier.classify(fixedTitle, fixedContent);
+        if (clsResult.autoApproved && clsResult.classification) {
+          sqlite.writeRaw('UPDATE knowledge_base SET classification = ?, classification_pending = 0 WHERE id = ?', [clsResult.classification, id]);
+          console.log('[AutoClassifier] 自动分类: ' + clsResult.classification + ' ← ' + fixedTitle.substring(0, 20));
+        }
+      })().catch(() => {});
+    }
+    // 🔥 写入寻址链: 知识新增时记录到 atom_address_timeline
+    try {
+      const _ts = Date.now();
+      const _stampBlob = JSON.stringify([{
+        workshop: 'KB', operation: 'CREATE', phase_id: 'ingestion', node_id: 'KnowledgeEngine',
+        timestamp: Math.floor(_ts / 1000), detail: 'knowledge_add',
+      }]);
+      sqlite.writeRaw(
+        `INSERT OR REPLACE INTO atom_address_timeline (global_uid, global_time_seq, absolute_timestamp, time_slice_tag, entity_belong_id, route_stamp_list, hot_cold_level, crc_checksum, state_flag, created_at) VALUES (?, ?, ?, ?, ?, ?, 'W', ?, 'N', unixepoch())`,
+        id, _kbSeq, _ts, now.substring(0, 7), params.dna_id || null, _stampBlob,
+        require('node:crypto').createHash('sha256').update(`${id}:${_kbSeq}`).digest('hex').substring(0, 16),
+      );
+    } catch (_e) { /* 寻址链写入失败不阻塞 */ }
 
     return entry;
   }
@@ -363,70 +416,134 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     return true;
   }
 
-  /** 搜索（混合检索：向量语义 + 关键词 + 情绪关联 + 交互型分类过滤 + 缓存） */
+  /** 🔥 FTS5 + RRF 混合检索（取代旧 LIKE+hybrid 路径） */
+  // BM25 参数可通过环境变量配置（不设则用默认值 k1=1.5, b=0.75）
+  const _bm25k1 = parseFloat(process.env['KB_BM25_K1'] || '') || 1.5;
+  const _bm25b = parseFloat(process.env['KB_BM25_B'] || '') || 0.75;
+  const _ftsSearch = new FtsSearch(sqlite, { k1: _bm25k1, b: _bm25b });
+  const _reranker = new Reranker();
+  const _autoClassifier = new AutoClassifier(sqlite);
+  const _emotionMatcher = new EmotionMatcher();
+  // 🔥 加载持久化情感权重（engine_store），首次启动用默认值
+  _emotionMatcher.loadWeights(sqlite).catch(() => {});
+  const _knowledgeGraph = new KnowledgeRelationGraph(sqlite);
+  const _enhancedKG = new EnhancedKnowledgeGraph(sqlite);
+  const _autoEnhancer = new AutoEnhancer(sqlite, _enhancedKG);
+  const _dedupService = new DedupService();
+  const _impressionModel = new ImpressionModel();
+  const _retrieverBreaker = new RetrieverCircuitBreaker('knowledge_fts', { timeoutMs: 3000 });
+  let _ftsInitialized = false;
+  let _emotionSearchCount = 0;  // 🔥 情感检索计数，每20次持久化一次权重
+  _ftsSearch.init().then(() => { _ftsInitialized = true; }).catch(() => {});
+
   async function search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }, interactionType?: string): Promise<KnowledgeItem[]> {
-    // LIKE 后备搜索函数（支持按 interaction_type 过滤）
-    const keywordSearch = (kw: string, lim: number) => {
+    const ftsSearch = async (kw: string, lim: number) => {
+      if (_ftsInitialized) {
+        const ftsResults = await _retrieverBreaker.call(
+          async () => _ftsSearch.search(kw, lim * 2),
+          async () => {
+            const like = '%' + kw + '%';
+            return sqlite.queryAll('SELECT id, title, content, classification FROM knowledge_base WHERE content LIKE ? OR title LIKE ? ORDER BY updated_at DESC LIMIT ?', [like, like, lim * 2]).map((r: any) => ({ id: r.id, title: r.title, content: r.content, classification: r.classification, score: 0.5 }));
+          }
+        );
+        if (ftsResults.length > 0) {
+          return ftsResults.map((r: any) => ({
+            id: r.id, title: r.title, content: r.content,
+            source_type: '', source_name: null, file_size: 0,
+            tags: [], created_at: '', updated_at: '',
+            locked: false, classification: r.classification || undefined,
+          } as KnowledgeItem));
+        }
+      }
+      // FTS5 降级 → LIKE
       let sql = `SELECT * FROM knowledge_base WHERE (content LIKE ? OR title LIKE ?)`;
       const params: any[] = [`%${kw}%`, `%${kw}%`];
-      if (interactionType) {
-        sql += ` AND interaction_type = ?`;
-        params.push(interactionType);
-      }
-      sql += ` ORDER BY created_at DESC LIMIT ?`;
-      params.push(lim);
+      if (interactionType) { sql += ` AND interaction_type = ?`; params.push(interactionType); }
+      sql += ` ORDER BY updated_at DESC LIMIT ?`; params.push(lim);
       return sqlite.queryAll(sql, params).map(rowToEntry);
     };
 
     const trimmed = keyword.trim();
-    if (!trimmed) return keywordSearch('', limit);
+    if (!trimmed) {
+      const rows = sqlite.queryAll(`SELECT * FROM knowledge_base ORDER BY updated_at DESC LIMIT ?`, [limit]);
+      return rows.map(rowToEntry);
+    }
 
-    // P2: 缓存检查
     const cacheKey = trimmed + '_' + (interactionType || '') + '_' + limit;
     const cached = await searchCache.get(cacheKey);
     if (cached) { return cached; }
 
-    // 1. 先用完整句子搜索
-    let results = keywordSearch(trimmed, limit);
+    // 1. FTS5 BM25 搜索（主路径）
+    let results: KnowledgeItem[] = await ftsSearch(trimmed, limit);
 
-    // 2. 如果没结果，拆出 2-4 字中文词逐个搜索（解决"你在知识库看过红楼逸事吗"→"红楼逸事"）
+    // 2. FTS5 无结果 → 拆中文词
     if (results.length === 0) {
       const words = trimmed.match(/[一-龥]{2,4}/g);
       if (words) {
-        const seen = new Set<string>();
-        for (const word of words) {
-          if (seen.has(word)) continue;
-          seen.add(word);
-          const sub = keywordSearch(word, limit);
-          if (sub.length > 0) {
-            results = sub;
-            break;
-          }
+        for (const word of [...new Set<string>(words)]) {
+          const sub = await ftsSearch(word, limit);
+          if (sub.length > 0) { results = sub; break; }
         }
       }
     }
 
-    // 3. 如果嵌入可用，走混合搜索（但不会覆盖关键词搜索结果）
-    if (embedProvider.isAvailable()) {
-      await ensureIndex(sqlite);
-      const zvs = await ensureZvecReady();
-      if (zvs.size > 0) {
-        try {
-          const hybridResults = await hybridSearch(trimmed, embedProvider, zvs as any, keywordSearch, limit, emotionalContext);
-          if (hybridResults.length > 0) return hybridResults;
-        } catch (err) {
-          console.warn('[KnowledgeEngine] 混合搜索失败，降级:', err);
+    // 3. RRF 融合: FTS + Zvec 向量（FTS 无结果时尝试向量兜底）
+    const zvs = await ensureZvecReady();
+    if (embedProvider.isAvailable() && zvs.size > 0) {
+      try {
+        await ensureIndex(sqlite);
+        const vecResults = await hybridSearch(trimmed, embedProvider, zvs as any, (kw: string, lim: number) => { const like = '%' + kw + '%'; return sqlite.queryAll('SELECT * FROM knowledge_base WHERE content LIKE ? OR title LIKE ? ORDER BY updated_at DESC LIMIT ?', [like, like, lim]).map(rowToEntry); }, limit, emotionalContext);
+        if (vecResults.length > 0) {
+          const fused = _reranker.rrfFuse([
+            { items: results.map(r => ({ ...r, matchScore: 0.5, source: 'fts' as const })), source: 'fts' },
+            { items: vecResults.map(r => ({ ...(r as any), matchScore: (r as any).matchScore || 0.5, source: 'vector' as const })), source: 'vector' },
+          ], limit);
+          results = fused;
+        }
+      } catch { /* 降级到纯FTS */ }
+    }
+
+    // 🔥 EmotionMatcher: 情感感知重排序
+    if (results.length > 0 && emotionalContext) {
+      const emotionBoosted = _emotionMatcher.rerank(results, emotionalContext);
+      results = emotionBoosted;
+    }
+
+    // 🔥 KnowledgeRelationGraph: 建立共召关联
+    if (results.length >= 2) {
+      const ids = results.slice(0, 5).map(r => r.id).filter(Boolean);
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          _knowledgeGraph.onCoRetrieved(ids[i], ids[j]).catch(() => {});
         }
       }
     }
 
-    // P2: 缓存结果 + 质量报告
-    searchCache.set(cacheKey, results).catch(function(e) { console.error('[KnowledgeEngine] error:', e?.message); });
+    // 🔥 ImpressionModel: 更新被召回知识的印象值
+    for (const r of results.slice(0, 5)) {
+      try {
+        const existing = sqlite.queryAll('SELECT impression_score, recall_count FROM knowledge_base WHERE id = ?', [r.id]);
+        if (existing.length > 0) {
+          const curScore = (existing[0] as any).impression_score ?? 0.5;
+          const recallCount = (existing[0] as any).recall_count ?? 0;
+          const newScore = _impressionModel.onRecalled(curScore, recallCount + 1);
+          sqlite.writeRaw('UPDATE knowledge_base SET impression_score = ?, recall_count = COALESCE(recall_count, 0) + 1, last_recalled_at = ? WHERE id = ?', [newScore, new Date().toISOString(), r.id]);
+        }
+      } catch {} /* 印象值更新不阻塞 */
+    }
+
+    searchCache.set(cacheKey, [...results]).catch(() => {});
     if (results.length > 0) {
-      const avgScore = results.reduce(function(s: number, r: any) { return s + (r.matchScore || 0.5); }, 0) / results.length;
-      console.log('[KB] 检索: ' + trimmed.substring(0,20) + ' → ' + results.length + '条 (均分' + avgScore.toFixed(2) + ')');
+      console.log('[KB] FTS检索: ' + trimmed.substring(0,20) + ' → ' + results.length + '条 (情感增强=' + (emotionalContext ? 'on' : 'off') + ')');
     }
-    return results;
+    // 🔥 概率持久化情感权重（每20次检索持久化一次，降低IO）
+    if (emotionalContext) {
+      _emotionSearchCount++;
+      if (_emotionSearchCount % 20 === 0) {
+        _emotionMatcher.saveWeights(sqlite).catch(() => {});
+      }
+    }
+    return results.slice(0, limit);
   }
 
   /** 计数 */

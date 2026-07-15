@@ -357,10 +357,29 @@ export class DNAEncoder {
       'user.health.fitness': ['健身', '运动'],
       'user.health.sickness': ['生病', '健康'],
       'user.health.sleep': ['睡眠'],
+      'user.health.general': ['健康'],
+      'user.social.general': ['社交'],
+      'user.social.friend': ['朋友', '社交'],
+      'user.social.partner': ['伴侣', '亲密'],
     };
 
     const matched = locusMap[locusPath];
     if (matched) tags.push(...matched);
+    // 兜底: 从 locus_path 自动提取有意义的片段
+    else {
+      const segments = locusPath.split('.');
+      for (const seg of segments) {
+        if (seg !== 'user' && seg !== 'general' && seg.length >= 2) {
+          const tagMap: Record<string, string> = {
+            'family': '家庭', 'emotion': '情绪', 'work': '工作',
+            'daily': '日常', 'health': '健康', 'social': '社交',
+            'finance': '财务', 'study': '学习', 'travel': '旅行',
+            'shopping': '购物', 'food': '饮食',
+          };
+          if (tagMap[seg] && !tags.includes(tagMap[seg])) tags.push(tagMap[seg]);
+        }
+      }
+    }
 
     const emotionTagMap: Record<string, string> = {
       '开心': '快乐', '难过': '悲伤', '生气': '愤怒', '害怕': '恐惧',
@@ -372,6 +391,7 @@ export class DNAEncoder {
       }
       if (g.type === 'person' && !tags.includes('人际')) tags.push('人际');
       if (g.type === 'event' && !tags.includes('事件')) tags.push('事件');
+      if (g.type === 'place' && !tags.includes('地点')) tags.push('地点');
     }
 
     return tags;
