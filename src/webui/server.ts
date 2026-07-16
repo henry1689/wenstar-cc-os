@@ -28,6 +28,7 @@ import http from 'node:http';
 import fs, { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setGlobal } from '../common/GlobalRegistry.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
@@ -394,6 +395,7 @@ async function initPipeline(): Promise<void> {
   familyGraph = new FamilyGraph(DB_PATH);
   await familyGraph.initialize();
   (globalThis as any).__familyGraph = familyGraph;
+  setGlobal('familyGraph', familyGraph);
   m4 = new M4Orchestrator(storage, familyGraph, knowledgeBase);
   await m4.initialize();
   // 使用与 FusionStorageAdapter 共享的 ConversationDB（三段存储③砂金库）
@@ -554,18 +556,21 @@ async function initPipeline(): Promise<void> {
     const rawBus = new EventBus();
     const tianquanBus = new TianquanEventBus(rawBus);
     (globalThis as any).__tianquanBus = tianquanBus;
+    setGlobal("tianquanBus", tianquanBus);
     console.log('  天权事件总线已就绪 ✓');
 
     // ② 知识索引摘要桥接层
     const { KnowledgeBridge } = await import('../engine/tianquan/knowledge/KnowledgeBridge.js');
     const knowledgeBridge = new KnowledgeBridge(knowledgeBase, storage.getSQLite()!);
     (globalThis as any).__knowledgeBridge = knowledgeBridge;
+    setGlobal("knowledgeBridge", knowledgeBridge);
     console.log('  天权知识索引桥接层已就绪 ✓');
 
     // ③ 海马域统一只读查询门面（封装 KB + SQLite + HippocampalIndex）
     const { KnowledgeAccessFacade } = await import('../engine/tianquan/temporal/KnowledgeAccessFacade.js');
     const knowledgeAccessFacade = new KnowledgeAccessFacade(knowledgeBase, storage.getSQLite()!);
     (globalThis as any).__knowledgeAccessFacade = knowledgeAccessFacade;
+    setGlobal("knowledgeAccessFacade", knowledgeAccessFacade);
     console.log('  天权海马域知识查询门面已就绪 ✓');
 
     // ④ 前额叶决策域装配
@@ -588,17 +593,21 @@ async function initPipeline(): Promise<void> {
       const secondBrainGateway = new SecondBrainGateway(vaultPath);
       await secondBrainGateway.initialize();
       (globalThis as any).__secondBrainGateway = secondBrainGateway;
+    setGlobal("secondBrainGateway", secondBrainGateway);
       // 文件变更监测器（默认每 5 分钟 polling）
       const mdFileWatcher = new MDFileWatcher(secondBrainGateway, 300_000);
       mdFileWatcher.start();
       (globalThis as any).__mdFileWatcher = mdFileWatcher;
+    setGlobal("mdFileWatcher", mdFileWatcher);
       // [[wikilink]] 图谱解析器
       const wikiLinkResolver = new WikiLinkResolver(secondBrainGateway);
       (globalThis as any).__wikiLinkResolver = wikiLinkResolver;
+    setGlobal("wikiLinkResolver", wikiLinkResolver);
       // MD→记忆溯源追踪器
       const sourceTracker = new SourceTracker(storage.getSQLite()!);
       sourceTracker.initialize();
       (globalThis as any).__sourceTracker = sourceTracker;
+    setGlobal("sourceTracker", sourceTracker);
       console.log('  第二大脑 Gateway 已启动 ✓ (' + secondBrainGateway.scanWikiMDFiles().length + ' 个 MD 文件)');
     } catch (err) {
       console.warn('  第二大脑 Gateway 初始化失败（降级运行）:', err);

@@ -17,6 +17,7 @@
  * 不阻塞对话流程，所有操作异步执行。
  */
 import type { FusionStorageAdapter } from '../../../m2/FusionStorageAdapter.js';
+import { MEMORY_CONFIG } from '../../../config/MemoryConfig.js';
 
 /** 各阶段执行窗口（小时） */
 const STAGE_WINDOWS = {
@@ -202,11 +203,12 @@ export class SleepTimeConsolidator {
     try {
       const now = Date.now();
       // 弹性晋升公式：弹性分 = calcium × 时间衰减 × 实体多样性
-      // 阈值从 1.0 放宽至 0.7，捕获"当下普通、长期高价值"的滞后型记忆
+      // 阈值从 1.0 放宽至 0.7，捕获"当下普通、长期高价值"的滞后型记忆（由 MEMORY_CONFIG 统一管理）
+      const _cfg = MEMORY_CONFIG.sleepConsolidation;
       const rows = sqlite.queryAll(
         `SELECT id, content, calcium_score, entity_names, dna_root_id, timestamp,
                 perception_summary, seq_pos FROM conversations
-         WHERE is_promoted = 0 AND calcium_score >= 0.3 ORDER BY calcium_score DESC LIMIT 50`
+         WHERE is_promoted = 0 AND calcium_score >= ${_cfg.sandToGoldMinCalcium} ORDER BY calcium_score DESC LIMIT ${_cfg.sandToGoldBatchSize}`
       );
       let count = 0;
       for (const row of rows) {
@@ -232,8 +234,8 @@ export class SleepTimeConsolidator {
         const diversityBoost = 1 + uniquePersons * 0.1;
         const calcium = (row as any).calcium_score || 0.5;
         const elasticScore = calcium * decayFactor * diversityBoost;
-        // 多样性门槛：单人对话需更高弹性分（0.85），多人对话阈值0.7
-        const threshold = uniquePersons >= 2 ? 0.7 : 0.85;
+        // 多样性门槛：单人对话需更高弹性分，多人对话阈值放宽（由 MEMORY_CONFIG 统一管理）
+        const threshold = uniquePersons >= 2 ? _cfg.multiPersonThreshold : _cfg.singlePersonThreshold;
 
         if (elasticScore < threshold) continue;
 
@@ -286,10 +288,11 @@ export class SleepTimeConsolidator {
   /** ③ 金库→黑钻晋升 */
   private async _promoteGoldToDiamond(sqlite: any): Promise<number> {
     try {
+      const _cfg3 = MEMORY_CONFIG.sleepConsolidation;
       const rows = sqlite.queryAll(
         `SELECT id, raw_input, calcium_score, recall_count FROM memories
-         WHERE promoted_to_diamond = 0 AND (calcium_score >= 4.5 OR recall_count >= 5)
-         LIMIT 5`
+         WHERE promoted_to_diamond = 0 AND (calcium_score >= ${_cfg3.goldToDiamondCalcium} OR recall_count >= ${_cfg3.goldToDiamondMinRecall})
+         LIMIT ${MEMORY_CONFIG.goldToDiamond.batchSize}`
       );
       let count = 0;
       for (const row of rows) {
@@ -531,7 +534,8 @@ export class SleepTimeConsolidator {
       );
       if (marked?.length) {
         sqlite.writeRaw(
-          "UPDATE memories SET effective_strength = 0.01, calcium_score = 0.1 WHERE lifecycle_state = 'suppressed'"
+          "UPDATE memories SET effective_strength = ?, calcium_score = ? WHERE lifecycle_state = 'suppressed'",
+          [MEMORY_CONFIG.sleepConsolidation.forgettingStrengthFloor, MEMORY_CONFIG.sleepConsolidation.forgettingCalciumFloor]
         );
         console.log(`[SleepTime] 遗忘执行: ${marked.length} 条`);
       }
@@ -581,8 +585,10 @@ export class SleepTimeConsolidator {
              locus_path, leaf_zone, effective_strength, created_at, lifecycle_state, memory_kind, recall_count,
              last_recalled_at, source_type, strength_updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?)`,
-            [entryId, seqPos, summary.substring(0, 500), '{}', 0.5, 1,
-             'knowledge_vault', 'language_semantic_zone', 0.5, now, now]
+            [entryId, seqPos, summary.substring(0, MEMORY_CONFIG.sleepConsolidation.secondBrainSummaryMaxLen), '{}',
+             MEMORY_CONFIG.sleepConsolidation.secondBrainInitCalcium, 1,
+             'knowledge_vault', 'language_semantic_zone',
+             MEMORY_CONFIG.sleepConsolidation.secondBrainInitStrength, now, now]
           );
 
           // 溯源记录：MD源文件→memories 条目
@@ -682,8 +688,8 @@ export class SleepTimeConsolidator {
       // 1. 回放 top-20 高钙化记忆，强化 hippocampal_index 映射
       const topMemories = sqlite.queryAll(
         `SELECT id, raw_input, calcium_score, locus_path, entity_names, perception_json
-         FROM memories WHERE calcium_score >= 1.0 AND lifecycle_state != 'suppressed'
-         ORDER BY calcium_score DESC LIMIT 20`
+         FROM memories WHERE calcium_score >= ${MEMORY_CONFIG.sleepConsolidation.systemsConsolidationCalcium} AND lifecycle_state != 'suppressed'
+         ORDER BY calcium_score DESC LIMIT ${MEMORY_CONFIG.sleepConsolidation.systemsConsolidationBatchSize}`
       );
       if (!topMemories?.length) return;
 
@@ -703,7 +709,7 @@ export class SleepTimeConsolidator {
             perception
           );
           sqlite.writeRaw(
-            "UPDATE hippocampal_index SET calcium_boost = MIN(10.0, calcium_boost + 0.2), last_activated_at = ? WHERE context_signature = ?",
+            `UPDATE hippocampal_index SET calcium_boost = MIN(10.0, calcium_boost + ${MEMORY_CONFIG.sleepConsolidation.systemsConsolidationBoost}), last_activated_at = ? WHERE context_signature = ?`,
             [new Date().toISOString(), sig]
           );
           reinforced++;

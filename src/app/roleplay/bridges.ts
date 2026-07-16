@@ -1,5 +1,6 @@
 /**
  * roleplay/bridges.ts — roleplay-legacy → roleplay 迁移桥
+ * @deprecated Phase 3: 逐函数迁移到新域后删除 bridges.ts + roleplay-legacy/ 整个目录
  * ======================================================
  * 6 个 legacy 独有模块通过此文件 re-export。
  * 新代码 import 此文件，旧代码继续直引 legacy，互不干扰。

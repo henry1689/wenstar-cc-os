@@ -57,6 +57,54 @@ export const MEMORY_CONFIG = {
     maxCount: 200,
   },
 
+  // ── V4.0: 睡眠期巩固 (SleepTimeConsolidator) ──
+  sleepConsolidation: {
+    /** 砂金→金库弹性晋升最低钙化分 */
+    sandToGoldMinCalcium: 0.3,
+    /** 弹性晋升批量上限 */
+    sandToGoldBatchSize: 50,
+    /** 多人对话弹性阈值（≥2人） */
+    multiPersonThreshold: 0.7,
+    /** 单人对话弹性阈值 */
+    singlePersonThreshold: 0.85,
+    /** 惊讶度评估批量上限 */
+    surpriseBatchSize: 50,
+    /** 惊讶度触发阈值 */
+    surpriseThreshold: 0.3,
+    /** 惊讶度钙化 boost 系数 */
+    surpriseBoostFactor: 0.5,
+    /** 金库→黑钻晋升钙化分 */
+    goldToDiamondCalcium: 4.5,
+    /** 金库→黑钻晋升最低召回次数 */
+    goldToDiamondMinRecall: 5,
+    /** 情景→语义归纳批量上限 */
+    semanticInductionBatchSize: 200,
+    /** 语义归纳最低提及次数(实体) */
+    semanticMinEntityMentions: 3,
+    /** 语义归纳最低提及次数(词组) */
+    semanticMinWordMentions: 5,
+    /** 语义归纳最低钙化均值 */
+    semanticMinAvgCalcium: 0.25,
+    /** 跨session关联搜索范围 */
+    crossSessionBatchSize: 500,
+    /** 遗忘执行强度降为 */
+    forgettingStrengthFloor: 0.01,
+    /** 遗忘执行钙化降为 */
+    forgettingCalciumFloor: 0.1,
+    /** 系统巩固钙化门槛 */
+    systemsConsolidationCalcium: 1.0,
+    /** 系统巩固批量上限 */
+    systemsConsolidationBatchSize: 20,
+    /** 钙化 boost 增量 */
+    systemsConsolidationBoost: 0.2,
+    /** 第二大脑同步摘要长度上限 */
+    secondBrainSummaryMaxLen: 500,
+    /** 第二大脑同步初始钙化 */
+    secondBrainInitCalcium: 0.5,
+    /** 第二大脑同步初始强度 */
+    secondBrainInitStrength: 0.5,
+  },
+
   // ── 召回评分 ──
   recall: {
     /** 每次召回递增钙化分 */
