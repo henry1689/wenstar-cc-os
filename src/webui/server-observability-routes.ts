@@ -968,6 +968,23 @@ export async function handleObservabilityRoutes(
         seq_pos: storageStatus.currentSeqPos,
       } : null,
       family: { members: familySummary.members.map((m: any) => ({ name: m.name, relation: m.relation_to_user })), total: familySummary.members.length },
+      // V4.0 Phase 4: 玉瑶自我认知
+      self_model: (() => {
+        try {
+          const cm = (globalThis as any).__coreMemory;
+          const pfc = (globalThis as any).__prefrontalCortex;
+          const sqlite = storage?.getSQLite?.();
+          return {
+            coreMemory: cm ? cm.getStatus?.().map((b: any) => ({ label: b.label, size: b.size, priority: b.priority })) || [] : [],
+            bigFive: m6?.manager?.getModel?.()?.traits || null,
+            longTermGoals: pfc?.goalStack?.getState?.()?.longTerm || [],
+            blackDiamondManualRules: sqlite
+              ? (sqlite.queryAll?.("SELECT summary, entry_reason, stabilization_score FROM black_diamond WHERE entry_channel='manual' AND status='active' LIMIT 10") || [])
+                .map((r: any) => ({ summary: r.summary?.substring(0, 80), reason: r.entry_reason, score: r.stabilization_score }))
+              : [],
+          };
+        } catch { return null; }
+      })(),
     }));
     return true;
   }

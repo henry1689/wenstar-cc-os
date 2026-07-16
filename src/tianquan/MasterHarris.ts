@@ -37,6 +37,9 @@ const ROUTE_TABLE: ReadonlyArray<{ tag: RouteTag; domain: TaskDomain; workflowId
   { tag: RouteTag.WORLD_SNAPSHOT, domain: TaskDomain.YAOGUANG, workflowId: 'wf_perception_filter', active: true },
 ];
 
+/** V4.0 Phase 4: 意图分类 — 决定请求发往哪个域 (tianquan/yaoling/yaoguang)
+ *  @note 与 PFC._inferIntent() 和 chat.ts classifyRole() 并行运行。
+ *  Phase 4 建议: 三套合并为统一 IntentClassifier → {targetDomain, processingStrategy, confidence} */
 export function classifyIntent(message: string): IntentClassification {
   const l = message.toLowerCase();
   if (/审查|review|代码检查|lint/.test(l)) return { domain: TaskDomain.TIANQUAN, routeTag: RouteTag.CODE_REVIEW, confidence: 0.9, reason: '代码审查' };

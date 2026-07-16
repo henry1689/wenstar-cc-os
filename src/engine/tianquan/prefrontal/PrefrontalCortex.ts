@@ -256,7 +256,9 @@ export class PrefrontalCortex {
   //  内部
   // ═══════════════════════════════════════════════════════
 
-  /** 意图推断（Phase 1 增强，Phase 3 替换为 M3 决策 + GoalStack 联动） */
+  /** 意图推断（Phase 1 增强，Phase 4 建议与 MasterHarris.classifyIntent 统一）
+   *  @note MasterHarris 决定"发往哪个域"，PFC 决定"用什么策略处理"。
+   *  建议合并为 IntentClassifier → {targetDomain, processingStrategy, confidence} */
   private _inferIntent(rawInput: string): string {
     if (/^(你好|嗨|哈[喽啰]|hi|hello)/i.test(rawInput)) return '问候';
     if (/[？?]/.test(rawInput) && /什么|怎么|为什么|谁|哪|多少|如何/.test(rawInput)) return '回答问题';
