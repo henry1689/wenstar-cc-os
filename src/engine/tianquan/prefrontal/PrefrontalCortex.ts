@@ -95,6 +95,19 @@ export class PrefrontalCortex {
       this.goalStack.getState(),
     );
 
+    // V4.0 Phase 2: 发布前额指令事件，打通 TianquanEventBus 正向流
+    this.bus?.emit?.({
+      type: 'prefrontal:directive_issued',
+      traceId: `pfc_${Date.now().toString(36)}`,
+      timestamp: Date.now(),
+      sessionId: input.sessionId,
+      payload: {
+        directive,
+        sourceModule: 'prefrontal',
+        workingMemoryState: { activeSlots: this.workingMemory.activeCount, evictionPolicy: 'lru' },
+      },
+    }).catch(() => {});
+
     return {
       directive,
       wmState: this.workingMemory.getState(),
@@ -197,9 +210,9 @@ export class PrefrontalCortex {
     return '日常对话';
   }
 
-  /** 构建约束校验输入（Phase 1 接入 globalThis 真实数据源） */
+  /** 构建约束校验输入（V4.0 Phase 2: 融合三源数据） */
   private _buildConstraintInput(input: PrefrontalInput): ConstraintInput {
-    // 🔥 Phase 1: 从 globalThis 接入真实数据源（HeartStateStore / FamilyGraph / 会话状态）
+    // 🔥 从 globalThis 接入真实数据源（HeartStateStore / FamilyGraph / 会话状态）
     const heartState: any = (globalThis as any).__heartStateStore;
     const fg: any = (globalThis as any).__familyGraph;
     const _cr: string | null = (globalThis as any).__currentRoleplay || null;
@@ -225,6 +238,16 @@ export class PrefrontalCortex {
         calm: 50,
       };
     }
+
+    // 🔥 V4.0 Phase 2: 融合瑶灵 32D 体感 + 瑶光 6D 环境 → 增强情感向量
+    try {
+      const { SensationAdapter } = require('./SensationAdapter.js') as typeof import('./SensationAdapter.js');
+      const { somatic, env } = SensationAdapter.getLatestSnapshots();
+      if (somatic || env) {
+        const enhanced = SensationAdapter.enhance(emotionVector, somatic, env);
+        emotionVector = enhanced.emotionVector;
+      }
+    } catch { /* SensationAdapter 不可用不阻塞 */ }
 
     // 家族上下文：从 FamilyGraph 读取人物关系
     const familyContext: Array<{ entity: string; relation: string }> = [];

@@ -163,6 +163,21 @@ export class SleepTimeConsolidator {
 
       if (report.stagesRun.length > 0) {
         console.log('[SleepTime] 巩固报告 (距活跃', report.hoursSinceLastActive, 'h):', JSON.stringify(report));
+        // V4.0 Phase 2: 发布巩固完成事件到 TianquanEventBus
+        (globalThis as any).__tianquanBus?.emit?.({
+          type: 'consolidation:complete',
+          traceId: `sc_${Date.now().toString(36)}`,
+          timestamp: Date.now(),
+          sessionId: '',
+          payload: {
+            sandToGold: report.sandToGold,
+            goldToDiamond: report.goldToDiamond,
+            semanticInductions: report.semanticInductions,
+            crossSessionLinks: report.crossSessionLinks,
+            forgotten: report.forgotten,
+            stagesRun: report.stagesRun,
+          },
+        }).catch(() => {});
       }
     } catch (err) {
       console.warn('[SleepTime] 巩固失败:', err);

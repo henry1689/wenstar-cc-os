@@ -1974,21 +1974,33 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
             enrichedHistory.slice(-10).map((t: any) => ({ role: t.role || 'user', content: (t.content || '').substring(0, 200) }));
           (globalThis as any).__currentRoleplay = _currentRoleplay || null;
 
-          // 构建轻量 SceneSnapshot（不依赖 SnapshotBuilder，直接从上下文提取）
-          const _snap: any = {
-            snapshotId: 'pfc_' + Date.now().toString(36),
-            contextSignature: (dna.locus_path || 'root') + '|' + (p.pleasure > 0.2 ? 'pos' : (p.pleasure < -0.2 ? 'neg' : 'neu')),
-            temporal: { createdAt: new Date().toISOString(), sessionId: String(seqPos) || '', timeOfDay: 'morning', dayOfWeek: new Date().getDay() },
-            spatial: { sceneLabel: '对话中' },
-            entities: { persons: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我').map((g: any) => g.name), topics: [], objects: [] },
-            experienceSummary: (memoryFragments || []).join(' | ').substring(0, 200) || '(无)',
-            emotion: { pleasure: p.pleasure || 0, arousal: p.arousal || 0, intimacy: p.intimacy || 0, trend: 'stable' },
-            memoryPointers: emotionalMemories.map((m: any) => m?.record?.id || '').filter(Boolean),
-            knowledgeRefs: [] as string[],
-            fgEventRefs: [] as string[],
-            calciumScore: decision.enhanced?.calcium_score || 0.5,
-            novelty: { level: 'routine', similarity: 0.5, multiplier: 1.0 },
-          };
+          // 🔥 V4.0 Phase 2: 使用 M4Orchestrator.retrieveAsSnapshot() → SceneSnapshotBuilder.build()
+          //    替代 Phase 1 手写 20 行轻量快照。Builder 内部有钙化计算、经验摘要、情绪趋势、新颖性评估
+          let _snap: any = null;
+          if (ctx.m4 && typeof ctx.m4.retrieveAsSnapshot === 'function') {
+            _snap = ctx.m4.retrieveAsSnapshot(ctx_m4, {
+              perception: p,
+              sessionId: String(seqPos),
+              rawInput: message,
+            });
+          }
+          // Builder 不可用（无检索记忆、sqlite 未就绪）时降级到轻量快照
+          if (!_snap) {
+            _snap = {
+              snapshotId: 'pfc_' + Date.now().toString(36),
+              contextSignature: (dna.locus_path || 'root') + '|' + (p.pleasure > 0.2 ? 'pos' : (p.pleasure < -0.2 ? 'neg' : 'neu')),
+              temporal: { createdAt: new Date().toISOString(), sessionId: String(seqPos) || '', timeOfDay: 'morning', dayOfWeek: new Date().getDay() },
+              spatial: { sceneLabel: '对话中' },
+              entities: { persons: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我').map((g: any) => g.name), topics: [], objects: [] },
+              experienceSummary: (memoryFragments || []).join(' | ').substring(0, 200) || '(无)',
+              emotion: { pleasure: p.pleasure || 0, arousal: p.arousal || 0, intimacy: p.intimacy || 0, trend: 'stable' },
+              memoryPointers: emotionalMemories.map((m: any) => m?.record?.id || '').filter(Boolean),
+              knowledgeRefs: [] as string[],
+              fgEventRefs: [] as string[],
+              calciumScore: decision.enhanced?.calcium_score || 0.5,
+              novelty: { level: 'routine', similarity: 0.5, multiplier: 1.0 },
+            };
+          }
 
           const _pfcInput = { snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message };
           const _pfcResult = await _pfc.process(_pfcInput, decision);
