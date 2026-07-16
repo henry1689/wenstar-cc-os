@@ -14,13 +14,13 @@ import type { OutputFinalizedEvent, UserInputEvent } from './bus/types.js';
 import { EventBus } from './bus/EventBus.js';
 import { HeartStateStore } from './heart/HeartStateStore.js';
 import { GenerationOrchestrator } from './cortex/GenerationOrchestrator.js';
-import { L0Classifier } from './brain/L0Classifier.js';
-import { L05IntentRouter } from './brain/L05IntentRouter.js';
-import { SafetyInterceptor } from './brain/SafetyInterceptor.js';
+import { L0Classifier } from './reflex/L0Classifier.js';
+import { L05IntentRouter } from './reflex/L05IntentRouter.js';
+import { SafetyInterceptor } from './reflex/SafetyInterceptor.js';
 import { OutputProcessor } from './cortex/OutputProcessor.js';
 import { LegacyAdapter } from './legacy-adapter.js';
-import { CommunicationModeStore } from './brain/CommunicationModeStore.js';
-import { CommunicationModeRouter } from './brain/CommunicationModeRouter.js';
+import { CommunicationModeStore } from './reflex/CommunicationModeStore.js';
+import { CommunicationModeRouter } from './reflex/CommunicationModeRouter.js';
 import { EngineContext } from './EngineContext.js';
 
 /** 简单 traceId 生成（无需外部依赖） */
