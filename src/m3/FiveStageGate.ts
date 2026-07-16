@@ -23,6 +23,7 @@
 // ── 类型 ────────────────────────────────────────────────
 
 import { applyDecay } from '../m2/math.js';
+import { M3_CONFIG } from '../config/M3Config.js';
 
 // ── 类型 ────────────────────────────────────────────────
 
@@ -79,17 +80,23 @@ export interface GateResult {
 
 // ── 配置 (蓝皮书 §4.2) ────────────────────────────────
 
-const G1_COSINE_THRESHOLD = 0.3;
+// V4.0 Phase 4: 阈值从 M3_CONFIG 读取（原硬编码值已迁移）
+const _gcfg = M3_CONFIG.fiveStageGate;
+const G1_COSINE_THRESHOLD = _gcfg.g1CosineThreshold;
 const G2_SCORE_THRESHOLDS = {
-  PASS: 0.3,   // ≤0.3: 完全通过
-  P1: 0.6,     // ≤0.6: 轻度抑制
-  P2: 0.8,     // ≤0.8: 中度抑制
-  P3: Infinity,// >0.8: 严重抑制, 近乎剔除
+  PASS: _gcfg.g2ScoreThresholds.PASS,
+  P1: _gcfg.g2ScoreThresholds.P1,
+  P2: _gcfg.g2ScoreThresholds.P2,
+  P3: _gcfg.g2ScoreThresholds.P3,
 };
-const G2_SUPPRESSION_WEIGHTS = { P1: 0.7, P2: 0.4, P3: 0.05 };
-const G3_DECAY_FLOOR = 0.05;
-const G4_ACTIVE_RECALL_REGEX = /(?:还记得|以前|那次|当时|什么时候|在哪里|和谁|告诉过我|记不记得)/;
-const G5_TOPIC_FREEZE_WEIGHT = 0.1;
+const G2_SUPPRESSION_WEIGHTS = {
+  P1: _gcfg.g2SuppressionWeights.P1,
+  P2: _gcfg.g2SuppressionWeights.P2,
+  P3: _gcfg.g2SuppressionWeights.P3,
+};
+const G3_DECAY_FLOOR = _gcfg.g3DecayFloor;
+const G4_ACTIVE_RECALL_REGEX = new RegExp(_gcfg.g4ActiveRecallPattern);
+const G5_TOPIC_FREEZE_WEIGHT = _gcfg.g5TopicFreezeWeight;
 
 // ── 主闸门 ──────────────────────────────────────────────
 

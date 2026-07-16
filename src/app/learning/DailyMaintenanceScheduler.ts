@@ -134,6 +134,51 @@ export class DailyMaintenanceScheduler {
       });
     } catch { /* 日志失败不阻塞 */ }
 
+    // V4.0 Phase 4: 月度对话主题提取（每30天一次，fire-and-forget）
+    const _lastTopicRunKey = 'last_monthly_topic_run';
+    const _days = Math.floor(Date.now() / 86400000);
+    const _prevRun = (() => {
+      try {
+        const r = this.storage.getSQLite()?.queryAll(
+          "SELECT value FROM engine_store WHERE key = ? LIMIT 1", [_lastTopicRunKey]
+        );
+        return r?.[0] ? parseInt((r[0] as any).value || '0', 10) : 0;
+      } catch { return 0; }
+    })();
+    if (_days - _prevRun >= 30) {
+      setImmediate(() => {
+        try {
+          const sqlite = this.storage.getSQLite();
+          if (!sqlite) return;
+          const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+          const rows = sqlite.queryAll(
+            "SELECT content FROM conversations WHERE role='user' AND timestamp > ? AND roleplay_char IS NULL AND content IS NOT NULL LIMIT 500",
+            [cutoff]
+          );
+          if (!rows?.length) return;
+          const words = new Map<string, number>();
+          const stopWords = new Set('的了在是我有不和就人也把被让从对跟说会着没看好看一看是一样能到下而去及但'.split(''));
+          for (const r of rows) {
+            const text = (r as any).content || '';
+            const matches = text.match(/[一-龥]{2,4}/g) || [];
+            for (const w of matches) {
+              if (w.split('').some((c: string) => stopWords.has(c))) continue;
+              words.set(w, (words.get(w) || 0) + 1);
+            }
+          }
+          const top10 = [...words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+          if (top10.length > 0) {
+            const summary = `本月对话主题 Top10:\\n${top10.map(([w, c], i) => `${i + 1}. ${w} (${c}次)`).join('\\n')}`;
+            sqlite.writeRaw(
+              "INSERT OR REPLACE INTO engine_store (key, value) VALUES (?, ?)",
+              [_lastTopicRunKey, String(_days)]
+            );
+            console.log('[DailyMaintenance] 月度主题: ' + top10.map(([w]) => w).join(', '));
+          }
+        } catch { /* 月度主题提取失败不阻塞 */ }
+      });
+    }
+
     console.log('[DailyMaintenance] ✅ 完成');
     return result;
   }
