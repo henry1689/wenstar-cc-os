@@ -80,4 +80,7 @@ export interface LLMProvider {
 
   /** 切换角色 (可选实现) */
   setPersona?(persona: import('../../app/persona/types.js').IPersona): void;
+
+  /** V3.2: 原始 LLM 调用（绕过 persona 和角色路由），供提取/分析类任务使用 */
+  rawCall?(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, maxTokens: number, temperature: number): Promise<string>;
 }

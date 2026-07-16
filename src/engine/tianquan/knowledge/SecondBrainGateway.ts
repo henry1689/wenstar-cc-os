@@ -57,12 +57,24 @@ export class SecondBrainGateway {
     return this._index.get(relativePath) || null;
   }
 
+  /** 校验路径安全：确保解析后的路径仍在 vaultPath 内，防止路径遍历攻击 */
+  private _validatePath(subdir: string, relativePath: string): string | null {
+    const resolved = path.resolve(this.vaultPath, subdir, relativePath);
+    const allowedPrefix = path.resolve(this.vaultPath, subdir) + path.sep;
+    if (!resolved.startsWith(allowedPrefix) && resolved !== path.resolve(this.vaultPath, subdir)) {
+      console.warn('[SecondBrainGateway] 路径遍历拒绝:', relativePath);
+      return null;
+    }
+    return resolved;
+  }
+
   /** 获取 MD 文件的摘要（frontmatter + 首 200 字符正文） */
   getMDSummary(relativePath: string): string | null {
     const manifest = this._index.get(relativePath);
     if (!manifest) return null;
+    const fullPath = this._validatePath('wiki', relativePath);
+    if (!fullPath) return null;
     try {
-      const fullPath = path.join(this.vaultPath, 'wiki', relativePath);
       const raw = fs.readFileSync(fullPath, 'utf-8');
       const parsed = this._parseFrontmatter(raw);
       const body = parsed.body || '';
@@ -77,8 +89,9 @@ export class SecondBrainGateway {
   getWikiEntry(relativePath: string): WikiEntry | null {
     const manifest = this._index.get(relativePath);
     if (!manifest) return null;
+    const fullPath = this._validatePath('wiki', relativePath);
+    if (!fullPath) return null;
     try {
-      const fullPath = path.join(this.vaultPath, 'wiki', relativePath);
       const raw = fs.readFileSync(fullPath, 'utf-8');
       const parsed = this._parseFrontmatter(raw);
       const relations = (parsed.frontmatter?.relations as any[]) || [];

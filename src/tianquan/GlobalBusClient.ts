@@ -83,7 +83,7 @@ export class GlobalBusClient extends EventEmitter {
       rl.on('line', (line: string) => {
         try { this._handleMessage(JSON.parse(line.trim())); } catch { /* ignore parse errors */ }
       });
-      sock.on('close', () => { this._connected = false; this._socket = null; this._log('断开'); this.emit('disconnected'); });
+      sock.on('close', () => { this._connected = false; this._socket = null; this._log('断开'); this.emit('disconnected'); this._tryReconnect(); });
       sock.on('error', (e) => { this._log(`错误: ${e.message}`); reject(e); });
     });
   }
@@ -92,6 +92,13 @@ export class GlobalBusClient extends EventEmitter {
     this._connected = false;
     this._rejectAllPending(new Error('总线断开'));
     if (this._socket) { this._socket.destroy(); this._socket = null; }
+  }
+
+  private _tryReconnect(): void {
+    if (this._reconnectAttempts >= this.MAX_RECONNECT) return;
+    this._reconnectAttempts++;
+    this._log(`重连尝试 ${this._reconnectAttempts}/${this.MAX_RECONNECT}...`);
+    setTimeout(() => { this.connect().catch(() => { this._log('重连失败，稍后再试'); }); }, this.RECONNECT_DELAY);
   }
 
   /** 发送跨域指令并等待响应 */

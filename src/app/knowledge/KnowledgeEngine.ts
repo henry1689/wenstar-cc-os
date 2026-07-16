@@ -259,6 +259,8 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     interaction_type?: string;
     /** P0: 情感曲谱（24D 感知向量 JSON） */
     emotion_vector?: string;
+    /** V3.2: 户籍卷宗归档 — 此知识归属的实体 UUID */
+    belongEntityUuid?: string;
   }): Promise<KnowledgeItem> {
     // 🔴 隐私守卫：拒绝个人/用户信息进入知识库
     const _privacyPatterns = /^用户信息[:：]|^用户地址[:：]|^用户偏好[:：]|^用户厌恶[:：]|^习惯[:：]|^喜好[:：]|^重点关注[:：]|^待查询[:：]|^回忆[:：]|^研究[:：]|徐诗雨身高|梓铭简介|我的名字是|我的女友|我的工作|我的老婆|我的这根|我在哪个公园|我在哪家公司|我在外面|我在问你在哪里|我在深圳市|我把一切|我家里面|我在他们面/;
@@ -318,14 +320,15 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       emotion_vector: params.emotion_vector,
     };
     sqlite.writeRaw(
-      `INSERT INTO knowledge_base (id, title, content, source_type, source_name, file_size, tags, created_at, updated_at, locked, classification, classification_pending, dna_id, scene_tags, interaction_type, emotion_vector)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO knowledge_base (id, title, content, source_type, source_name, file_size, tags, created_at, updated_at, locked, classification, classification_pending, dna_id, scene_tags, interaction_type, emotion_vector, belong_entity_uuid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entry.id, entry.title, entry.content, entry.source_type,
       entry.source_name, entry.file_size, JSON.stringify(entry.tags),
       entry.created_at, entry.updated_at, entry.locked ? 1 : 0,
       classification, classificationPending ? 1 : 0,
       entry.dna_id ?? null, entry.scene_tags ?? null,
       entry.interaction_type ?? 'other', entry.emotion_vector ?? null,
+      params.belongEntityUuid ?? null,
     );
 
     // 异步分块 + 嵌入（不阻塞返回）

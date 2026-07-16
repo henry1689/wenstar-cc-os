@@ -41,6 +41,9 @@ import { DeepSeekLLMProvider, isAvailable as deepseekAvailable } from '../m5/Dee
 import { MockLLMProvider } from '../m5/MockLLMProvider.js';
 import type { LLMProvider } from '../m5/types/index.js';
 import { FamilyGraph } from '../m4/FamilyGraph.js';
+import { ProfileAcquisitionEngine } from '../m4/ProfileAcquisitionEngine.js';
+import { UUIDGatekeeper } from '../m4/UUIDGatekeeper.js';
+import { RelationHeatTracker } from '../m4/RelationHeatTracker.js';
 import { MaintenanceService } from './maintenance.js';
 import { InductionScheduler } from '../m7/InductionScheduler.js';
 import { ConsolidationQueue } from '../m7/ConsolidationQueue.js';
@@ -85,6 +88,7 @@ import { processChat as processChatNew, resetVadStatus, type ChatResponse as Pro
 import { handleObservabilityRoutes } from './server-observability-routes.js';
 import { handleMemoryRoutes } from './server-memory-routes.js';
 import { handleVaultRoutes } from './server-vault-routes.js';
+import { setupWebSocket } from './server-ws.js';
 import { handleOpsRoutes } from './server-ops-routes.js';
 import { handleKnowledgeRoutes } from './server-knowledge-routes.js';
 import { handleKnowledgeFileRoutes } from './server-knowledge-file-routes.js';
@@ -111,13 +115,13 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data', 'webui');
 const DB_PATH = path.join(DATA_DIR, 'knowledge', 'family_graph.db');
 const HTML_PATH = path.join(__dirname, 'index.html');
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const PORT = ConfigService.getInt('PORT', 3000);
 const WS_DEBUG_MODE = ConfigService.getBool('WS_DEBUG_MODE');
 // 🔋 Token节省模式 — 所有后台定时器/心跳/节律默认关闭，仅在用户问及时间/天气/生理时按需一枪式启动
 const WS_LAZY_TIMERS = true; // 始终为 true：所有 setInterval/setTimeout 轮询永不启动
 if (WS_DEBUG_MODE) console.log('[启动] 🔧 调试模式 — 自动定时器/心跳/后台LLM已全部禁用');
 if (WS_LAZY_TIMERS) console.log('[启动] 🔋 Token节省模式 — 后台定时器全部暂停，时间/天气/生理按需触发');
-const TTS_URL = process.env.TTS_URL || 'http://localhost:8765';
+const TTS_URL = ConfigService.get('TTS_URL', 'http://localhost:8765');
 
 /** 统一错误输出 */
 function writeErr(res: http.ServerResponse, code: number, msg: string) {
@@ -241,6 +245,9 @@ let storage: FusionStorageAdapter;
 let conversationDB: import("../m2/ConversationDB.js").ConversationDB | undefined;
 let m3: M3LogicOrchestrator;
 let familyGraph: FamilyGraph;
+let pae: ProfileAcquisitionEngine | undefined;
+let gatekeeper: UUIDGatekeeper | undefined;
+let heatTracker: RelationHeatTracker | undefined;
 let m4: M4Orchestrator;
 let m5: M5Orchestrator;
 
@@ -383,7 +390,9 @@ async function initPipeline(): Promise<void> {
     return loadDomainSpecs(knowledgeBase);
   }).then(async specResults => {
     specLoadResults = specResults;
-    console.log(`  [MasterHarris] 5层调度器已启动 ✓ (tianquan=${masterHarris?.tianquanReady})`);
+    // V4.0 Phase 5: 暴露 GlobalBus 客户端供 PFC 下行通信使用
+    if (masterHarris?.busClient) (globalThis as any).__globalBusClient = masterHarris.busClient;
+    console.log(`  [MasterHarris] 5层调度器已启动 ✓ (tianquan=${masterHarris?.tianquanReady} bus=${masterHarris?.busConnected ?? false})`);
 
     // ── 双核启动 (蓝皮书 §1.1, BIOS/Mind 编译期分离) ──
     try {
@@ -406,12 +415,43 @@ async function initPipeline(): Promise<void> {
   else console.warn('  ⚠️ 对话存储库未就绪');
   // 双库统一：将 FamilyGraph 注入 storage 适配层（读取路由用）
   storage.setFamilyGraph(familyGraph);
-  // 启动时反向边补全
+  // 启动时反向边补全 + 血缘传递推理（户籍制度 §三）
   try {
     const { completed } = familyGraph.completeReverseEdges();
     if (completed > 0) console.log(`  FG 反向边补全: ${completed} 条 ✓`);
     else console.log('  FG 反向边完整性检查: 通过 ✓');
-  } catch (e) { console.warn('  FG 反向边补全失败:', e); }
+
+    const { inferred } = familyGraph.inferFamilyLinks();
+    if (inferred > 0) console.log(`  FG 血缘传递推理: ${inferred} 条新边 ✓`);
+    else console.log('  FG 血缘传递推理: 已完整 ✓');
+  } catch (e) { console.warn('  FG 边补全/推理失败:', e); }
+
+  // 🏛️ §十四: 为所有人建立档案骨架（家族向量+时间线+寻址链——首次启动自动生成）
+  try {
+    const { enriched } = familyGraph.ensureAllPersonProfiles();
+    if (enriched > 0) console.log(`  FG 档案骨架: ${enriched} 人已建立 ✓`);
+    else console.log('  FG 档案骨架: 已完整 ✓');
+  } catch (e) { console.warn('  FG 档案骨架建立失败:', e); }
+
+  // 🛡️ §十六: FG 完整性守护闸门
+  try {
+    const integrity = familyGraph.fgIntegrityGuard();
+    if (!integrity.healthy) {
+      console.error('🛡️ FG 完整性守护失败！系统已降级运行。以下检查未通过:');
+      for (const e of integrity.errors) console.error('  🔴 ' + e);
+    }
+  } catch (e) { console.error('🛡️ FG 完整性守护异常:', e); }
+
+  // 🏛️ FG→黑钻同步：核心人物档案 + 家族关系纳入钙化休眠体系
+  try {
+    const esql2 = storage.getSQLite();
+    if (esql2) {
+      const syncResult = familyGraph.syncToBlackDiamond(esql2);
+      if (syncResult.profiles + syncResult.relations > 0) {
+        console.log(`  FG→黑钻同步: ${syncResult.profiles} 人 + ${syncResult.relations} 关系 ✓`);
+      }
+    }
+  } catch (e) { console.warn('  FG→黑钻同步失败:', e); }
 
   // 🔧 FG→entity_relations 同步：将 family_graph 中的人物间关系同步到融合库
   //    解决 fusion_memory.db 的 entity_relations 表缺失人际关系的已知问题。
@@ -450,21 +490,20 @@ async function initPipeline(): Promise<void> {
           if (seen.has(key)) continue;
           seen.add(key);
 
-          // 映射到中文标签
-          const relationLabel = r.relation.includes('elder_sister') ? '姐姐'
-            : r.relation.includes('younger_sister') ? '妹妹'
-            : r.relation.includes('mother') ? '妈妈'
-            : r.relation.includes('father') ? '爸爸'
-            : r.relation.includes('daughter') ? '女儿'
-            : r.relation.includes('son') ? '儿子'
-            : r.relation.includes('aunt') ? '阿姨'
-            : r.relation.includes('uncle') ? '叔叔'
-            : r.relation.includes('niece') ? '侄女'
-            : r.relation.includes('cousin') ? '堂表亲'
-            : r.relation.includes('sister') ? '姐妹'
-            : r.relation.includes('brother') ? '兄弟'
-            : r.relation.includes('parent') || r.relation.includes('child') ? '亲属'
-            : r.relation;
+          // 🔴 户籍铁律 §4.2: 精确映射边类型→中文标签（禁止 includes 模糊匹配）
+          //   映射顺序: 具体类型优先，通用降级在后
+          const KINSHIP_LABEL: Record<string, string> = {
+            mother_of: '妈妈', father_of: '爸爸', parent_of: '父母',
+            child_of: '子女', spouse_of: '配偶',
+            elder_sister_of: '姐姐', younger_sister_of: '妹妹',
+            elder_brother_of: '哥哥', younger_brother_of: '弟弟',
+            grandfather_of: '爷爷', grandmother_of: '奶奶',
+            grandchild_of: '孙辈', aunt_of: '阿姨', uncle_of: '叔叔',
+            niece_of: '侄女', nephew_of: '侄子', cousin_of: '堂表亲',
+            // 通用/降级标签（仅当无精确匹配时使用）
+            sister_of: '姐妹', brother_of: '兄弟', sibling_of: '亲属',
+          };
+          const relationLabel = KINSHIP_LABEL[r.relation] || r.relation;
 
           esql.writeRaw(
             "INSERT OR IGNORE INTO entity_relations (entity_a_id, entity_b_id, relation, strength, updated_at) VALUES (?, ?, ?, 1.0, ?)",
@@ -492,6 +531,49 @@ async function initPipeline(): Promise<void> {
   const activePersona = PersonaRegistry.getActive();
   if (activePersona && llmProvider instanceof DeepSeekLLMProvider) llmProvider.setPersona(activePersona);
   m5 = new M5Orchestrator(llmProvider);
+
+  // ── V3.2 档案自动采集引擎初始化 ──
+  try {
+    pae = new ProfileAcquisitionEngine(
+      familyGraph,
+      async (messages, maxTokens, temperature) => {
+        if (llmProvider.rawCall) {
+          return llmProvider.rawCall(messages, maxTokens, temperature);
+        }
+        // 降级：没有 rawCall 时返回空
+        return JSON.stringify({ persons: [], reasoningTrace: 'no rawCall available' });
+      }
+    );
+    const paeGuard = pae.acquisitionIntegrityGuard();
+    if (paeGuard.healthy) {
+      console.log('  档案采集引擎 (PAE) 就绪 ✓  (' + paeGuard.checks.length + ' 项检查通过)');
+    } else {
+      console.warn('  ⚠️ PAE 完整性检查未通过，降级运行:', paeGuard.errors.join('; '));
+    }
+  } catch (e) {
+    console.warn('  PAE 初始化失败，档案自动采集不可用:', (e as Error).message);
+    pae = undefined;
+  }
+
+  // ── V3.2 户籍门阀过滤器初始化 ──
+  try {
+    gatekeeper = new UUIDGatekeeper(familyGraph);
+    m4.setGatekeeper(gatekeeper);  // 注入 M4 检索层
+    console.log('  户籍门阀 (UUIDGatekeeper) 就绪 ✓ (默认未激活)');
+  } catch (e) {
+    console.warn('  门阀初始化失败:', (e as Error).message);
+    gatekeeper = undefined;
+  }
+
+  // ── V3.2 关系热力追踪器初始化 ──
+  try {
+    heatTracker = new RelationHeatTracker(familyGraph);
+    console.log('  关系热力追踪 (RelationHeatTracker) 就绪 ✓');
+  } catch (e) {
+    console.warn('  热力追踪初始化失败:', (e as Error).message);
+    heatTracker = undefined;
+  }
+
   loadConversationHistory();
   if (!WS_DEBUG_MODE) { maintenance.start(); console.log('  维护引擎已启动 ✓'); }
   else { console.log('  [调试] 已跳过: 维护引擎'); }
@@ -560,6 +642,9 @@ async function initPipeline(): Promise<void> {
     (globalThis as any).__tianquanBus = tianquanBus;
     setGlobal("tianquanBus", tianquanBus);
     console.log('  天权事件总线已就绪 ✓');
+
+    // WebSocket 实时推送端点 (V4.0 Phase 5)
+    try { setupWebSocket(); console.log('  WebSocket 推送端点已就绪 ✓'); } catch (e) { console.warn('  WebSocket 启动失败:', (e as Error)?.message); }
 
     // ② 知识索引摘要桥接层
     const { KnowledgeBridge } = await import('../engine/tianquan/knowledge/KnowledgeBridge.js');
@@ -1058,6 +1143,9 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
     conversationDB,
     yuyaoMemory,
     hybridSearch,
+    _profileAcquisitionEngine: pae,
+    _gatekeeper: gatekeeper,
+    _relationHeatTracker: heatTracker,
     clientMsgId: clientMsgId || null,
     testMode: testMode || false,
   });
@@ -1093,10 +1181,11 @@ async function handleUserMessage(message: string, clientMsgId?: string | null, t
 // ════════════════════════════════════════════════════════
 // HTTP Server
 // ════════════════════════════════════════════════════════
-function readBody(req: http.IncomingMessage): Promise<string> {
+function readBody(req: http.IncomingMessage, maxBytes = 5 * 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    req.on('data', (chunk: Buffer) => { total += chunk.length; if (total > maxBytes) { req.destroy(); reject(new Error('请求体过大')); return; } chunks.push(chunk); });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
@@ -1158,6 +1247,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (isRateLimited(clientIp, req.method || '')) {
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: '请求太频繁，请稍后再试' }));
+    return;
   }
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -2087,7 +2177,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   } catch (err: any) {
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: err.message || 'Internal Server Error' }));
+      console.error('[server] 未处理异常:', err?.message || err);
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
     } else {
       console.error('[WebUI] Error (response already sent):', err);
     }
@@ -2265,6 +2356,12 @@ async function main(): Promise<void> {
   });
 
   const server = http.createServer(handleRequest);
+  // V4.0 Phase 5: WebSocket upgrade 处理 — 将 HTTP 升级到 WS 连接
+  server.on('upgrade', (req, socket, head) => {
+    const wss = (globalThis as any).__wss;
+    if (!wss || !req.url?.startsWith('/api/ws')) { socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (ws: import('ws').WebSocket) => { wss.emit('connection', ws, req); });
+  });
   server.listen(PORT, () => {
     console.log('');
     console.log('  ╔══════════════════════════════════════╗');

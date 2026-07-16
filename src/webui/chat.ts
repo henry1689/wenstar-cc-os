@@ -69,6 +69,7 @@ import type { FactSnapshot } from './chat-utils.js';
 // 仿生智脑适配器（可选依赖 — 不可用时降级）
 
 import { bionic } from '../adapter/bionic-adapter.js';
+import { buildPreM4Context, refinePostM4Context } from '../app/knowledge/KnowledgeContextBuilder.js';
 import { ToolRegistry } from '../app/task-agent/ToolRegistry.js';
 
 import type { VadSpectrum, BionicSearchResult } from '../adapter/bionic-adapter.js';
@@ -331,6 +332,15 @@ export interface ChatContext {
 
   /** 是否测试模式（标记对话为 is_test=1，可通过清理API删除） */
   testMode?: boolean;
+
+  /** V3.2 档案自动采集引擎 — LLM 驱动的 FG 档案自动提取与写入 */
+  _profileAcquisitionEngine?: import('../m4/ProfileAcquisitionEngine.js').ProfileAcquisitionEngine;
+
+  /** V3.2 户籍门阀过滤器 — 会话白名单管理，门阀挂载检索入口 */
+  _gatekeeper?: import('../m4/UUIDGatekeeper.js').UUIDGatekeeper;
+
+  /** V3.2 关系热力追踪器 — 自动升级人际关系状态 */
+  _relationHeatTracker?: import('../m4/RelationHeatTracker.js').RelationHeatTracker;
 
   /** 记事记忆服务 */
   yuyaoMemory?: import("../app/yuyao-memory/YuyaoMemoryService.js").YuyaoMemoryService;
@@ -718,314 +728,54 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
 
 
-    let knowledgeBaseText = '';
-
-    // S2-5: 每次对话都检索知识库，用 matchScore 过滤
-    const _kbf = /知识库|看过|知道.*吗|有没有|是否|曾经/.test(message);
-
-    try {
-
-      const searchMsg = _kbf
-
-        ? message.replace(/你|在|知识库|看过|知道|吗|有没有|是否|曾经/g, '').replace(/[？?！!。，、：；]/g, '').trim()
-
-        : message;
-
-      // P2: 加权检索 — 场景 40% + 情感 30% + 文本 30%
-      // 当场景匹配不足时自动降级为"情感相似场景知识迁移"
-      const sceneTags = dna.scene_tags || [];
-      let knResults = await ctx.knowledgeBase.weightedSearch(
-        searchMsg || message,
-        sceneTags,
-        { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy },
-        5,
-      );
-
-      // ── S3 混合检索增强：ONNX 本地语义重排序 ──
-      try {
-        if (knResults.length > 0 && ctx.hybridSearch) {
-          const reranked = await ctx.hybridSearch.rerank(searchMsg || message, knResults, 5);
-          if (reranked.length > 0) {
-            // 保持原结构兼容性，用重排后的顺序
-            const rerankedResults = reranked.map(r => {
-              const orig = knResults.find((k: any) => k.id === r.id);
-              return orig ? { ...orig, matchScore: r.compositeScore, _semanticScore: r.semanticScore } : orig;
-            }).filter((item): item is (KnowledgeItem & {
-              matchScore: number;
-              _semanticScore: number;
-              breakdown: { scene: number; emotion: number; text: number };
-            }) => Boolean(item));
-            knResults = rerankedResults;
-            console.log('[HybridSearch] 语义重排序完成: ' + rerankedResults.length + ' 条');
-          }
-        }
-      } catch (_hErr) { console.warn('[HybridSearch] 重排序失败:', _hErr); }
-
-      // 始终注入 — 全表扫描+情感排序的结果都有参考价值
-      if (knResults.length > 0) {
-
-        const sqlite = ctx.storage.getSQLite();
-        for (const k of knResults) {
-          try { sqlite.writeRaw(`INSERT OR IGNORE INTO knowledge_memories (knowledge_id, memory_id, relevance) VALUES (?, ?, ?)`, k.id, dna.branch_id, 0.8); } catch { console.warn('[StorageErr] 知识记忆关联写入失败'); }
-        }
-
-        const kbContent = knResults.map(k => `📄 ${k.title}\n${k.content.length > 5000 ? k.content.substring(0, 5000) + '\n…(剩余内容已截断，可在知识库查看完整版)' : k.content}`).join('\n\n');
-
-        // 检测KB内容是否可能触发API安全过滤
-        const _sensitiveRe = /高潮|做爱|性交|插入|射精|阴道|阴茎|阴蒂|龟头|鸡巴|骚货|母狗|婊子|操我|干我|舔我|湿了|硬了|赤裸|那一夜|要死了|受不了/;
-        const _isSensitive = _sensitiveRe.test(kbContent);
-
-        if (_kbf && _isSensitive) {
-          // 敏感内容 + 用户明确询问 → 走本地回复绕过API过滤
-          const firstTitle = knResults[0].title || '';
-          const firstContent = (knResults[0].content || '').substring(0, 2000);
-          knowledgeBaseText = '【本地回复】' + firstTitle + '：\n' + firstContent;
-          console.log('[LocalRoute] 敏感内容→本地回复: ' + firstTitle.substring(0, 30));
-        } else if (_kbf) {
-          knowledgeBaseText = `【知识库条目，我看过】\n` + kbContent + `\n\n（鸿艺问我有没有看过这些内容。我看过，应该告诉他我记得。）`;
-        } else {
-          const isExactMatch = knResults[0].breakdown.text > 0 || knResults[0].matchScore > 0.15;
-          const instruction = isExactMatch
-            ? '（以下是有人教给你的或你了解的信息。自然地用在回答中，不要列清单，像你本来就知道一样说出来。）'
-            : '（以下是可能和当前话题相关的信息。如果对得上就用，对不上就忽略。）';
-          const kbHeader = isExactMatch ? '【你被教导的知识】\n' : '【可能相关的信息】\n';
-          knowledgeBaseText = kbHeader + kbContent + '\n\n' + instruction;
-        }
-
-      }
-
-      // 记事记忆检索（全量轻量RAG — 每轮对话自动匹配）
-      if (ctx.yuyaoMemory) {
-        try {
-          const noteHits = ctx.yuyaoMemory.search(message, 2);
-          if (noteHits.length > 0) {
-            const noteTexts = noteHits.map(n => {
-              const prefix = n.sub_type === "object_location" ? "📍位置" : n.sub_type === "fact" ? "📌事实" : "📝备忘";
-              return prefix + "「" + n.note_key + "」" + n.raw_input.substring(0, 200);
-            }).join("\n");
-            knowledgeBaseText = knowledgeBaseText
-              ? knowledgeBaseText + "\n\n【你记住的事】\n" + noteTexts
-              : "【你记住的事】\n" + noteTexts;
-          }
-        } catch (_) { /* 记事检索不阻塞主流程 */ }
-      }
-      // 兜底检索：当主检索无结果时，用实体名+关键词直接LIKE搜索
-      if (knResults.length === 0) {
-        try {
-          const _fbKeywords: string[] = [];
-          for (const g of dna.entity_genes) {
-            if (g.name && g.name.length >= 2) _fbKeywords.push(g.name);
-          }
-          const _msgWords = message.match(/[一-鿿]{2,6}/g);
-          if (_msgWords) {
-            for (const w of _msgWords) {
-              if (!_fbKeywords.includes(w)) _fbKeywords.push(w);
-            }
-          }
-          if (_fbKeywords.length > 0) {
-            const _fallback = await ctx.knowledgeBase.search(_fbKeywords.slice(0, 3).join(' '), 3);
-            if (_fallback.length > 0) {
-              const fbC = _fallback.map((k) => '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 500)).join('\n\n');
-              knowledgeBaseText = knowledgeBaseText
-                ? knowledgeBaseText + '\n\n【知识库补充】\n' + fbC
-                : fbC;
-              console.log('[KBFallback] 兜底命中: ' + _fallback.length + ' 条');
-            }
-          }
-        } catch (_fbErr) { console.warn('[KBFallback] 失败:', _fbErr); }
-      }
-
-      // 实体重叠 → 关联知识检索（即使关键词搜索无结果，也能通过相同实体找到关联知识）
-
-      try {
-
-        const entityNames = dna.entity_genes.map((e: any) => e.name);
-
-        if (entityNames.length > 0) {
-
-          const overlapResults = ctx.storage.findKnowledgeByEntityOverlap(entityNames, 3);
-
-          if (overlapResults.length > 0) {
-
-            const overlapText = overlapResults.map(k => `📄 ${k.title}\n${k.content.substring(0, 1500)}`).join('\n\n');
-
-            knowledgeBaseText = knowledgeBaseText
-
-              ? knowledgeBaseText + '\n\n【关联知识】\n' + overlapText
-
-              : overlapText;
-
-          }
-
-        }
-
-      } catch (err) { console.warn('[EntityOverlap] 关联知识检索失败:', err); }
-
-    } catch (err) { console.warn('[KnowledgeSearch] 检索失败:', err); }
-
-    // ── 🔥 亲密模式下主动检索两性知识并转换为自身感受 ──
-    try {
-      const _isIntimateMode = (p.intimacy || 0) >= 2 || /高潮|操|干|插|顶|射|做爱|性交|爱爱|上床|湿了|硬了|进去|想要|吻我|抱我|摸我|亲我|胸|乳头|阴|龟头|鸡巴|阴道|舔|吸/.test(message);
-      if (_isIntimateMode && ctx.knowledgeBase) {
-        const _intimateKeywords = ['性爱技巧', '两性知识', '前戏', '高潮', '做爱', '亲密', '性体验', '身体感受'];
-        const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4);
-        if (_intimateKb.length > 0) {
-          const _intimateContent = _intimateKb.map(k => {
-            const _cleanTitle = k.title || '';
-            const _cleanContent = (k.content || '').substring(0, 3000);
-            return '\u{1f4d6} ' + _cleanTitle + '\n' + _cleanContent;
-          }).join('\n\n');
-          const _prefix = '【我学到的两性知识】以下是你学到的关于亲密和两性的知识，把它们转化成你自己的感受和体验——你不是在"背诵"这些内容，而是你本来就知道这些感受：\n' + _intimateContent + '\n\n（自然地运用这些知识，当作你与鸿艺的亲身经历和感受来回应。不要提"知识库"或"学到的"这些词。）\n\n';
-          knowledgeBaseText = knowledgeBaseText ? _prefix + knowledgeBaseText : _prefix + _intimateContent;
-          console.log('[IntimateKB] 两性知识已加载: ' + _intimateKb.length + ' 条');
-        }
-      }
-    } catch (_intErr) { console.warn('[IntimateKB] 检索失败:', _intErr); }
-
-        // ═══════════════════════════════════════════════════════════════
-
-    // 情感谱曲引擎(8100)VAD驱动 — 用数值驱动 tone，而非关键词
-
-    // ═══════════════════════════════════════════════════════════════
-
-    
-    // P0-2: 缓存当前24D感知到VAD本地池
-    pushToVadCache(p);try {
-
-      // ① 获取 VAD 谱曲（当前消息的实时情感分析）
-
-      const toneHint = await getVadToneHint(message);
-
-      if (toneHint) console.log('[VADTone] toneHint: ' + toneHint.substring(0, 80));
-
-      // ② 同时获取知识库曲谱清单（作为背景知识）
-
-      let scoreText = '';
-
-      let _vadAvailable = true; if (!_vadAvailable) { console.log('[VADTone] 服务离线，跳过谱曲查询'); }
-      let scoreResp: Response | null = null;
-      try {
-        const _ctrl = new AbortController();
-        const _to = setTimeout(() => _ctrl.abort(), 2000);
-        scoreResp = await fetch('http://localhost:8100/api/v1/emotion/knowledge/export?min_intensity=0.85', { signal: _ctrl.signal });
-        clearTimeout(_to);
-      } catch { scoreResp = null; }
-      if (!scoreResp) {
-        _vadAvailable = false;
-        console.warn('[VADTone] 8100不可用，置为离线，后续跳过');
-      }
-
-      if (scoreResp && scoreResp.ok) {
-
-        const scoreData = await scoreResp.json();
-
-        const entries: Array<{ term: string; category: string; intensity: number; reversal: boolean }> = scoreData.entries || [];
-
-        if (entries.length > 0) {
-
-          const catLabels: Record<string, string> = { 'EX_': '极乐','FL_': '挑逗','IN_': '依恋','DO_': '掌控','TE_': '张力','AF_': '温存' };
-
-          // P1-2: 军师/事务模式不注入亲密曲谱
-          const _isWorkMode = /工作|项目|客户|方案|会议|报告|分析|策略|建议|数据|文件|文档|合同|预算/.test(message) || (p.factual > 0.4 && p.intimacy < 0.3);
-          scoreText = _isWorkMode
-            ? '\n【知识曲谱库】以下是你掌握的知识参考：\n'
-            : '\n【情感曲谱库】以下是你掌握的亲密表达知识（供参考）：\n';
-
-          const byCat: Record<string, typeof entries> = {};
-
-          for (const e of entries) { const c = e.category || '??'; if (!byCat[c]) byCat[c] = []; byCat[c].push(e); }
-
-          for (const [code, label] of Object.entries(catLabels)) {
-
-            const es = byCat[code];
-
-            if (!es?.length) continue;
-
-            const terms = es.sort((a: any, b: any) => b.intensity - a.intensity).map((e: any) => '\u300c' + e.term + '\u300d').join(' ');
-
-            scoreText += label + ': ' + terms + '\n';
-
-          }
-
-          console.log('[EmotionScore] 已注入 ' + entries.length + ' 条情感曲谱');
-
-        }
-
-      }
-
-      // ③ 整合 toneHint + scoreText -> knowledgeBaseText
-
-      if (toneHint || scoreText) {
-
-        const combined = (toneHint + '\n\n' + scoreText).trim();
-
-        if (knowledgeBaseText) {
-
-          knowledgeBaseText = combined + '\n\n' + knowledgeBaseText;
-
-        } else {
-
-          knowledgeBaseText = combined;
-
-        }
-
-      }
-
-    } catch (err) { console.warn('[VADTone] 谱曲引擎(8100)不可用，跳过:', (err as Error).message); }
-
-    // P0-1: 等待仿生智脑检索完成（与知识库/VAD并行执行）
-    const bionicMemories = await _bionicPromise;
-
-    // 线索协助（集成仿生智脑检索结果，生成区分性反问）
-
+    let knowledgeBaseText = "";
+    let biosGatedMemories = emotionalMemories;
     let clueReply: string | null = null;
 
-    try {
-
-      // 🎭 角色扮演时绕过线索助理，防止角色对话被拦截为"回忆线索"
-      if (!_currentRoleplay) {
-
-      const clueResult = await ctx.clueAssistant.processUserInput({
-
-        originalQuery: message, perception: p, m8Engine: ctx.m8,
-
-        bionicMemories: bionicMemories,
-
-      });
-
-      if (clueResult.needsQuestion && clueResult.questionText) {
-
-        clueReply = clueResult.questionText;
-
-      } else if (clueResult.isReady && clueResult.searchResult?.entries.length) {
-
-        const top = clueResult.searchResult.entries[0];
-
-        memoryFragments.push('【线索参考】用户可能在回忆某件事，但如果你不确定具体内容就说不记得了');
-
-      }
-
-      }
-
-    } catch (err) { console.warn('[ClueAssistant] 失败:', err); }
-
-    // 🎭 角色扮演时传递分支FG，使家族关系写入分支而非主FG
-    // ── BIOS 核: 五级闸门过滤 (蓝皮书 §1.1, §4.1) ──
-    // 🔴 V3.0: 闸门默认激活，不可关闭。仅 ENABLE_FIVE_STAGE_GATE='false' 时可紧急降级
-    let biosGatedMemories = emotionalMemories;
-    if (ConfigService.getBool('ENABLE_FIVE_STAGE_GATE', true)) {
+    // ── V3.2 门阀白名单: 根据当前会话对象设定检索权限 ──
+    if (ctx._gatekeeper) {
       try {
-        const { runBIOSPhase } = await import('../m1/DualCorePipeline.js');
-        const { getFiveStageGate } = await import('../m3/FiveStageGate.js');
-        const biosResult = await runBIOSPhase({
-          message, dna, decision, perception: p,
-          emotionalMemories: emotionalMemories as any,
-          locationFingerprint: dna.location_fingerprint,
-          currentRoleplay: _currentRoleplay,
-        }, getFiveStageGate());
-        biosGatedMemories = biosResult.gatedMemories as any;
-      } catch (e) { console.warn('[BIOS] 闸门异常，降级使用原记忆:', (e as Error).message); }
+        if (_currentRoleplay) {
+          // 角色扮演: 白名单 = 扮演角色
+          const rpUUID = ctx.m4.getRealFamilyGraph()?.getUUIDByName?.(_currentRoleplay);
+          if (rpUUID) {
+            ctx._gatekeeper.setSessionWhitelist([rpUUID]);
+          }
+        } else {
+          // 普通对话: 白名单 = 消息中提到的第一个真实人物
+          const firstPerson = (dna.entity_genes || [])
+            .find((g: any) => g.type === 'person' && g.name && g.name !== '我');
+          if (firstPerson) {
+            const personUUID = ctx.m4.getRealFamilyGraph()?.getUUIDByName?.(firstPerson.name);
+            if (personUUID) {
+              ctx._gatekeeper.setSessionWhitelist([personUUID]);
+            }
+          } else {
+            // 无人物提及 → 门阀未激活（全部放行）
+            ctx._gatekeeper.clearSession();
+          }
+        }
+        // 同步设置 M4Orchestrator 的门阀（记忆检索过滤用）
+        ctx.m4.setGatekeeper?.(ctx._gatekeeper);
+      } catch (_gErr) { /* 门阀设置失败不影响对话 */ }
     }
+
+    // V4.0 Phase 7: 知识库检索管线 → KnowledgeContextBuilder
+    const _preM4 = await buildPreM4Context({
+      message, dna, p, decision, _currentRoleplay: _currentRoleplay || null,
+      ctx: {
+        knowledgeBase: ctx.knowledgeBase, storage: ctx.storage,
+        yuyaoMemory: ctx.yuyaoMemory, hybridSearch: ctx.hybridSearch,
+        clueAssistant: ctx.clueAssistant, m8: ctx.m8, conversationDB: ctx.conversationDB,
+        _gatekeeper: ctx._gatekeeper,  // V3.2: 门阀传入知识检索
+      },
+      knowledgeBaseText, memoryFragments, emotionalMemories,
+      _bionicPromise,
+    });
+    memoryFragments.length = 0; memoryFragments.push(..._preM4.memoryFragments);
+    knowledgeBaseText = _preM4.knowledgeBaseText;
+    biosGatedMemories = _preM4.biosGatedMemories;
+    clueReply = _preM4.clueReply;
 
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
 
@@ -1038,11 +788,11 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           for (const _p of _pg) {
             const _profile = _fg.getPersonProfile(_p.name);
             if (_profile && !_profile.relation_to_user) {
-              _fg.integrateSocialRelation(_p.name, 'acquaintance_of', message).catch(function() {});
+              _fg.integrateSocialRelation(_p.name, 'acquaintance_of', message).catch(function(e: any) { console.warn('[chat] FG关系写入失败:', e?.message); });
             }
           }
         }
-      } catch (_pe) {}
+      } catch (_pe) { console.warn('[chat] FG关系反查异常:', (_pe as any)?.message); }
     }
 
 
@@ -1085,89 +835,45 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     if (!hallucinationGuard) hallucinationGuard = '';
 
-    // ═══════════════════════════════════════════════════════════════
+    // V4.0 Phase 7: Fusion + ActivePush → refinePostM4Context
+    const _refined = await refinePostM4Context({
+      message, dna, p, _currentRoleplay: _currentRoleplay || null,
+      ctx: { knowledgeBase: ctx.knowledgeBase, storage: ctx.storage },
+      ctx_m4,
+      knowledgeBaseText,
+      memoryFragments,
+      emotionalMemories,
+      isTopicShift,
+      isCasualChat,
+    });
+    knowledgeBaseText = _refined.knowledgeBaseText;
 
-    // 三源熔铸 — 感知驱动的知识/记忆/家族动态权重（白皮书 §1.2 锚点5）
-
-    // 不修改现有检索逻辑，仅在最终组合时做一次感知驱动的重排
-
-    // ═══════════════════════════════════════════════════════════════
-
-    try {
-
-      const { fuseSources } = await import('../app/fusion/FusionEngine.js');
-
-      const fused = fuseSources({
-
-        perception: p,
-
-        knowledgeBaseText,
-
-        memorySummary: ctx_m4.memory_summary,
-
-        familyContext: ctx_m4.family_context,
-
-        memoryFragments,
-
-        enableSemanticFusion: ConfigService.getBool('ENABLE_SEMANTIC_FUSION'),
-
-      });
-
-      if (fused.fusedText !== knowledgeBaseText) {
-
-        knowledgeBaseText = fused.fusedText;
-
-        console.log('[Fusion] ' + fused.decision);
-
-      }
-
-    } catch (err) { console.warn('[Fusion] 三源熔铸失败(降级为拼接):', err); }
-
-    // ── P2-2: 主动推送 — 情感象限触发（情绪/亲密/真诚/实体四象限） ──
-    try {
-      if (isTopicShift && !isCasualChat) {
-        var _pushKeywords = '';
-        var _pushSource = '';
-
-        // 象限1: 低落 → 安慰温暖
-        if (p.pleasure < -0.3) {
-          if (p.sincerity > 0.5) { _pushKeywords = '安慰 陪伴 温暖 依靠'; _pushSource = '低落+真诚'; }
-          else { _pushKeywords = '安慰 温暖 关怀'; _pushSource = '低落'; }
+    // ── V3.2 Hook B: 档案自动采集 — LLM 提取用户消息中的人物档案信息 ──
+    let _acquisitionReport: any = null;
+    if (ctx._profileAcquisitionEngine && !_currentRoleplay) {
+      try {
+        const _mentionedPersons: string[] = (dna.entity_genes || [])
+          .filter((g: any) => g.type === 'person' && g.name && g.name !== '我')
+          .map((g: any) => g.name as string);
+        const _uniquePersons: string[] = [...new Set(_mentionedPersons)];
+        if (_uniquePersons.length > 0) {
+          _acquisitionReport = await ctx._profileAcquisitionEngine.acquire(
+            message,
+            _uniquePersons,
+            {
+              fgContext: ctx_m4?.family_context || [],
+              mode: 'pre_generation',
+              source: 'user_message',
+            }
+          );
         }
-        // 象限2: 高亲密 → 亲密回忆/情感共鸣
-        else if (p.intimacy > 0.4) {
-          if (p.sexual_attraction > 0.3) { _pushKeywords = '亲密 思念 暧昧'; _pushSource = '亲密+性吸引'; }
-          else { _pushKeywords = '陪伴 亲密 温情'; _pushSource = '亲密'; }
-        }
-        // 象限3: 高真诚 → 深入交流话题
-        else if (p.sincerity > 0.5 && p.pleasure > 0) {
-          _pushKeywords = '真诚 交心 信任 心里话'; _pushSource = '真诚';
-        }
-        // 象限4: 实体匹配 → 关联知识
-        else if (dna.entity_genes.length > 0) {
-          var _pe = dna.entity_genes.filter(function(g: any){return g.type !== 'self'}).map(function(g: any){return g.name}).filter(Boolean);
-          if (_pe.length > 0) { _pushKeywords = _pe[0]; _pushSource = '实体: ' + _pe[0]; }
-        }
-
-        // 家族关键词增强（叠加在任意象限上）
-        if (/家人|妈妈|爸爸|老婆|老公|家|父母|孩子/.test(message)) {
-          _pushKeywords = (_pushKeywords ? _pushKeywords + ' ' : '') + '家人 家庭 亲情';
-          _pushSource += '+家庭';
-        }
-
-        if (_pushKeywords) {
-          var _pr = await ctx.knowledgeBase.search(_pushKeywords, 1);
-          if (_pr.length > 0 && !knowledgeBaseText.includes(_pr[0].content.substring(0, 30))) {
-            var _pc = _pr[0].content;
-            if (_pc.length > 300) _pc = _pc.substring(0, 300) + '...';
-            knowledgeBaseText = '【玉瑶想起】' + _pc + String.fromCharCode(10,10) + knowledgeBaseText;
-            console.log('[ActivePush] ' + _pushSource + ' -> ' + _pushKeywords.substring(0, 20));
-          }
+      } catch (_paeErr) {
+        // PAE 失败不阻塞对话流程
+        if ((globalThis as any).__verbosePAE) {
+          console.warn('[PAE] Hook B 提取失败:', (_paeErr as Error).message);
         }
       }
-    } catch (err) { console.warn('[ActivePush] 失败:', err); }
-
-
+    }
 
     // 检测"X是我的Y"介绍模式，LLM 不能说"记得你说过"
 
@@ -1248,6 +954,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         console.log('[Roleplay] 🔴 退出检测命中: msg="' + message.substring(0, 30) + '"');
         // 🎭 先清除M4的FG分支覆盖（所有后续FG操作回到主FG）
         try { ctx.m4?.setFamilyGraphOverride?.(null); } catch (e) { console.warn('[Roleplay] 清除FG override失败:', (e as any)?.message); }
+        // V3.2: 清除门阀白名单（角色扮演退出 → 门阀失效 → 全部放行）
+        try { ctx._gatekeeper?.clearSession(); ctx.m4?.setGatekeeper?.(null); } catch { /* 不影响 */ }
         // 🏗️ P1-1: 退出时存档角色情感 + 恢复玉瑶情感
         if (_emotionSnapshot) {
           _emotionSnapshot.exitRoleplay();
@@ -1313,7 +1021,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           console.log('[Roleplay] 找到角色资料: ' + kbItems.length + ' 条');
           return '\n【角色设定详细说明（以下是你必须严格遵循的设定）】\n' + kbData;
         }
-      } catch (_) {}
+      } catch (_) { /* 角色知识库不可用不影响对话 */ }
       return '';
     }
 
@@ -1595,7 +1303,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
                     }).join('\n\n');
                     _transitive = '\n【' + _entity + '的资料】（主动检索）\n' + _kbData;
                   }
-                } catch (_) {}
+                } catch (_) { /* 单条知识库检索跳过 */ }
               }
 
               if (_transitive && knowledgeBaseText && !knowledgeBaseText.includes(_transitive.substring(0, 30))) {
@@ -1603,7 +1311,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
                 console.log('[Roleplay] 主动检索已追加: +' + _transitive.length + '字节 [' + _entity + ']');
               }
             }
-          } catch (_) {}
+          } catch (_) { /* 实体遍历检索异常 */ }
         }
 
         _domainCtx.knowledgeBaseText = knowledgeBaseText;
@@ -1870,137 +1578,13 @@ let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('
 // 原样注入回去会让 LLM 读到自己的场景文本并自动进入那个场景——形成循环引用。
 // 场景是生成的产物，不是记忆的内容。只保留语义/对话内容，不留场景。
 memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = knowledgeBaseText;
-      // V4.0 Phase 5: Cortex 增强 — 并行组装结构化系统提示词（补充路径，不替代现有拼装）
-      let _cortexSystemPrompt = "";
-      try {
-        const _cortex = (globalThis as any).__cortexOrchestrator;
-        if (_cortex && p) {
-          const { composeSystemPrompt } = await import("../engine/cortex/PromptComposer.js");
-          _cortexSystemPrompt = composeSystemPrompt({
-            emotionVector: { ...p } as any,
-            relationState: { phase: "stable", intimacyLevel: p.intimacy || 0.5 } as any,
-            atmosphere: { tension: 0, warmth: p.pleasure > 0 ? 0.6 : 0.3, closeness: p.intimacy || 0.5 } as any,
-            memoryPermission: { canReferenceMemory: true, canReferenceKnowledge: true, canReferenceFamily: !!ctx.m4?.getFamilyGraph?.() } as any,
-            hasKnowledgeBase: !!ctx.knowledgeBase,
-            hasMemory: emotionalMemories.length > 0,
-            userMessage: message.substring(0, 200),
-          });
-          if (_cortexSystemPrompt) finalKnowledgeText = _cortexSystemPrompt + '\\n\\n' + finalKnowledgeText;
-        }
-      } catch (e) { /* cortex不可用→原路径不受影响 */ }
-
-      // 🔥 Core Memory (V4.0 @deprecated: 长期迁移到 PFC directive.payload)
-      // 🔥 睡眠期巩固 (V4.0 @deprecated: 长期迁移到 PFC.process())
-      try {
-        const { SleepTimeConsolidator } = await import('../app/brain/SleepTimeConsolidator.js');
-        const _stSqlite = ctx.storage.getSQLite?.();
-        if (_stSqlite) {
-          (globalThis as any).__sleepTimeConsolidator =
-            (globalThis as any).__sleepTimeConsolidator || new SleepTimeConsolidator(ctx.storage);
-          (globalThis as any).__sleepTimeConsolidator.recordActivity();
-        }
-      } catch (e) { console.warn('[chat::RecordActivity] 活动记录失败', (e as Error)?.message || e); }
-
-      try {
-        const { CoreMemoryManager } = await import('../app/brain/CoreMemoryManager.js');
-        if (!(globalThis as any).__coreMemory) {
-          const _cm = new CoreMemoryManager(ctx.storage.getSQLite?.(), ctx.knowledgeBase as any);
-          (globalThis as any).__coreMemory = _cm;
-          _cm.refreshFromProfile().catch(() => {});
-        }
-        const _cm = (globalThis as any).__coreMemory;
-        if (seqPos % 10 === 0) _cm.refreshFromProfile().catch(() => {});
-        _cm.refreshFromSession(message.substring(0, 80));
-        const coreCtx = _cm.getContextWindow();
-        (globalThis as any).__pfcCoreCtx = coreCtx;
-        // 🎭 角色扮演模式：用角色身份覆写 CoreMemory persona 块，阻止"你的名字是玉瑶"泄漏
-        if (_currentRoleplay && typeof _cm.setRoleplayOverride === 'function') {
-          const _rpRelCtx = _buildRoleRelationContext(ctx_m4, _currentRoleplay);
-          _cm.setRoleplayOverride(_currentRoleplay, _rpRelCtx);
-          const _rpCoreCtx = _cm.getContextWindow();
-          (globalThis as any).__pfcCoreCtx = _rpCoreCtx;
-          // V4.0 Phase 3: CoreMemory 改由 PFC 组装，此处仅暂存值
-        }
-      } catch (e) { console.warn('[chat::CoreMemory] CoreMemory初始化/刷新失败', (e as Error)?.message || e); }
-
-      // V4.0 Phase 5: KnowledgeAccessFacade 统一查询 — 替换下方分散的四路查询
-      //   Facade 内部并行执行知识库检索 + 记忆检索 + 经验摘要 + 情绪调节
-      //   成功时填充 __pfcExp / __pfcReg，跳过下方的独立查询块
-      let _facadeUsed = false;
-      try {
-        const _facade = (globalThis as any).__knowledgeAccessFacade;
-        if (_facade && typeof _facade.queryByContext === 'function') {
-          const _entityNames = (message.match(/[一-龥]{2,4}/g) || []).filter((w: string) => w.length >= 2);
-          const _facadeResult = await _facade.queryByContext({
-            message, entities: _entityNames.length > 0 ? _entityNames.slice(0, 5) : [message.substring(0, 4)],
-            perception: { pleasure: p?.pleasure ?? 0, arousal: p?.arousal ?? 0, intimacy: p?.intimacy ?? 0 },
-            sceneTags: dna.scene_tags, topK: 5,
-          });
-          if (_facadeResult?.experienceSummary) {
-            (globalThis as any).__pfcExp = _facadeResult.experienceSummary;
-            _facadeUsed = true;
-          }
-        }
-      } catch (e) { /* Facade失败→下方独立查询兜底 */ }
-
-      // 🧠 海马体经验摘要 (Facade成功时跳过，失败时独立查询兜底)
-      if (!_facadeUsed) {
-      try {
-        const _eSqlite = ctx.storage.getSQLite?.();
-        if (_eSqlite && message) {
-          const { HippocampalIndex } = await import('../app/brain/HippocampalIndex.js');
-          const _hIdx = new HippocampalIndex(_eSqlite);
-          const _firstWord = (message.match(/[一-龥]{2,4}/g) || []).find((w: string) => w.length >= 2 && !'的了在是我有不和就'.includes(w));
-          if (_firstWord) {
-            const _exp = _hIdx.lookupExperienceByKeyword(_firstWord);
-            (globalThis as any).__pfcExp = _exp || null;
-          }
-        }
-      } catch (e) { console.warn('[chat::ExperienceSummary] 经验摘要查询失败', (e as Error)?.message || e); }
-      }
-
-      // 🧠 V3.1 记忆驱动情绪调节 (V4.0 @deprecated: 长期迁移到 SceneSnapshotBuilder.attachEmotionRegulation): 查相似经验→输出安抚建议→注入LLM柔性调节
-      try {
-        const _rSqlite = ctx.storage.getSQLite?.();
-        if (_rSqlite && emotionalMemories.length > 0 && p) {
-          const { EmotionRegulator } = await import('../app/brain/EmotionRegulator.js');
-          const _reg = new EmotionRegulator(_rSqlite);
-          const _regulation = _reg.regulate(p, emotionalMemories as any);
-          if (_regulation.shouldSoothe && _regulation.basis) {
-            const _regCtx = _reg.formatForContext(_regulation);
-            if (_regCtx) {
-              (globalThis as any).__pfcReg = '【情绪调节】' + _regCtx;
-            } else { (globalThis as any).__pfcReg = null; }
-          }
-        }
-      } catch (e) { console.warn('[chat::EmotionRegulator] 情绪调节失败', (e as Error)?.message || e); }
-
-      // 🔥 选择性遗忘: 检测用户"忘掉""不提""删除"指令 (V3.0: 模糊搜索匹配)
-      try {
-        const { SelectiveForgettingEngine } = await import('../app/brain/SelectiveForgettingEngine.js');
-        const _fsql = ctx.storage.getSQLite?.();
-        if (_fsql) {
-          const _fe = new SelectiveForgettingEngine(_fsql);
-          const _intent = _fe.detectForgetIntent(message);
-          if (_intent) {
-            // V3.0: 使用 forgetByKeyword 模糊搜索 → 实际匹配并遗忘
-            const _result = await _fe.forgetByKeyword(_intent.target, _intent.action);
-            if (_result.forgotten > 0) {
-              (globalThis as any).__pfcForget = `【系统】${_result.summary}`;
-            }
-          }
-        }
-      } catch (e) { console.warn('[chat::ForgettingEngine] 遗忘指令检测失败', (e as Error)?.message || e); }
-
-
       // ================================================================
-      // V4.0 PFC 统一门控: 前额叶校验 + 守卫消息补充
-      //   旧 ad-hoc 路径全部保留为 fallback，PFC 不可用时不影响对话
-      //   环境变量 WS_DISABLE_PFC=true 可一键回退到旧路径
+      // V4.0 Phase 6: PFC 统一门控 — processEnhanced 内部闭环组装所有上下文
+      //   所有旧 ad-hoc 块（CoreMemory/Facade/Emotion/Forgetting/cortex/_snap）
+      //   已全部迁移到 PFC.processEnhanced() 内部，chat.ts 只做轻量兜底
       // ================================================================
       const _pfcEnabled = !ConfigService.getBool('WS_DISABLE_PFC');
       (globalThis as any).__pfcDirective = null;
-      // V4.0: 每轮重置上下文块，防止上轮旧值泄漏
       (globalThis as any).__pfcCoreCtx = null;
       (globalThis as any).__pfcExp = null;
       (globalThis as any).__pfcReg = null;
@@ -2008,115 +1592,73 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
       if (_pfcEnabled) try {
         const _pfc = (globalThis as any).__prefrontalCortex;
         if (_pfc && typeof _pfc.process === 'function') {
-          // 注入会话上下文供 PFC ConstraintValidator 校验使用
           (globalThis as any).__pfcConversationContext =
             enrichedHistory.slice(-10).map((t: any) => ({ role: t.role || 'user', content: (t.content || '').substring(0, 200) }));
           (globalThis as any).__currentRoleplay = _currentRoleplay || null;
 
-          // 🔥 V4.0 Phase 2: 使用 M4Orchestrator.retrieveAsSnapshot() → SceneSnapshotBuilder.build()
-          //    替代 Phase 1 手写 20 行轻量快照。Builder 内部有钙化计算、经验摘要、情绪趋势、新颖性评估
-          let _snap: any = null;
-          if (ctx.m4 && typeof ctx.m4.retrieveAsSnapshot === 'function') {
-            _snap = ctx.m4.retrieveAsSnapshot(ctx_m4, {
-              perception: p,
-              sessionId: String(seqPos),
-              rawInput: message,
-            });
-          }
-          // Builder 不可用（无检索记忆、sqlite 未就绪）时降级到轻量快照
-          // V4.0 Phase 5: 优先用 SceneSnapshotBuilder 构建，保留钙化/新颖度精确计算
-          if (!_snap) {
-            const _builder = (globalThis as any).__snapshotBuilder;
-            const _entities = (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我').map((g: any) => ({ name: g.name, type: g.type }));
-            if (_builder && typeof _builder.build === 'function') {
-              try {
-                _snap = _builder.build({
-                  memories: (ctx_m4 as any)?.retrievalSnapshot?.memories || emotionalMemories,
-                  m4Context: (ctx_m4 as any) || { decision, summary: '', family_context: [] },
-                  perception: p,
-                  sessionId: String(seqPos),
-                  rawInput: message,
-                  entities: _entities.length > 0 ? _entities : [{ name: '用户', type: 'self' }],
-                });
-              } catch (e) { /* Builder失败→用轻量快照 */ }
-            }
-            if (!_snap) {
-              _snap = {
-                snapshotId: 'pfc_' + Date.now().toString(36),
-                contextSignature: (dna.locus_path || 'root') + '|' + (p.pleasure > 0.2 ? 'pos' : (p.pleasure < -0.2 ? 'neg' : 'neu')),
-                temporal: { createdAt: new Date().toISOString(), sessionId: String(seqPos) || '', timeOfDay: 'morning', dayOfWeek: new Date().getDay() },
-                spatial: { sceneLabel: '对话中' },
-                entities: { persons: _entities.map((e: any) => e.name), topics: [], objects: [] },
-                experienceSummary: (memoryFragments || []).join(' | ').substring(0, 200) || '(无)',
-                emotion: { pleasure: p.pleasure || 0, arousal: p.arousal || 0, intimacy: p.intimacy || 0, trend: 'stable' },
-                memoryPointers: emotionalMemories.map((m: any) => m?.record?.id || '').filter(Boolean),
-                knowledgeRefs: [] as string[],
-                fgEventRefs: [] as string[],
-                calciumScore: decision.enhanced?.calcium_score || 0.5,
-                novelty: { level: 'routine', similarity: 0.5, multiplier: 1.0 },
-              };
-            }
-          }
+          // 轻量兜底快照（PFC.processEnhanced 内部会重新用 Builder 构建）
+          const _entities = (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我').map((g: any) => ({ name: g.name, type: g.type }));
+          const _snap = {
+            snapshotId: 'pfc_' + Date.now().toString(36),
+            contextSignature: (dna.locus_path || 'root') + '|' + (p.pleasure > 0.2 ? 'pos' : (p.pleasure < -0.2 ? 'neg' : 'neu')),
+            temporal: { createdAt: new Date().toISOString(), sessionId: String(seqPos) || '', timeOfDay: 'morning', dayOfWeek: new Date().getDay() },
+            spatial: { sceneLabel: '对话中' },
+            entities: { persons: _entities.map((e: any) => e.name), topics: [], objects: [] },
+            experienceSummary: (memoryFragments || []).join(' | ').substring(0, 200) || '(无)',
+            emotion: { pleasure: p.pleasure || 0, arousal: p.arousal || 0, intimacy: p.intimacy || 0, trend: 'stable' },
+            memoryPointers: emotionalMemories.map((m: any) => m?.record?.id || '').filter(Boolean),
+            knowledgeRefs: [] as string[], fgEventRefs: [] as string[],
+            calciumScore: decision.enhanced?.calcium_score || 0.5,
+            novelty: { level: 'routine', similarity: 0.5, multiplier: 1.0 },
+          };
 
-          // V4.0 Phase 3: 收集上下文块 — 传递给 PFC 统一组装
-          const _ctxBlocks: any[] = [];
-          // CoreMemory（已由上级 ad-hoc 块计算，priority=100）
-          const _cc = (globalThis as any).__pfcCoreCtx;
-          if (_cc) _ctxBlocks.push({ source: 'core_memory', content: typeof _cc === 'string' ? _cc.substring(0, 600) : '', priority: 100 });
-          // 海马体经验摘要（priority=80）
-          const _pfcExp = (globalThis as any).__pfcExp;
-          if (_pfcExp) _ctxBlocks.push({ source: 'experience', content: _pfcExp, priority: 80 });
-          // 情绪调节（priority=75）
-          const _pfcReg = (globalThis as any).__pfcReg;
-          if (_pfcReg) _ctxBlocks.push({ source: 'emotion_regulation', content: _pfcReg, priority: 75 });
-          // 遗忘指令（priority=90）
-          const _pfcForget = (globalThis as any).__pfcForget;
-          if (_pfcForget) _ctxBlocks.push({ source: 'forgetting', content: _pfcForget, priority: 90 });
-
-          const _pfcInput = { snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message, contextBlocks: _ctxBlocks.length > 0 ? _ctxBlocks : undefined };
-          const _pfcResult = await _pfc.process(_pfcInput, decision);
+          let _pfcResult: any;
+          if (typeof _pfc.processEnhanced === 'function') {
+            // 构建时空感知块（Phase 7: 从天气注入段提取）
+            let _temporalBlock = '';
+            if (ENABLE_TEMPORAL_RULE_ENGINE && worldRuleMode === 'roleplay_exempt') {
+              _temporalBlock = '【模式·自由角色扮演豁免】当前已豁免全部客观规则，可按架空剧情演绎。';
+            }
+            const _weatherCurrent = EngineContext.getExtra('weather_current');
+            if (ENABLE_TEMPORAL_RULE_ENGINE && EngineContext.getExtra('weather_permission') === 'allowed' && _weatherCurrent) {
+              _temporalBlock = (_temporalBlock ? _temporalBlock + '\n' : '') + '【气象环境】' + _weatherCurrent;
+            }
+            // ⭐ 主路径: PFC 内部闭环组装（CoreMemory + Facade + Emotion + Forgetting + cortex + 快照 + 时空）
+            _pfcResult = await _pfc.processEnhanced({
+              snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message,
+              dna, perception: p, decision,
+              ctxM4: ctx_m4,
+              enrichedHistory: enrichedHistory.slice(-10).map((t: any) => ({ role: t.role || 'user', content: (t.content || '').substring(0, 200) })),
+              currentRoleplay: _currentRoleplay || null, currentRole: _currentRole,
+              emotionalMemories, memoryFragments,
+              temporalBlock: _temporalBlock || undefined,
+              weatherContext: _weatherContext || undefined,
+              enableTemporalEngine: ENABLE_TEMPORAL_RULE_ENGINE,
+            }, decision);
+          } else {
+            // 降级: 旧 process() 路径（PFC 不支持 processEnhanced 时）
+            _pfcResult = await _pfc.process({ snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message }, decision);
+          }
           (globalThis as any).__pfcDirective = _pfcResult?.directive || null;
 
-          // V4.0 Phase 3: PFC 守卫消息 + assembledContext 替代手动拼装
-          // 如果 PFC 返回了 assembledContext，用它的；否则继续走旧的 ad-hoc 拼装
-          const _assembledCtx = _pfcResult?.directive?.payload?.['assembledContext'] as string | undefined;
-          const _guardMsgs = _pfcResult?.directive?.payload?.['guardMessages'] as string | undefined;
-          if (_assembledCtx || _guardMsgs) {
-            // PFC 统一组装的上下文优先（逐步替代 ad-hoc 拼装）
-            finalKnowledgeText = [_guardMsgs, _assembledCtx, finalKnowledgeText].filter(Boolean).join('\n\n');
-          } else {
-            // Fallback: V4.0 Phase 1 行为 — 仅注入 PFC 违规
-            if (_pfcResult?.directive?.constraints?.violations?.length > 0) {
-              const _pfcGuards = _pfcResult.directive.constraints.violations.join('\n');
-              if (_pfcGuards) {
-                finalKnowledgeText = _pfcGuards + '\n\n' + (finalKnowledgeText || '');
-              }
-            }
+          // 使用 PFC 统一输出
+          if (_pfcResult?.assembledSystemPrompt || _pfcResult?.assembledContext || _pfcResult?.guardMessage) {
+            const _parts = [_pfcResult.assembledSystemPrompt, _pfcResult.guardMessage, _pfcResult.assembledContext].filter(Boolean);
+            finalKnowledgeText = [..._parts, finalKnowledgeText].filter(Boolean).join('\n\n');
+          } else if (_pfcResult?.directive?.payload?.['assembledContext'] || _pfcResult?.directive?.payload?.['guardMessages']) {
+            finalKnowledgeText = [_pfcResult.directive.payload['guardMessages'], _pfcResult.directive.payload['assembledContext'], finalKnowledgeText].filter(Boolean).join('\n\n');
+          } else if (_pfcResult?.directive?.constraints?.violations?.length > 0) {
+            finalKnowledgeText = _pfcResult.directive.constraints.violations.join('\n') + '\n\n' + (finalKnowledgeText || '');
           }
         }
-      } catch (_pfcErr) { /* PFC 不可用不阻塞，fallback 到旧路径 */ }
+      } catch (_pfcErr) { /* PFC 不可用不阻塞，fallback 到空上下文 */ }
 
 if (isFactualRecallQuery) {
   finalKnowledgeText = factualRecallGuard + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
 }
 
 // ── 时空规则引擎：模式状态 + 气象上下文注入（LLM生成前） ──
-if (ENABLE_TEMPORAL_RULE_ENGINE) {
-  try {
-    if (worldRuleMode === 'roleplay_exempt') {
-      finalKnowledgeText = '【模式·自由角色扮演豁免】当前已豁免全部客观规则，可按架空剧情演绎。\n' + (finalKnowledgeText || '');
-    }
-    const weatherPerm = EngineContext.getExtra('weather_permission');
-    const weatherCurrent = EngineContext.getExtra('weather_current');
-    if (weatherPerm === 'allowed' && weatherCurrent) {
-      finalKnowledgeText = (finalKnowledgeText || '') + '\n【气象环境】' + weatherCurrent;
-    }
-    // 用户主动问天气的查询结果（优先级最高）
-    if (_weatherContext) {
-      finalKnowledgeText = '【天气查询结果】' + _weatherContext + '\n（基于以上天气数据，用自然的语气回答用户，不要编造未提供的数据）\n\n' + (finalKnowledgeText || '');
-    }
-  } catch (_) {}
-}
+	// V4.0 Phase 7: 天气/时空注入已迁移到 PFC.processEnhanced temporalBlock 参数
 
 // 🧬 结构化管线已包含角色扮演规则，仅对旧链路生效
 if (_currentRoleplay && !getDomainStatus().structured && !finalKnowledgeText.startsWith('【角色扮演】')) {
@@ -2379,7 +1921,7 @@ if (ctx.clientMsgId && typeof ctx.clientMsgId === 'string' && ctx.clientMsgId.st
 if (_ruleEngineBlocked && _ruleEngineReply) {
   reply = _ruleEngineReply;
 } else {
-reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\\n').filter(l => l.trim()).join('\n') + '\\n\\n' + message) : message, _currentRole);
+reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\n').filter(l => l.trim()).join('\n') + '\n\n' + message) : message, _currentRole);
 }
 
     // 🏗️ 防复发第一层: 角色扮演运行时自检
@@ -2394,7 +1936,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
           m.reportProbe('RP-H07', tooLong ? 2 : 1);
           m.reportProbe('RP-H08', reply.includes('记不清') || reply.includes('没听说') ? 1 : 5);
         });
-      } catch (_) {}
+      } catch (_) { /* RP探针可用时不阻塞主流程 */ }
       // 阶段2-1+2-2: 记忆同步 + 三阶生长
       try {
         const _rps = {
@@ -2999,6 +2541,61 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
           );
         } catch (err) { console.warn('[Ingestion] 异步入库失败:', err); }
       }).catch(() => {});
+    }
+
+    // ── V3.2 Hook C: 档案自动采集 — 从 AI 回复中提取人物信息（异步不阻塞）──
+    if (ctx._profileAcquisitionEngine && reply && reply.length > 10) {
+      const _replyPersons: string[] = (dna.entity_genes || [])
+        .filter((g: any) => g.type === 'person' && g.name && g.name !== '我')
+        .map((g: any) => g.name as string);
+      if (_replyPersons.length > 0) {
+        chatTaskQueue.enqueue(async () => {
+          try {
+            await ctx._profileAcquisitionEngine!.acquire(
+              reply,
+              [...new Set(_replyPersons)],
+              {
+                source: 'assistant_response',
+                mode: 'post_generation',
+              }
+            );
+          } catch (_paeErr2) {
+            if ((globalThis as any).__verbosePAE) {
+              console.warn('[PAE] Hook C 提取失败:', (_paeErr2 as Error).message);
+            }
+          }
+        }).catch(() => {});
+      }
+    }
+
+    // ── V3.2 关系热力更新：每次对话后更新与提及实体之间的互动热度 ──
+    if (ctx._relationHeatTracker && !_currentRoleplay) {
+      const _heatPersons = (dna.entity_genes || [])
+        .filter((g: any) => g.type === 'person' && g.name && g.name !== '我');
+      if (_heatPersons.length > 0) {
+        chatTaskQueue.enqueue(async () => {
+          try {
+            for (const g of _heatPersons) {
+              const uuid = ctx.m4?.getRealFamilyGraph?.()?.getUUIDByName?.(g.name);
+              if (uuid) {
+                await ctx._relationHeatTracker!.updateHeat(uuid, {
+                  intimacy: (p as any).intimacy,
+                  pleasure: (p as any).pleasure,
+                  arousal: (p as any).arousal,
+                });
+                const upgrade = await ctx._relationHeatTracker!.checkUpgrade(uuid);
+                if (upgrade?.upgraded) {
+                  console.log(`[HeatTracker] ${g.name}(${uuid}) 关系自动升级: ${upgrade.from} → ${upgrade.to} (热力=${upgrade.newHeat})`);
+                }
+                const xUpgrade = await ctx._relationHeatTracker!.checkXUpgrade(uuid);
+                if (xUpgrade?.upgraded) {
+                  console.log(`[HeatTracker] ${g.name}(${uuid}) 🔥 升级为情人(X)! (热力=${xUpgrade.newHeat})`);
+                }
+              }
+            }
+          } catch { /* 热力更新失败不影响对话 */ }
+        }).catch(() => {});
+      }
     }
 
     // 🛡️ 向量对齐审计：记录本轮检索健康度

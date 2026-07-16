@@ -22,6 +22,8 @@ import type { HeartStateStore } from '../engine/tianquan/heart/HeartStateStore.j
 import type { HippocampusRhythmCoordinator } from '../engine/tianquan/temporal/HippocampusRhythmCoordinator.js';
 import type { CoreMemoryManager } from '../engine/tianquan/temporal/CoreMemoryManager.js';
 import type { SleepTimeConsolidator } from '../engine/tianquan/temporal/SleepTimeConsolidator.js';
+import type { SceneSnapshotBuilder } from '../engine/tianquan/temporal/SceneSnapshotBuilder.js';
+import type { ProspectiveSimulator } from '../engine/tianquan/temporal/ProspectiveSimulator.js';
 import type { SecondBrainGateway } from '../engine/tianquan/knowledge/SecondBrainGateway.js';
 import type { MDFileWatcher } from '../engine/tianquan/knowledge/MDFileWatcher.js';
 import type { WikiLinkResolver } from '../engine/tianquan/knowledge/WikiLinkResolver.js';
@@ -30,6 +32,8 @@ import type { KnowledgeBridge } from '../engine/tianquan/knowledge/KnowledgeBrid
 import type { KnowledgeAccessFacade } from '../engine/tianquan/temporal/KnowledgeAccessFacade.js';
 import type { TianquanEventBus } from '../engine/tianquan/bus/TianquanEventBus.js';
 import type { PrefrontalDirective } from '../engine/tianquan/prefrontal/types.js';
+import type { DailyMaintenanceScheduler } from '../app/learning/DailyMaintenanceScheduler.js';
+import type { GlobalBusClient } from '../tianquan/GlobalBusClient.js';
 
 /** 全局模块注册表接口 — 所有通过 globalThis 共享的模块都必须在此声明 */
 export interface GlobalRegistry {
@@ -39,6 +43,8 @@ export interface GlobalRegistry {
   hippocampusCoordinator: HippocampusRhythmCoordinator;
   coreMemory: CoreMemoryManager;
   sleepTimeConsolidator: SleepTimeConsolidator;
+  snapshotBuilder: SceneSnapshotBuilder;
+  prospectiveSimulator: ProspectiveSimulator;
 
   // ── 第二大脑 ──
   secondBrainGateway: SecondBrainGateway;
@@ -53,6 +59,10 @@ export interface GlobalRegistry {
   // ── 事件总线 ──
   tianquanBus: TianquanEventBus;
 
+  // ── 全局调度 ──
+  dailyMaintenanceScheduler: DailyMaintenanceScheduler;
+  globalBusClient: GlobalBusClient;
+
   // ── 运行时状态（非模块，由 chat.ts 注入） ──
   pfcConversationContext: Array<{ role: string; content: string }>;
   currentRoleplay: string | null;
@@ -62,8 +72,11 @@ export interface GlobalRegistry {
   lastYaolingSnapshot: Record<string, unknown> | null;
   lastYaoguangSnapshot: Record<string, unknown> | null;
 
-  // ── 家族图谱 ──
+  // ── 家族图谱 + 外部组件 ──
   familyGraph: any; // FamilyGraph 类型在 m4/ 中，避免循环依赖
+  cortexOrchestrator: any; // GenerationOrchestrator 在 engine/cortex/，避免循环依赖
+  masterProfile: any; // MasterProfileService 在 app/profile/
+  wss: any; // WebSocketServer 在 node_modules/ws/
 }
 
 // ═══════════════════════════════════════════════════════

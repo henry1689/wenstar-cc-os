@@ -16,6 +16,9 @@
 import type { SQLiteAdapter } from '../../../m2/SQLiteAdapter.js';
 import type { FusionStorageAdapter } from '../../../m2/FusionStorageAdapter.js';
 import type { KnowledgeBase } from '../../../m2/KnowledgeBase.js';
+import type { CoreMemoryManager } from '../temporal/CoreMemoryManager.js';
+import type { KnowledgeAccessFacade } from '../temporal/KnowledgeAccessFacade.js';
+import type { SceneSnapshotBuilder } from '../temporal/SceneSnapshotBuilder.js';
 import { PrefrontalCortex } from './PrefrontalCortex.js';
 import { WorkingMemory } from './WorkingMemory.js';
 import { GoalStack } from './GoalStack.js';
@@ -32,6 +35,11 @@ export interface PrefrontalDeps {
   knowledgeBase?: KnowledgeBase;
   /** 事件总线（可选，供元认知推送梦境引擎） */
   eventBus?: { emit: (event: any) => Promise<void> };
+  // ── V4.0 Phase 6: 上下文组装依赖（可选，渐进迁移；未注入时从 globalThis 兜底）──
+  coreMemoryManager?: CoreMemoryManager;
+  knowledgeAccessFacade?: KnowledgeAccessFacade;
+  snapshotBuilder?: SceneSnapshotBuilder;
+  cortexOrchestrator?: any;
 }
 
 /**
@@ -55,12 +63,22 @@ export function assemblePrefrontal(deps: PrefrontalDeps): PrefrontalCortex {
     cortex.setEventBus(deps.eventBus);
   }
 
-  // ④ 注册到全局（与 __hippocampusCoordinator 模式一致）
+  // ④ V4.0 Phase 6: 注入上下文组装依赖（优先 deps → 降级 globalThis）
+  cortex.setCoreMemoryManager(deps.coreMemoryManager || (globalThis as any).__coreMemory || null);
+  cortex.setKnowledgeAccessFacade(deps.knowledgeAccessFacade || (globalThis as any).__knowledgeAccessFacade || null);
+  cortex.setSnapshotBuilder(deps.snapshotBuilder || (globalThis as any).__snapshotBuilder || null);
+  cortex.setCortexOrchestrator(deps.cortexOrchestrator || (globalThis as any).__cortexOrchestrator || null);
+
+  // ⑤ 注册到全局（与 __hippocampusCoordinator 模式一致）
   (globalThis as any).__prefrontalCortex = cortex;
 
+  const hasCM = !!(deps.coreMemoryManager || (globalThis as any).__coreMemory);
+  const hasFacade = !!(deps.knowledgeAccessFacade || (globalThis as any).__knowledgeAccessFacade);
+  const hasBuilder = !!(deps.snapshotBuilder || (globalThis as any).__snapshotBuilder);
   console.log('[Prefrontal] 前额叶装配完成 · ' +
     `工作记忆 ${wm.capacity} 槽位 · ` +
     `总线 ${deps.eventBus ? '已' : '未'}注入 · ` +
+    `上下文组装 CoreMemory:${hasCM ? '✓' : '✗'} Facade:${hasFacade ? '✓' : '✗'} Builder:${hasBuilder ? '✓' : '✗'} · ` +
     `目标栈 ${gs.getState().longTerm.length} 长期目标 ✓`);
 
   return cortex;

@@ -147,7 +147,9 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
     dna_id TEXT,
     scene_tags TEXT,
     interaction_type TEXT DEFAULT 'other',
-    emotion_vector TEXT
+    emotion_vector TEXT,
+    -- V3.2: 户籍卷宗归档 — 此知识条目属于哪个实体 UUID
+    belong_entity_uuid TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_created ON knowledge_base(created_at DESC);
 
@@ -179,7 +181,7 @@ CREATE TABLE IF NOT EXISTS decay_log (
     PRIMARY KEY (memory_id, checked_at)
 );
 
--- 黑钻库
+-- 黑钻库 (V4.0 增强字段已直接纳入 CREATE TABLE)
 CREATE TABLE IF NOT EXISTS black_diamond (
     id TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
@@ -192,17 +194,16 @@ CREATE TABLE IF NOT EXISTS black_diamond (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     emotion_vector TEXT DEFAULT NULL,
-    namespace TEXT DEFAULT 'default'
+    namespace TEXT DEFAULT 'default',
+    entry_channel TEXT DEFAULT 'auto',
+    entry_reason TEXT,
+    stabilization_score REAL DEFAULT 1.0,
+    manual_quota_consumed INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active'
 );
 CREATE INDEX IF NOT EXISTS idx_black_diamond_emotion ON black_diamond(emotion_tag);
 CREATE INDEX IF NOT EXISTS idx_black_diamond_created ON black_diamond(created_at DESC);
--- V4.0: 黑钻库增强字段
-ALTER TABLE black_diamond ADD COLUMN entry_channel TEXT DEFAULT 'auto';
-ALTER TABLE black_diamond ADD COLUMN entry_reason TEXT;
-ALTER TABLE black_diamond ADD COLUMN stabilization_score REAL DEFAULT 1.0;
-ALTER TABLE black_diamond ADD COLUMN manual_quota_consumed INTEGER DEFAULT 0;
-ALTER TABLE black_diamond ADD COLUMN status TEXT DEFAULT 'active';
-
+-- V4.0: 黑钻库增强字段 → 已迁移至 MigrationManager v7，防止 schema.sql 重启时 ALTER TABLE 重复执行崩溃
 CREATE INDEX IF NOT EXISTS idx_black_diamond_namespace ON black_diamond(namespace);
 
 -- 黑钻倒排索引
@@ -270,7 +271,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- P0-4: 消息唯一ID（业务幂等键）
     message_id TEXT UNIQUE,
     -- P1-4: 多租户命名空间
-    namespace TEXT DEFAULT 'default'
+    namespace TEXT DEFAULT 'default',
+    -- V3.2: 户籍卷宗归档 — 此对话属于哪个实体 UUID
+    belong_entity_uuid TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_conv_topic ON conversations(topic);

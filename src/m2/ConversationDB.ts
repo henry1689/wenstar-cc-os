@@ -95,7 +95,8 @@ export class ConversationDB {
         summary_of_range TEXT,
         roleplay_char TEXT,
         message_id TEXT UNIQUE,
-        namespace TEXT DEFAULT 'default'
+        namespace TEXT DEFAULT 'default',
+        belong_entity_uuid TEXT
       )
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)`);
@@ -122,6 +123,8 @@ export class ConversationDB {
     try { this.db.run("ALTER TABLE conversations ADD COLUMN roleplay_char TEXT"); } catch {} // 🎭 角色扮演标记
     try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch {}
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
+    try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
   }
 
   insertConversation(role: string, content: string, options?: {
@@ -139,6 +142,8 @@ export class ConversationDB {
     isCompacted?: number;
     roleplayChar?: string;
     namespace?: string;
+    /** V3.2: 户籍卷宗归档 — 此对话归属的实体 UUID */
+    belongEntityUuid?: string;
   }): number {
     this.ensureReady();
     const seqPos = options?.seqPos ?? 0;
@@ -148,12 +153,12 @@ export class ConversationDB {
     // is_summary 与 is_compacted 同步写入（过渡兼容，后续统一为 is_summary）
     const compactVal = options?.isCompacted ?? 0;
     this.db.run(
-      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, global_uid, location_fingerprint, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, global_uid, location_fingerprint, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace, belong_entity_uuid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       [role, content, timestamp, seqPos, options?.topic || '', entityNames, perceptionSummary,
        options?.calciumScore || 0, options?.dnaRootId || null, options?.globalUid || null, options?.locationFingerprint || null,
        options?.dialogGroupId || null, options?.dialogRound ?? null, options?.isTest ?? 0, compactVal, compactVal,
-       options?.roleplayChar || null, options?.namespace || 'default'],
+       options?.roleplayChar || null, options?.namespace || 'default', options?.belongEntityUuid || null],
     );
     // C4: 触发防抖落盘（共享模式委托 owner；独立模式 150ms 合并落盘），防止用户/助手消息因崩溃丢失
     this.scheduleFlush();

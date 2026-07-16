@@ -94,6 +94,16 @@ export interface FamilyGraph {
   correctRelation(source: string, target: string, correctRelation: string): Promise<void>;
   addFamilyMember(name: string, relation: string, aliases?: string[]): Promise<void>;
   getFamilySummary(): Promise<FamilySummary>;
+
+  // V3.2: UUID 户籍编号体系
+  /** 按 UUID 查找人物节点 */
+  getEntityByUUID(uuid: string): any | null;
+  /** 按人名查 UUID */
+  getUUIDByName(name: string): string | null;
+  /** 获取全部分类统计 {A: 5, B: 3, ...} */
+  getUUIDCategoryStats(): Record<string, number>;
+  /** 为指定分类生成下一个 UUID */
+  _generateUUID(category: string): string;
 }
 
 // ─── 关系权重默认值（映射24D社交/亲密象限） ───

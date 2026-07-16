@@ -119,6 +119,24 @@ export class KnowledgeSyncPipeline {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[SyncPipeline] 同步完成: ${report.goldEntriesCreated} 条, ${report.errors.length} 个错误 (${elapsed}s)`);
 
+    // V4.0: 推送同步完成事件到天权事件总线
+    try {
+      const bus = (globalThis as any).__tianquanBus;
+      if (bus && typeof bus.emit === 'function') {
+        bus.emit({
+          type: 'knowledge:second_brain_sync',
+          traceId: `ksp_${Date.now().toString(36)}`,
+          timestamp: Date.now(),
+          sessionId: '',
+          payload: {
+            changedFiles: report.errors.map((e: any) => e.file).filter(Boolean),
+            syncType: 'incremental' as const,
+            triggeredBy: 'nightly_batch' as const,
+          },
+        }).catch(() => {});
+      }
+    } catch { /* 事件总线不可用不阻塞 */ }
+
     return report;
   }
 

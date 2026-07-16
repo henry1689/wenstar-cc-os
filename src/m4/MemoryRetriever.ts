@@ -541,7 +541,7 @@ export class MemoryRetriever {
         const d = sq.queryAll("SELECT summary FROM black_diamond WHERE tags LIKE ? " + bdFilter + " ORDER BY created_at DESC LIMIT 5", bdParams);
         for (const x of d || []) if (x.summary) r.l2Diamond.push(String(x.summary ?? "").substring(0, 200));
       }
-    } catch (e) {}
+    } catch (e) { /* L2 检索不可用不影响主流程 */ }
     // 🔴 修正：不因 L2 关键词提前截断 — L2 对话内容含"妈妈"不代表有实际关系数据
     // 必须运行 L3 拓扑获取真实亲属关系
     if (enableTopology || /妈妈|爸爸|姐姐|妹妹|母亲|父亲/.test(message || '')) {
@@ -561,7 +561,7 @@ export class MemoryRetriever {
           }
           if (r.l3Topology.length > 0) r.hasValidRelation = true;
         }
-      } catch (e) {}
+      } catch (e) { /* L3 拓扑检索不可用不影响主流程 */ }
     }
     layers.push('L4');
     return r;

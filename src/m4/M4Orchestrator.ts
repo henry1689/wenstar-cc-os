@@ -41,6 +41,8 @@ export class M4Orchestrator {
   private memoryRetriever: MemoryRetriever;
   private familyGraph: FamilyGraph;
   private _familyGraphOverride: any = null;
+  /** V3.2: 户籍门阀过滤器 */
+  private _gatekeeper: any = null;
   /** P0-3: 记忆检索回调（激活新引擎再巩固） */
   public _onMemoriesRetrieved: ((memories: Array<{ memoryId: string; dnaRootId: string; calciumScore: number; perception: any }>) => void) | null = null;
   /** Phase B: 最近一次检索的原始记忆（供 retrieveAsSnapshot 使用） */
@@ -62,6 +64,15 @@ export class M4Orchestrator {
     // 切换 FG 分支时清除缓存
     _fgCache = null;
     console.log(`[M4] ${override ? '🎭 启用FG分支覆盖' : '✅ 清除FG分支覆盖'}`);
+  }
+
+  /** V3.2: 设置户籍门阀过滤器 */
+  setGatekeeper(gatekeeper: any): void {
+    this._gatekeeper = gatekeeper;
+  }
+
+  getGatekeeper(): any {
+    return this._gatekeeper;
   }
 
   getFamilyGraph(): any {
@@ -202,6 +213,17 @@ export class M4Orchestrator {
 
     const memorySummary = this.memoryRetriever.compressMemories(memories);
 
+    // ── V3.2 门阀过滤: 记忆检索结果按白名单 UUID 过滤 ──
+    if (this._gatekeeper?.isActive?.()) {
+      try {
+        const before = memories.length;
+        memories = this._gatekeeper.filterMemories(memories);
+        if (before !== memories.length) {
+          // 门阀过滤了部分记忆（静默，隐私保护不打印细节）
+        }
+      } catch { /* 门阀失败不影响检索 */ }
+    }
+
     // ── 2. 家族图谱 ──
     const activeFG = this.getFamilyGraph();
 
@@ -257,18 +279,26 @@ export class M4Orchestrator {
       } : {};
     };
 
-    const familyContext = familySummary.members.map((m: any) => ({
+    let familyContext = familySummary.members.map((m: any) => ({
       entity: m.name,
       relation: m.relation_to_user,
       related_entity: '我',
       ...enrichProfile(m.name),
     }));
-    const socialContext = socialSummary.connections.map((c: any) => ({
+    let socialContext = socialSummary.connections.map((c: any) => ({
       entity: c.name,
       relation: c.relation_to_user,
       related_entity: '我',
       ...enrichProfile(c.name),
     }));
+
+    // ── V3.2 门阀过滤: FG 家族/社交成员按白名单 UUID 过滤 ──
+    if (this._gatekeeper?.isActive?.()) {
+      try {
+        familyContext = this._gatekeeper.filterFGMembers(familyContext);
+        socialContext = this._gatekeeper.filterFGMembers(socialContext);
+      } catch { /* 门阀失败不阻断 */ }
+    }
 
     // ── 4. 情感检索结果注入 ──
     if (emotionalSummaries && emotionalSummaries.length > 0) {

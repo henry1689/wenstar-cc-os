@@ -43,10 +43,11 @@ const DEFAULT_DB_PATH = join(__dirname, '..', '..', 'data', 'webui', 'knowledge'
  *  - 原有 flat 字段保持兼容
  *  - 新增字段通过 dossier 子对象存储
  */
-interface PersonProfile {
+export interface PersonProfile {
   // ── 基础 ──
   name: string;
-  age?: number;
+  age?: number;        // 🏛️ @deprecated: 请用 birthYear，年龄由 getCalculatedAge() 实时计算
+  birthYear?: number;  // 🏛️ §十三: 出生年份（年龄唯一来源）
   relation_to_user: string;
   /** 首次提及日期 */
   first_mentioned?: string;
@@ -99,6 +100,8 @@ interface PersonProfile {
   conflicts?: Array<{ field: string; oldValue: string; newValue: string; timestamp: string }>;
   /** 是否标记为有冲突 */
   conflict?: boolean;
+  /** 🏛️ §十三: 档案变更时间向量 */
+  _changeHistory?: Array<{ field: string; oldValue: any; newValue: any; timestamp: string }>;
 }
 
 /**
@@ -109,7 +112,7 @@ interface PersonProfile {
  * - 新增 联系方式、健康状况、人生里程碑、家庭关系网、社会资本 模块
  * - 原6模块扩展为10模块
  */
-interface PersonDossier {
+export interface PersonDossier {
   /** 模块① 基础信息卡 */
   basicInfo: {
     gender?: string;
@@ -264,7 +267,7 @@ interface PersonDossier {
 }
 
 /** 待确认条目（30 天 TTL） */
-interface PendingItem {
+export interface PendingItem {
   field: string;            // 对应的模块字段名
   value: string;            // 待确认的值
   source: string;           // 来源（对话摘要）
@@ -317,6 +320,27 @@ const SOCIAL_REVERSE: Record<string, string> = {
   teacher_of: 'student_of', student_of: 'teacher_of',
   doctor_of: 'patient_of', consultant_of: 'client_of',
   server_of: 'client_of', acquaintance_of: 'acquaintance_of',
+  comrade_of: 'comrade_of', fellow_of: 'fellow_of',
+  vendor_of: 'vendor_of', competitor_of: 'competitor_of',
+  stranger_of: 'stranger_of',
+};
+
+/** 🏛️ 社会关系 → 中文称谓 */
+const SOCIAL_LABEL_CN: Record<string, string> = {
+  colleague_of: '同事', classmate_of: '同学', roommate_of: '室友',
+  boss_of: '上级', subordinate_of: '下属', client_of: '客户',
+  friend_of: '朋友', partner_of: '合伙人', neighbor_of: '邻居',
+  teacher_of: '老师', student_of: '学生', doctor_of: '医生',
+  consultant_of: '顾问', server_of: '服务方', acquaintance_of: '认识的人',
+  comrade_of: '战友', fellow_of: '会友', vendor_of: '供应商',
+  competitor_of: '竞争对手', stranger_of: '陌生人',
+  employer_of: '雇主', employee_of: '雇员',
+  investor_of: '投资人', supplier_of: '供应商',
+  _reverse_boss_of: '下属', _reverse_subordinate_of: '上级',
+  _reverse_client_of: '服务方', _reverse_server_of: '客户',
+  _reverse_teacher_of: '学生', _reverse_student_of: '老师',
+  _reverse_acquaintance_of: '认识的人', _reverse_friend_of: '朋友',
+  _reverse_colleague_of: '同事', _reverse_classmate_of: '同学',
 };
 
 const REVERSE_RELATION: Record<string, string> = {
@@ -331,6 +355,7 @@ const REVERSE_RELATION: Record<string, string> = {
   close_to: 'close_to',
 };
 
+/** 🏛️ §十五: 统一反向映射表（家族+社交，同等对待） */const ALL_REVERSE: Record<string, string> = { ...REVERSE_RELATION, ...SOCIAL_REVERSE };
 const KINSHIP_TERMS = Object.keys(KINSHIP_MAP).sort((a, b) => b.length - a.length);
 const PENDING_PROMOTION_THRESHOLD = 3;
 const SPECIFIC_KINSHIP_LABEL: Record<string, string> = {
@@ -365,6 +390,20 @@ const ENTITY_REL_MAP: Record<string, string> = {
 /**
  * 生成简单 UUID
  */
+/** 🏛️ 边类型 → 中文关系标签 */
+const RELATION_LABEL_CN: Record<string, string> = {
+  mother_of: '妈妈', father_of: '爸爸', parent_of: '父母', child_of: '子女',
+  elder_sister_of: '姐姐', younger_sister_of: '妹妹', sister_of: '姐妹',
+  elder_brother_of: '哥哥', younger_brother_of: '弟弟', brother_of: '兄弟',
+  sibling_of: '手足', spouse_of: '配偶',
+  grandfather_of: '爷爷', grandmother_of: '奶奶', grandchild_of: '孙辈',
+  aunt_of: '阿姨/姑姑', uncle_of: '叔叔/舅舅',
+  niece_of: '侄女/甥女', nephew_of: '侄子/甥子', cousin_of: '堂表亲',
+  _reverse_mother_of: '子女', _reverse_father_of: '子女',
+  _reverse_elder_sister_of: '妹妹', _reverse_younger_sister_of: '姐姐',
+  _reverse_elder_brother_of: '弟弟', _reverse_younger_brother_of: '哥哥',
+};
+
 function uid(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).substring(2, 8);
@@ -407,6 +446,49 @@ function normalizePendingKey(field: string, value: string): string {
  *
  * v1.0 聚焦：自动提取 + 关系推断
  */
+
+// ─── V4.0 Phase 7: 亲属称谓类型 ───
+
+interface PersonNodeInfo {
+  id: string; name: string;
+  gender: string | null; age: number | null; surname: string;
+}
+
+interface KinshipStep {
+  fromId: string; targetId: string; relation: string;
+  targetName: string; targetGender: string | null;
+}
+
+interface RelationPattern {
+  category: 'self' | 'parent' | 'child' | 'sibling' | 'aunt_uncle' | 'niece_nephew'
+    | 'cousin' | 'grandparent' | 'grandchild' | 'great_grandparent' | 'great_grandchild'
+    | 'grand_aunt_uncle' | 'grand_niece_nephew' | 'second_cousin'
+    | 'spouse' | 'inlaw_parent' | 'inlaw_sibling' | 'inlaw_sibling_spouse'
+    | 'inlaw_child_spouse' | 'spouse_sibling' | 'social' | 'relative';
+  sub?: string;
+  lineage?: 'paternal' | 'maternal' | 'unknown';
+}
+
+interface KinshipTerm {
+  term: string;       // fromPerson 称呼 toPerson 的方式
+  reverse: string;    // toPerson 称呼 fromPerson 的方式
+  category: string;
+  generation: number; // 0=同辈, 1=长一辈, -1=小一辈, 2=祖辈
+}
+
+interface ConflictItem { field: string; oldValue: string; newValue: string; timestamp: string; resolved?: boolean; }
+interface ConflictReport { hasConflict: boolean; items: ConflictItem[]; }
+
+/** 🏛️ §12.2: 拦截LLM生成的对话文本混入pendingItems */
+function _isValidPendingValue(value: string): boolean {
+  if (!value || typeof value !== 'string') return false;
+  if (/^\s*[\n\r：:玉]/.test(value)) return false;
+  if (/（.*?）/.test(value) && value.length < 20) return false;
+  if (/^\d+$/.test(value) && parseInt(value) > 120) return false;
+  if (/\n玉瑶|\n我|\n用户/.test(value)) return false;
+  return value.trim().length >= 2 && value.trim().length <= 100;
+}
+
 export class FamilyGraph implements FamilyGraphInterface {
   private db: any | null = null;
   private dbPath: string;
@@ -415,6 +497,8 @@ export class FamilyGraph implements FamilyGraphInterface {
   private _dirty = false;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private ready = false;
+  /** 🛡️ 隐私 — 仅调试模式输出人名/关系到日志 */
+  private _verbose = false;
 
   constructor(dbPath?: string) {
     this.dbPath = dbPath ?? DEFAULT_DB_PATH;
@@ -441,6 +525,9 @@ export class FamilyGraph implements FamilyGraphInterface {
         name TEXT NOT NULL,
         aliases TEXT DEFAULT '[]',
         properties TEXT DEFAULT '{}',
+        uuid TEXT,
+        category CHAR(1),
+        security_level INTEGER DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -466,13 +553,16 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     // v2.0: 先升级存量数据（创建新列），再建索引
     this.migrateToV2();
+    // V3.2: UUID 户籍编号体系迁移
+    this.migrateToV3();
     try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_circle ON nodes(circle_level)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
     try { this.run('CREATE INDEX IF NOT EXISTS idx_edges_source_rel ON edges(source_id, relation)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
+    try { this.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_uuid ON nodes(uuid) WHERE uuid IS NOT NULL'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
 
     this.markDirty();
     this.ready = true;
 
-    // FG基建加固：启动时自动备份 + "我"节点完整性检查
+    // 🛡️ 备份仅在 initialize() 时执行（户籍制度 §7.1）
     this._ensureBackup();
     this._ensureSelfNode();
   }
@@ -488,7 +578,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
       if (existsSync(this.dbPath)) {
         copyFileSync(this.dbPath, backupPath);
-        console.log('[FG Shield] 自动备份完成: ' + backupPath);
+        console.log('[FG Shield] 自动备份完成: backup_' + ts + '.db');
       }
     } catch (e) {
       console.warn('[FG Shield] 自动备份失败:', e);
@@ -504,7 +594,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       if (!existsSync(backupDir)) return;
       const files = readdirSync(backupDir)
         .filter((f: string) => f.startsWith('family_graph_backup_') && f.endsWith('.db'));
-      if (files.length < 30) return; // 不足30份不触发清理
+      if (files.length < 15) return; // 不足15份不触发清理（户籍制度 §7.2）
 
       const now = Date.now(); const oneDay = 86400000;
       const byDay = new Map<string, { path: string; mtime: number }[]>();
@@ -543,12 +633,22 @@ export class FamilyGraph implements FamilyGraphInterface {
         const meId = uid();
         const now = new Date().toISOString();
         const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
-        this.run("INSERT INTO nodes (id, type, name, properties, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?)",
-          [meId, meProps, now, now]);
+        this.run("INSERT INTO nodes (id, type, name, properties, uuid, category, security_level, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?, ?, ?, ?)",
+          [meId, meProps, 'S-00001', 'S', 3, now, now]);
+        this.userNodeId = meId;
         console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
         this.markDirty(true);
       } else {
         this.userNodeId = existing[0].id;
+        // 🛡️ V3.2: 确保"我"节点的 UUID 和分类永远正确（可能被旧版本写坏）
+        const currentUUID = this.query('SELECT uuid, category FROM nodes WHERE id = ?', [this.userNodeId]);
+        if (currentUUID.length > 0) {
+          const r = currentUUID[0] as any;
+          if (r.uuid !== 'S-00001' || r.category !== 'S') {
+            this.run('UPDATE nodes SET uuid = ?, category = ?, security_level = ? WHERE id = ?',
+              ['S-00001', 'S', 3, this.userNodeId]);
+          }
+        }
       }
     } catch (e) {
       console.error('[FG Shield] "我"节点检查失败:', e);
@@ -573,16 +673,290 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
   }
 
+  /**
+   * V3.2 户籍制 UUID 迁移：给所有节点分配 UUID 编号
+   * - 新增 uuid、category 列
+   * - 存量节点自动生成 UUID（按 relation_to_user 推断分类）
+   * - 后续新增节点在 addNode() 时自动分配 UUID
+   */
+  migrateToV3(): void {
+    // Step 1: 新增列（幂等，已存在则跳过）
+    try { this.run('ALTER TABLE nodes ADD COLUMN uuid TEXT'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN category CHAR(1)'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN security_level INTEGER DEFAULT 1'); } catch (e) { /* 列已存在 */ }
+
+    // Step 2: 为无 UUID 的存量 person 节点生成编号
+    const orphanRows = this.query(
+      "SELECT id, name, properties FROM nodes WHERE type = 'person' AND (uuid IS NULL OR uuid = '')"
+    );
+    if (orphanRows.length > 0) {
+      // 获取各分类当前最大流水号
+      const seqMap = new Map<string, number>();
+      const existing = this.query("SELECT category, uuid FROM nodes WHERE type = 'person' AND uuid IS NOT NULL") as Array<{ category: string; uuid: string }>;
+      for (const row of existing) {
+        const cat = row.category || 'G';
+        const num = parseInt((row.uuid || '').split('-')[1] || '0', 10);
+        if (!isNaN(num) && num > (seqMap.get(cat) || 0)) {
+          seqMap.set(cat, num);
+        }
+      }
+
+      let migrated = 0;
+      for (const row of orphanRows) {
+        const props = JSON.parse(row.properties || '{}');
+        const category = this._inferCategory(props.relation_to_user || '', row.name, row.id);
+        const nextSeq = (seqMap.get(category) || 0) + 1;
+        seqMap.set(category, nextSeq);
+        const uuid = this._formatUUID(category, nextSeq);
+
+        this.run('UPDATE nodes SET uuid = ?, category = ? WHERE id = ?', [uuid, category, row.id]);
+        migrated++;
+      }
+
+      if (migrated > 0 && this._verbose) {
+        console.log(`[FamilyGraph] V3.2 UUID 迁移: ${migrated} 个节点已分配户籍编号`);
+      }
+    }
+
+    // Step 3: 修复已分配但分类可能错误的节点（多源推断器升级后的回溯修正）
+    // 🔴 必须在 early return 之后执行——因为即使没有新孤儿节点，旧节点的分类也可能需要修正
+    this._repairCategoryMismatches();
+  }
+
+  /**
+   * V3.2.1: 系统性分类复核
+   * 对已分配 UUID 的节点重新运行多源推断器，修正因旧版单源推断器导致的分类错误。
+   * 仅修正 category 和 uuid（保留其他字段不变）。
+   */
+  private _repairCategoryMismatches(): void {
+    const allPersons = this.query(
+      "SELECT id, name, properties, uuid, category FROM nodes WHERE type = 'person' AND uuid IS NOT NULL"
+    ) as Array<{ id: string; name: string; properties: string; uuid: string; category: string }>;
+
+    let repaired = 0;
+    for (const row of allPersons) {
+      const props = JSON.parse(row.properties || '{}');
+      const newCategory = this._inferCategory(props.relation_to_user || '', row.name, row.id);
+
+      if (newCategory !== row.category) {
+        // 分类改变 → 需要新的 UUID（前缀随分类变化）
+        // 获取新分类的最大流水号
+        const existing = this.query(
+          "SELECT uuid FROM nodes WHERE category = ? AND type = 'person' ORDER BY uuid DESC",
+          [newCategory]
+        );
+        let maxSeq = 0;
+        for (const r of existing) {
+          const num = parseInt((r.uuid || '').split('-')[1] || '0', 10);
+          if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        }
+        const newUUID = this._formatUUID(newCategory, maxSeq + 1);
+
+        this.run('UPDATE nodes SET uuid = ?, category = ? WHERE id = ?',
+          [newUUID, newCategory, row.id]);
+        repaired++;
+        if (this._verbose) {
+          console.log(`[FamilyGraph] UUID 修正: ${row.name} ${row.category}→${newCategory} (${row.uuid}→${newUUID})`);
+        }
+      }
+    }
+
+    if (repaired > 0) {
+      console.log(`[FamilyGraph] V3.2.1 分类复核: ${repaired} 个节点已修正`);
+    }
+  }
+
+  /**
+   * 户籍分类推断 — 多源融合决策器
+   *
+   * 🔴 铁律：A-亲属 必须相对于"我"（用户）。不是我的亲属，一律不是 A。
+   *      "徐诗雨的姑姑" → 相对于徐诗雨，不是我的姑姑 → 不是 A
+   *      "妈妈" → 相对于我 → A
+   *
+   * 决策优先级（从高到低）：
+   *   ① name === '我' → S（系统实体）
+   *   ② edges 表：此人与"我"之间有家族边（mother_of 等）→ A
+   *   ③ relation_to_user：直接亲属标签（不含他人名字的短标签）→ A
+   *   ④ relation_to_user：社交标签 → B/D/E/F/C
+   *   ⑤ 兜底 → G
+   */
+  private _inferCategory(relation: string, name: string, nodeId?: string): string {
+    // ── 第零层: "我"自身 → S ──
+    if (name === '我') return 'S';
+
+    // ── 第一层: edges 表（最高权威——关系边是客观事实）──
+    if (nodeId) {
+      // 检查与"我"的家族边
+      const familyEdges = this.query(
+        `SELECT e.relation FROM edges e
+         JOIN nodes n1 ON e.source_id = n1.id
+         JOIN nodes n2 ON e.target_id = n2.id
+         WHERE ((n1.name = '我' AND n2.id = ?) OR (n1.id = ? AND n2.name = '我'))
+           AND e.relation IN ('mother_of','father_of','spouse_of','sibling_of','child_of',
+              'parent_of','grandparent_of','grandchild_of','elder_sister_of','younger_sister_of',
+              'elder_brother_of','younger_brother_of','aunt_of','uncle_of','niece_of','nephew_of')
+         LIMIT 1`,
+        [nodeId, nodeId]
+      );
+      if (familyEdges.length > 0) return 'A';
+
+      // 社交边 → 按边类型映射
+      const socialEdges = this.query(
+        `SELECT e.relation FROM edges e
+         JOIN nodes n1 ON e.source_id = n1.id
+         JOIN nodes n2 ON e.target_id = n2.id
+         WHERE ((n1.name = '我' AND n2.id = ?) OR (n1.id = ? AND n2.name = '我'))
+           AND e.relation NOT IN ('acquaintance_of','认识的人','belongs_to','located_in','lives_in','residence_of')
+         LIMIT 1`,
+        [nodeId, nodeId]
+      );
+      if (socialEdges.length > 0) {
+        const rel = socialEdges[0].relation as string;
+        if (/colleague|boss|subordinate/.test(rel)) return 'B';
+        if (/classmate|teacher|student/.test(rel)) return 'D';
+        if (/client|partner/.test(rel)) return 'E';
+        if (/friend|roommate|neighbor/.test(rel)) return 'C';
+      }
+    }
+
+    // ── 第二层: relation_to_user 字符串 ──
+    // 🔴 铁律：A 类不从此层产出。edges（Layer 1）是 A 的唯一入口。
+    //      text 只能分出 X(情人) / B-F(社交) / G(陌生人)。
+    if (relation) {
+      // "/"复合标签 → 逐段判断（"伴侣/爱人" → 看 "伴侣" 和 "爱人"）
+      const parts = relation.includes('/') ? relation.split('/').map((s: string) => s.trim()) : [relation.trim()];
+
+      // ── X-情人: 浪漫/亲密伴侣关系（与 A-亲属严格区分）──
+      if (parts.some((p: string) => /^(伴侣|爱人|情人|男朋友|女朋友|未婚夫|未婚妻|对象|亲爱的|宝贝)$/.test(p))) return 'X';
+
+      // ── B-同事 ──
+      if (/同事|下属|上司|老板|员工|领导|部属|搭档|助理|秘书|前台|主管/.test(relation)) return 'B';
+      // ── D-同学 ──
+      if (/同学|校友|老师|学生|导师|教授/.test(relation)) return 'D';
+      // ── E-友商 ──
+      if (/客户|合作|合伙|供应商|友商|乙方|甲方/.test(relation)) return 'E';
+      // ── F-敌对 ──
+      if (/敌|仇|对手|讨厌/.test(relation)) return 'F';
+      // ── C-朋友 ──
+      if (/朋友|闺蜜|知己|兄弟|好友|死党|发小|玩伴/.test(relation)) return 'C';
+    }
+
+    // ── 默认 G ──
+    return 'G';
+  }
+
+  /** 获取所有 person 节点名称（缓存 30s） */
+  private _allPersonNamesCache: { names: string[]; ts: number } | null = null;
+  private _getAllPersonNames(): string[] {
+    if (this._allPersonNamesCache && Date.now() - this._allPersonNamesCache.ts < 30000) {
+      return this._allPersonNamesCache.names;
+    }
+    const rows = this.query("SELECT name FROM nodes WHERE type = 'person'") as Array<{ name: string }>;
+    const names = rows.map(r => r.name);
+    this._allPersonNamesCache = { names, ts: Date.now() };
+    return names;
+  }
+
+  /** 格式化 UUID */
+  private _formatUUID(category: string, seq: number): string {
+    return `${category}-${String(seq).padStart(5, '0')}`;
+  }
+
+  /** 为指定分类生成下一个 UUID（全量扫描防止字符串排序导致的编号冲突） */
+  _generateUUID(category: string): string {
+    // 🔴 不可用 ORDER BY uuid DESC LIMIT 1 —— UUID 字符串排序会将 "A-00009" 排在 "A-00010" 之后（'9' > '1'）
+    // 必须全量读取该类别的所有 UUID，解析出最大流水号
+    const rows = this.query(
+      "SELECT uuid FROM nodes WHERE category = ? AND type = 'person'",
+      [category]
+    );
+    let maxSeq = 0;
+    for (const row of rows) {
+      const num = parseInt((row.uuid || '').split('-')[1] || '0', 10);
+      if (!isNaN(num) && num > maxSeq) maxSeq = num;
+    }
+    return this._formatUUID(category, maxSeq + 1);
+  }
+
+  /** 按 UUID 查找人物节点 */
+  getEntityByUUID(uuid: string): any | null {
+    const rows = this.query('SELECT id, uuid, category, name, type, aliases, properties FROM nodes WHERE uuid = ?', [uuid]);
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  /** 按人名查 UUID */
+  getUUIDByName(name: string): string | null {
+    const node = this.findPersonNodeByNameOrAlias(name);
+    if (!node) return null;
+    return (node as any).uuid || null;
+  }
+
+  /** 获取全部分类统计 */
+  getUUIDCategoryStats(): Record<string, number> {
+    const rows = this.query("SELECT category, COUNT(*) as cnt FROM nodes WHERE type = 'person' AND category IS NOT NULL GROUP BY category") as Array<{ category: string; cnt: number }>;
+    const stats: Record<string, number> = {};
+    for (const row of rows) { stats[row.category] = row.cnt; }
+    return stats;
+  }
+
   async addNode(node: GraphNode): Promise<void> {
     const aliases = [...new Set((node.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))];
+
+    // V3.2: person 节点自动分配户籍 UUID
+    let uuid: string | null = null;
+    let category: string | null = null;
+    if (node.type === 'person') {
+      const existingUUID = this.getUUIDByName(node.name);
+      if (existingUUID) {
+        // 人名已存在 → 复用已有 UUID（合并场景）
+        uuid = existingUUID;
+        const existingNode = this.query('SELECT category FROM nodes WHERE uuid = ?', [existingUUID]);
+        if (existingNode.length > 0) category = (existingNode[0] as any).category;
+      } else {
+        // 新人 → 多源推断分类并分配
+        const props = (node.properties as any) || {};
+        category = this._inferCategory(props.relation_to_user || '', node.name, node.id);
+        uuid = this._generateUUID(category);
+      }
+    }
+
+    // 🔴 V3.2 防重复: name 无 UNIQUE 约束，需要手动检查是否已存在
+    if (node.type === 'person') {
+      const existing = this.findPersonNodeByNameOrAlias(node.name);
+      if (existing) {
+        // 人名已存在 → UPDATE 而非 INSERT（合并属性，保护已有 UUID）
+        const existingProps = JSON.parse(existing.properties || '{}');
+        const mergedProps = { ...(node.properties ?? {}), ...existingProps, name: node.name };
+        if (uuid) mergedProps._uuid = uuid;  // 保留新分配的 UUID 备查
+        // 如果调用方的 node.id 与已存在的 id 不同，更新 id（防止后续 addEdge 引用无效 id）
+        const targetId = (node.id !== existing.id) ? node.id : existing.id;
+        if (node.id !== existing.id) {
+          // 更新 edges 表中引用旧 id 的外键 → 新 id
+          this.run('UPDATE edges SET source_id = ? WHERE source_id = ?', [node.id, existing.id]);
+          this.run('UPDATE edges SET target_id = ? WHERE target_id = ?', [node.id, existing.id]);
+          // 同步更新 userNodeId（如果指向"我"节点）
+          if (this.userNodeId === existing.id) this.userNodeId = node.id;
+        }
+        this.run(
+          'UPDATE nodes SET id = ?, aliases = ?, properties = ?, updated_at = ? WHERE id = ?',
+          [targetId, JSON.stringify(aliases), JSON.stringify(mergedProps), new Date().toISOString(), existing.id]
+        );
+        this.markDirty(true);
+        return;
+      }
+    }
+
     this.run(
-      'INSERT OR IGNORE INTO nodes (id, type, name, aliases, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (id, type, name, aliases, properties, uuid, category, security_level, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         node.id,
         node.type,
         node.name,
         JSON.stringify(aliases),
         JSON.stringify(node.properties ?? {}),
+        uuid,
+        category,
+        1,  // V3.2: security_level 默认 1（公开级）
         new Date().toISOString(),
         new Date().toISOString(),
       ]
@@ -777,6 +1151,52 @@ export class FamilyGraph implements FamilyGraphInterface {
     return true;
   }
 
+  /**
+   * V3.2 PAE: 通用 dossier 字段路径设置器
+   * 将点分路径（如 "basicInfo.gender"、"health.lifestyle"）导航到 dossier 中并设置值。
+   * 支持嵌套到 3 层深（如 "imageTraits.feminineDetails.firstImpression"）。
+   */
+  private _setNestedDossierField(dossier: PersonDossier, fieldPath: string, value: string): boolean {
+    const parts = fieldPath.split('.');
+    let target: any = dossier;
+
+    // 导航到倒数第二层
+    for (let i = 0; i < parts.length - 1; i++) {
+      const key = parts[i];
+      if (!target[key] || typeof target[key] !== 'object') {
+        target[key] = {};
+      }
+      target = target[key];
+    }
+
+    const lastKey = parts[parts.length - 1];
+
+    // 特殊处理：数组类型字段（追加而非覆盖）
+    if (['traits', 'interests', 'parents', 'children', 'siblings', 'colleagues', 'friends', 'clients'].includes(lastKey)) {
+      if (!Array.isArray(target[lastKey])) target[lastKey] = [];
+      const arr = target[lastKey] as string[];
+      if (!arr.includes(value)) {
+        arr.push(value);
+        return true;
+      }
+      return false; // 已存在，不算 promoted
+    }
+
+    // 特殊处理：lifeMilestones 是对象数组，不通过此路径设置
+    if (lastKey === 'lifeMilestones') {
+      return false;
+    }
+
+    // 普通字段：无值或相同值时设置
+    const current = target[lastKey];
+    if (!current || current === value) {
+      target[lastKey] = value;
+      return true;
+    }
+
+    return false; // 有冲突，保留旧值
+  }
+
   private promotePendingItems(profile: Partial<PersonProfile>): void {
     if (!profile.pendingItems || profile.pendingItems.length === 0) return;
     const keep: PendingItem[] = [];
@@ -838,6 +1258,11 @@ export class FamilyGraph implements FamilyGraphInterface {
           break;
         case 'relationMap.intersections.interestRelation':
           promoted = this.setIntersectionField(dossier, 'interestRelation', item.value);
+          break;
+        // ── V3.2 PAE 扩展：通用 dossier 子字段路径自动提升 ──
+        // 不再列举每个字段，而是通过路径导航自动定位到 dossier 中的目标
+        default:
+          promoted = this._setNestedDossierField(dossier, item.field, item.value);
           break;
       }
 
@@ -993,6 +1418,8 @@ export class FamilyGraph implements FamilyGraphInterface {
             if (merged?.id) personId = merged.id;
           }
         }
+        // 🏛️ §十四: 每次提及自动建立/丰富档案
+        this.ensurePersonProfile(canonicalName);
         await this.updatePersonProfile(canonicalName, {} as any, { countMention: true });
         await this.updatePersonProfile(canonicalName, { relation_to_user: relationLabel } as any, { countMention: false });
         await this.extractProfileFromText(canonicalName, rawInput);
@@ -1057,6 +1484,7 @@ export class FamilyGraph implements FamilyGraphInterface {
         } else {
           _pid = _ex[0].id;
         }
+        this.ensurePersonProfile(person.name);
         await this.updatePersonProfile(person.name, {} as any, { countMention: true });
         await this.extractProfileFromText(person.name, rawInput);
         const _ee = this.query('SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?', [userId, _pid, 'acquaintance_of']);
@@ -1139,8 +1567,7 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     this.markDirty();
 
-    // FG基建加固：启动时自动备份 + "我"节点完整性检查
-    this._ensureBackup();
+    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
   }
 
@@ -1306,7 +1733,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       if (reverseRel && reverseRel !== relation) {
         await this.addEdge({ id: uid(), source_id: pid, target_id: meId, relation: reverseRel });
       }
-      console.log(`[FamilyPromote] 新建家族节点: ${personName} (${relation})`);
+      console.log("[FamilyPromote] 节点创建 [ok]"); // name sanitized
       return;
     }
 
@@ -1334,7 +1761,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (reverseRel && reverseRel !== relation) {
       await this.addEdge({ id: uid(), source_id: personId, target_id: meId, relation: reverseRel });
     }
-    console.log(`[FamilyPromote] 升级: ${personName} 社交→家族 (${relation})`);
+    console.log("[FamilyPromote] 升级 [ok]"); // details sanitized
   }
 
   /**
@@ -1354,7 +1781,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       srcId = uid();
       await this.addNode({ id: srcId, type: 'person', name: srcName });
       await this.updatePersonProfile(srcName, {} as any);
-      console.log(`[PersonRelation] 创建节点: ${srcName}`);
+      console.log("[PersonRelation] 节点创建 [ok]"); // name sanitized
     } else {
       srcId = srcNodes[0].id;
     }
@@ -1366,7 +1793,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       tgtId = uid();
       await this.addNode({ id: tgtId, type: 'person', name: tgtName });
       await this.updatePersonProfile(tgtName, {} as any);
-      console.log(`[PersonRelation] 创建节点: ${tgtName}`);
+      console.log("[PersonRelation] 节点创建 [ok]"); // name sanitized
     } else {
       tgtId = tgtNodes[0].id;
     }
@@ -1377,13 +1804,13 @@ export class FamilyGraph implements FamilyGraphInterface {
       [srcId, tgtId, relation]
     );
     if (existingEdge.length > 0) {
-      console.log(`[PersonRelation] 边已存在: ${srcName} --${relation}--> ${tgtName}`);
+      console.log("[PersonRelation] 边已存在 [skip]"); // details sanitized
       return;
     }
 
     // 创建正向边
     await this.addEdge({ id: uid(), source_id: srcId, target_id: tgtId, relation });
-    console.log(`[PersonRelation] 创建边: ${srcName} --${relation}--> ${tgtName}`);
+    console.log("[PersonRelation] 边创建 [ok]"); // details sanitized
 
     // 自动创建反向边
     const reverseRel = REVERSE_RELATION[relation];
@@ -1394,7 +1821,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       );
       if (revEdge.length === 0) {
         await this.addEdge({ id: uid(), source_id: tgtId, target_id: srcId, relation: reverseRel });
-        console.log(`[PersonRelation] 创建反向边: ${tgtName} --${reverseRel}--> ${srcName}`);
+        console.log("[PersonRelation] 反向边创建 [ok]"); // details sanitized
       }
     }
 
@@ -1433,8 +1860,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       [JSON.stringify(merged), new Date().toISOString(), nodes[0].id]);
     this.markDirty();
 
-    // FG基建加固：启动时自动备份 + "我"节点完整性检查
-    this._ensureBackup();
+    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
   }
 
@@ -1613,6 +2039,91 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.flush();
   }
 
+  // ═══════════════════════════════════════════════════
+  //  🏛️ 时间感知引擎（§十三）
+  // ═══════════════════════════════════════════════════
+
+  /**
+   * 🏛️ §十三: 根据出生年份计算当前年龄
+   * 年龄永远不硬编码——从 birthYear 实时计算。
+   * 首次调用时如果只有硬编码 age，自动回填 birthYear。
+   */
+  getCalculatedAge(personName: string): { age: number | null; birthYear: number | null; isCalculated: boolean; asOf: string } {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return { age: null, birthYear: null, isCalculated: false, asOf: new Date().toISOString() };
+    const props = JSON.parse(node.properties || '{}');
+    const asOf = new Date().toISOString();
+    const birthYear = props.birthYear || props.dossier?.basicInfo?.birthYear || null;
+
+    if (birthYear) {
+      const by = parseInt(String(birthYear), 10);
+      if (isNaN(by)) return { age: null, birthYear: null, isCalculated: false, asOf };
+      return { age: new Date().getFullYear() - by, birthYear: by, isCalculated: true, asOf };
+    }
+
+    // 降级: 有硬编码 age 但无 birthYear → 自动推算并回填
+    const hardAge = props.age;
+    if (hardAge !== undefined && hardAge !== null) {
+      const estimatedBY = new Date().getFullYear() - parseInt(String(hardAge), 10);
+      props.birthYear = estimatedBY;
+      if (!props.dossier) props.dossier = {};
+      if (!props.dossier.basicInfo) props.dossier.basicInfo = {};
+      props.dossier.basicInfo.birthYear = estimatedBY;
+      this.run('UPDATE nodes SET properties=? WHERE id=?', [JSON.stringify(props), node.id]);
+      console.log(`[FamilyGraph] 年龄→出生年: ${personName} age=${hardAge} → birthYear=${estimatedBY}`);
+      return { age: parseInt(String(hardAge), 10), birthYear: estimatedBY, isCalculated: false, asOf };
+    }
+    return { age: null, birthYear: null, isCalculated: false, asOf };
+  }
+
+  /**
+   * 🏛️ 记录档案字段变更历史（时间向量）
+   */
+  addProfileChange(personName: string, field: string, oldValue: any, newValue: any): void {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return;
+    const props = JSON.parse(node.properties || '{}');
+    const now = new Date().toISOString();
+    if (!props._changeHistory) props._changeHistory = [];
+    props._changeHistory.push({ field, oldValue, newValue, timestamp: now });
+    if (props._changeHistory.length > 100) props._changeHistory = props._changeHistory.slice(-100);
+    this.run('UPDATE nodes SET properties=? WHERE id=?', [JSON.stringify(props), node.id]);
+  }
+
+  /** 🏛️ 获取档案变更时间线 */
+  getProfileTimeline(personName: string): Array<{ field: string; oldValue: any; newValue: any; timestamp: string }> {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return [];
+    return (JSON.parse(node.properties || '{}'))._changeHistory || [];
+  }
+
+  /**
+   * 🏛️ 设置关系边的"已知自"时间锚点
+   */
+  setEdgeTimeAnchor(srcName: string, tgtName: string, relation: string, knownSince?: string): void {
+    const s = this._findPersonIds(srcName), t = this._findPersonIds(tgtName);
+    if (!s.length || !t.length) return;
+    const since = knownSince || new Date().toISOString();
+    this.run("UPDATE edges SET properties=? WHERE source_id=? AND target_id=? AND relation=?",
+      [JSON.stringify({ known_since: since, ...JSON.parse((this.query(
+        "SELECT properties FROM edges WHERE source_id=? AND target_id=? AND relation=?",
+        [s[0], t[0], relation])[0]?.properties || '{}')) }), s[0], t[0], relation]);
+  }
+
+  /** 🏛️ 获取关系已建立天数 */
+  getEdgeAgeDays(srcName: string, tgtName: string, relation: string): number | null {
+    const s = this._findPersonIds(srcName), t = this._findPersonIds(tgtName);
+    if (!s.length || !t.length) return null;
+    const rows = this.query(
+      "SELECT properties, created_at FROM edges WHERE source_id=? AND target_id=? AND relation=?",
+      [s[0], t[0], relation]);
+    if (!rows.length) return null;
+    try {
+      const since = JSON.parse(rows[0].properties || '{}').known_since || rows[0].created_at;
+      return since ? Math.floor((Date.now() - new Date(since).getTime()) / 86400000) : null;
+    } catch { return null; }
+  }
+
   // ── P1: 人物画像 ──
 
   /**
@@ -1633,9 +2144,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     (result as any).roleplay_forbidden = !!(result.relation_to_user && result.relation_to_user !== '' && result.relation_to_user !== '无' && !result.relation_to_user.includes('虚构') && !result.relation_to_user.includes('扮演'));
     // 📜 信息权威铁律 · 等级S: 记录age字段是否有效
     if (result.age !== undefined && result.age !== null) {
-      console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=' + result.age + ' (SOURCE: nodes.properties)');
+      if(this._verbose)console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=' + result.age + ' (SOURCE: nodes.properties)');
     } else {
-      console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=MISSING');
+      if(this._verbose)console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=MISSING');
     }
     return result;
   }
@@ -1659,6 +2170,10 @@ export class FamilyGraph implements FamilyGraphInterface {
     // 关系类（v1.1 新增）
     [/已婚|有家室/, /未婚|单身/], [/有孩子|有小孩/, /没孩子|丁克/],
     [/本地人/, /外地人/],
+    // 🏛️ §11.6: 年龄/身高/职业跨级冲突（V2.2 新增）
+    [/\b1[4-9]\b/, /\b2[5-9]\b/],                         // 14-19 vs 25-29
+    [/\b1\.[5-6]\d\b/, /\b1\.[7-8]\d\b/],                 // 矮(1.5-1.6) vs 高(1.7-1.8)
+    [/同事/, /家人|亲属|亲戚/],                              // 同事 vs 家人
   ];
 
   /**
@@ -1702,7 +2217,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     // SP2-3: 冲突检测 — 检查关键描述字段矛盾
-    const _conflictFields = ['appearance', 'body_features', 'description', 'occupation'];
+    const _conflictFields = ['age', 'appearance', 'body_features', 'description', 'occupation', 'relation_to_user'];
     const _existingConflicts: Array<{ field: string; oldValue: string; newValue: string; timestamp: string }> = (existing as any).conflicts || [];
     for (const field of _conflictFields) {
       const oldVal = (existing as any)[field] || '';
@@ -1714,7 +2229,7 @@ export class FamilyGraph implements FamilyGraphInterface {
           (merged as any)[field] = oldVal;
           (merged as any).conflicts = _existingConflicts;
           (merged as any).conflict = true;
-          console.log('[FamilyGraph] 冲突检测: ' + personName + ' ' + field + ' (' + oldVal + ' vs ' + newVal + ')');
+          if(this._verbose)console.log('[FamilyGraph] 冲突检测: ' + personName + ' ' + field + ' (' + oldVal + ' vs ' + newVal + ')');
         }
       }
     }
@@ -1759,8 +2274,82 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     merged.completeness = this.calcProfileCompleteness(merged);
+
+    // 🏛️ §十三: 记录字段变更到时间向量
+    for (const field of Object.keys(updates)) {
+      if (field === 'mention_count' || field === 'last_mentioned' || field === 'completeness') continue;
+      const oldVal = (existing as any)[field];
+      const newVal = (updates as any)[field];
+      if (oldVal !== undefined && newVal !== undefined && JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        if (!merged._changeHistory) merged._changeHistory = [];
+        merged._changeHistory.push({ field, oldValue: oldVal, newValue: newVal, timestamp: new Date().toISOString() });
+        if (merged._changeHistory.length > 100) merged._changeHistory = merged._changeHistory.slice(-100);
+      }
+    }
+
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(merged), new Date().toISOString(), node.id]);
+    this.markDirty(true);
+  }
+
+  /**
+   * 🏛️ PAE 档案采集引擎专用：直接写入 dossier 子字段
+   * 绕过 flat→dossier 同步，直接操作结构化档案的任意字段路径。
+   *
+   * @param personName - 人物名
+   * @param fieldPath - 字段路径，如 "basicInfo.gender"、"health.condition"
+   * @param value - 要写入的值
+   */
+  async setDossierField(personName: string, fieldPath: string, value: any): Promise<void> {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return;
+
+    const props = JSON.parse(node.properties || '{}');
+    if (!props.dossier) {
+      props.dossier = this.buildDossierFromFlat(props, props);
+    }
+
+    const dossier = props.dossier;
+    const parts = fieldPath.split('.');
+    let target: any = dossier;
+
+    // 按路径导航到目标位置，中间缺失的对象自动创建
+    for (let i = 0; i < parts.length - 1; i++) {
+      const key = parts[i];
+      if (!target[key] || typeof target[key] !== 'object') {
+        target[key] = {};
+      }
+      target = target[key];
+    }
+
+    const lastKey = parts[parts.length - 1];
+    const oldValue = JSON.stringify(target[lastKey] ?? null);
+    const newValueStr = JSON.stringify(value);
+
+    // 值未变化则跳过
+    if (oldValue === newValueStr) return;
+
+    target[lastKey] = value;
+
+    // 记录变更历史
+    if (!props._changeHistory) props._changeHistory = [];
+    props._changeHistory.push({
+      field: `dossier.${fieldPath}`,
+      oldValue: target[lastKey] !== undefined ? oldValue : null,
+      newValue: value,
+      timestamp: new Date().toISOString(),
+    });
+    if (props._changeHistory.length > 100) props._changeHistory = props._changeHistory.slice(-100);
+
+    // 更新 mention 计数和最后提及时间
+    props.mention_count = (props.mention_count || 0) + 1;
+    props.last_mentioned = new Date().toISOString();
+
+    // 重算完整性
+    props.completeness = this.calcProfileCompleteness(props as PersonProfile);
+
+    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
+      [JSON.stringify(props), new Date().toISOString(), node.id]);
     this.markDirty(true);
   }
 
@@ -1936,6 +2525,10 @@ export class FamilyGraph implements FamilyGraphInterface {
   async addPendingItem(personName: string, field: string, value: string, source: string): Promise<void> {
     const node = this.findPersonNodeByNameOrAlias(personName);
     if (!node) return;
+
+    // 🏛️ §12.2: 入库前过滤 — 拦截LLM生成的场景文本
+    if (!_isValidPendingValue(value)) return;
+
     const parsed = node.properties ? JSON.parse(node.properties) : {};
     const pending: PendingItem = {
       field, value, source: source.substring(0, 80),
@@ -1950,9 +2543,69 @@ export class FamilyGraph implements FamilyGraphInterface {
       [JSON.stringify(parsed), new Date().toISOString(), node.id]);
     this.markDirty();
 
-    // FG基建加固：启动时自动备份 + "我"节点完整性检查
-    this._ensureBackup();
+    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
+  }
+
+  /**
+   * 🏛️ §12.2: 检测当前是否有未解决的档案冲突
+   * 返回结构化冲突报告，供 chat.ts 构造反问问题。
+   *
+   * 使用模式:
+   *   const cr = fg.detectConflicts('徐诗雨');
+   *   if (cr.hasConflict) {
+   *     // 构造反问: `我记得你之前说${name}的${cr.items[0].field}是${cr.items[0].oldValue}...`
+   *   }
+   */
+  detectConflicts(personName: string): ConflictReport {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return { hasConflict: false, items: [] };
+    const props = JSON.parse(node.properties || '{}');
+    const conflicts: Array<ConflictItem> = (props.conflicts || []).map((c: any) => ({
+      field: c.field,
+      oldValue: c.oldValue,
+      newValue: c.newValue,
+      timestamp: c.timestamp,
+      resolved: c.resolved || false,
+    })).filter((c: ConflictItem) => !c.resolved);
+    return {
+      hasConflict: props.conflict === true && conflicts.length > 0,
+      items: conflicts,
+    };
+  }
+
+  /**
+   * 🏛️ §11.4: 解决档案冲突。
+   * @param resolution 'keep_old' — 保留旧值，丢弃新值 | 'accept_new' — 接受新值，替换旧值
+   */
+  resolveConflict(personName: string, field: string, resolution: 'keep_old' | 'accept_new'): void {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return;
+    const props = JSON.parse(node.properties || '{}');
+
+    // 找到对应冲突条目
+    const conflicts: any[] = props.conflicts || [];
+    const idx = conflicts.findIndex((c: any) => c.field === field && !c.resolved);
+    if (idx === -1) return;
+
+    if (resolution === 'accept_new') {
+      // 替换旧值为新值
+      (props as any)[field] = conflicts[idx].newValue;
+    }
+    // 标记已解决
+    conflicts[idx].resolved = true;
+    conflicts[idx].resolvedAt = new Date().toISOString();
+    conflicts[idx].resolution = resolution;
+
+    // 检查是否所有冲突都已解决
+    const allResolved = conflicts.every((c: any) => c.resolved);
+    props.conflicts = conflicts;
+    props.conflict = !allResolved;
+
+    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
+      [JSON.stringify(props), new Date().toISOString(), node.id]);
+    this.markDirty();
+    console.log(`[FamilyGraph] 冲突解决: ${personName} ${field} → ${resolution}`);
   }
 
 
@@ -1991,6 +2644,219 @@ export class FamilyGraph implements FamilyGraphInterface {
    * @param conversationText 对话原文（用于提取上下文）
    * @returns 本次提取到的字段数
    */
+  /**
+   * 🏛️ §十四: 确保每个人拥有档案骨架（家族向量 + 时间线向量 + 寻址链）
+   * ==============================================================
+   * 首次为某人创建档案时自动提取已知信息：
+   *   - 家族向量: 从 edges 表反查所有关系
+   *   - 寻址链向量: BFS 从"我"到此人的最短家族路径
+   *   - 时间线向量: first_mentioned / last_mentioned / birthYear推算
+   *
+   * 该方法是幂等的——已有档案的人不会被覆盖，只补充缺失字段。
+   */
+  ensurePersonProfile(personName: string): PersonProfile {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return null!;
+    const existing = JSON.parse(node.properties || '{}');
+    const now = new Date().toISOString();
+
+    // ── 基础标识 ──
+    if (!existing.name) existing.name = personName;
+    // 🛡️ mention_count 和 last_mentioned 由 updatePersonProfile 统一管理，此处不碰
+
+    // ── 家族向量: 从 edges 反查 ──
+    if (!existing.relations) {
+      existing.relations = this._buildRelationVector(personName, node.id);
+    }
+
+    // ── 寻址链向量: BFS 从"我"到此人 ──
+    if (!existing.addressingChain) {
+      const chain = this._buildAddressingChain(personName, node.id);
+      if (chain) existing.addressingChain = chain;
+    }
+
+    // ── 时间线向量 ──
+    if (!existing.first_mentioned) existing.first_mentioned = existing.last_mentioned || now;
+    if (!existing.timeline) existing.timeline = [];
+    // 如果有 birthYear，时间线自动生成年龄演变记录
+    const birthYear = existing.birthYear || existing.dossier?.basicInfo?.birthYear;
+    if (birthYear && existing.timeline.length === 0) {
+      const by = parseInt(String(birthYear), 10);
+      if (!isNaN(by)) {
+        existing.timeline.push({ date: `${by}`, summary: `${personName}出生`, type: 'birth' });
+        existing.timeline.push({ date: now.substring(0,7), summary: `年龄: ${new Date().getFullYear() - by}岁 (实时计算)`, type: 'age_latest' });
+      }
+    } else if (existing.age && existing.timeline.length === 0) {
+      existing.timeline.push({ date: now.substring(0,7), summary: `首次记录年龄: ${existing.age}岁`, type: 'age_recorded' });
+    }
+
+    // ── 自动补充可达信息 ──
+    // 如果有"我"与某人的关系边，反推 relation_to_user
+    if (!existing.relation_to_user && existing.relations) {
+      const relToMe = existing.relations.find((r: any) => r.relative === '我');
+      if (relToMe) {
+        const desc = this._describeRelationForProfile(relToMe.relation, relToMe.direction, personName);
+        if (desc) existing.relation_to_user = desc;
+      }
+    }
+
+    // 从边类型推断性别
+    if (!existing.gender) {
+      const inferredGender = this._inferGenderFromEdges(node.id);
+      if (inferredGender) existing.gender = inferredGender;
+    }
+
+    // ── 写入 ──
+    if (!existing.completeness) existing.completeness = this.calcProfileCompleteness(existing as PersonProfile);
+    existing._autoProfileGenerated = now;
+    this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
+      [JSON.stringify(existing), now, node.id]);
+    return existing as PersonProfile;
+  }
+
+  /** 🏛️ 为所有人批量建立档案 */
+  ensureAllPersonProfiles(): { total: number; enriched: number; details: string[] } {
+    const all = this.query("SELECT name FROM nodes WHERE type = 'person'");
+    let enriched = 0;
+    const details: string[] = [];
+    for (const row of all) {
+      try {
+        const existing = this.findPersonNodeByNameOrAlias(row.name);
+        if (!existing) continue;
+        const props = JSON.parse(existing.properties || '{}');
+        const hadRelations = !!props.relations;
+        const hadChain = !!props.addressingChain;
+        const hadTimeline = Array.isArray(props.timeline) && props.timeline.length > 0;
+        this.ensurePersonProfile(row.name);
+        if (!hadRelations || !hadChain || !hadTimeline) {
+          enriched++;
+          details.push(row.name);
+        }
+      } catch { /* skip */ }
+    }
+    if (enriched > 0) {
+      this.markDirty();
+      console.log(`[FamilyGraph] 档案骨架建立: ${enriched} 人`);
+    }
+    return { total: all.length, enriched, details };
+  }
+
+  // ═══ 内部辅助: 档案骨架构建 ═══
+
+  /** 从 edges 表反查某人的全部家族关系 */
+  private _buildRelationVector(personName: string, nodeId: string): Array<{ relative: string; relation: string; direction: 'to' | 'from' }> {
+    const result: Array<{ relative: string; relation: string; direction: 'to' | 'from' }> = [];
+    const FAMILY = new Set(['mother_of','father_of','parent_of','child_of',
+      'elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of',
+      'spouse_of','grandfather_of','grandmother_of','grandchild_of',
+      'aunt_of','uncle_of','niece_of','nephew_of','cousin_of']);
+    const SOCIAL = new Set(Object.keys(SOCIAL_REVERSE));
+    const ALL_RELS = new Set([...FAMILY, ...SOCIAL]);
+    const seen = new Set<string>();
+
+    for (const e of this.query("SELECT target_id, relation FROM edges WHERE source_id = ?", [nodeId])) {
+      if (!ALL_RELS.has(e.relation)) continue;
+      const tgtInfo = this._getPersonInfo(e.target_id);
+      const relName = tgtInfo?.name || '?';
+      const key = `${relName}|${e.relation}`;
+      if (seen.has(key)) continue; seen.add(key);
+      result.push({ relative: relName, relation: e.relation, direction: 'to' });
+    }
+    for (const e of this.query("SELECT source_id, relation FROM edges WHERE target_id = ?", [nodeId])) {
+      if (!ALL_RELS.has(e.relation)) continue;
+      const srcInfo = this._getPersonInfo(e.source_id);
+      const relName = srcInfo?.name || '?';
+      const key = `${relName}|_rev_${e.relation}`;
+      if (seen.has(key)) continue; seen.add(key);
+      result.push({ relative: relName, relation: e.relation, direction: 'from' });
+    }
+    return result;
+  }
+
+  /** BFS 从"我"到目标人物的寻址链 */
+  private _buildAddressingChain(personName: string, targetId: string): string | null {
+    if (personName === '我') return '本人';
+
+    const meIds = this._findPersonIds('我');
+    if (!meIds.length) return null;
+
+    const path = this._findKinshipPath(meIds[0], targetId);
+    if (!path) return null;
+
+    // 将路径转换为自然语言寻址链
+    // 构建可读寻址链: 我 > [关系] > 某人 > [关系] > 目标
+    const parts: string[] = ['我'];
+    for (const step of path) {
+      const info = this._getPersonInfo(step.targetId);
+      const nm = info?.name || '?';
+      const label = RELATION_LABEL_CN[step.relation] || step.relation.replace('_reverse_','');
+      parts.push(label);
+      parts.push(nm);
+    }
+    // 去重相邻: [我, 子女, 阿苏, 妈妈, 徐诗雨] → "我 > 阿苏[子女] > 徐诗雨[妈妈]"
+    const compact: string[] = [];
+    let lastPerson = '我';
+    for (let i = 1; i < parts.length; i += 2) {
+      const rel = parts[i] || '';
+      const person = parts[i+1] || '';
+      if (person && person !== lastPerson) {
+        compact.push(`${person}[${rel}]`);
+        lastPerson = person;
+      }
+    }
+    return compact.length > 0 ? `我 > ${compact.join(' > ')}` : '无路径';
+  }
+
+  /** 从关系边类型推断性别 */
+  private _inferGenderFromEdges(nodeId: string): string | null {
+    // 出边
+    for (const e of this.query("SELECT relation FROM edges WHERE source_id = ?", [nodeId])) {
+      if (['mother_of','elder_sister_of','younger_sister_of','sister_of','aunt_of','niece_of','grandmother_of'].includes(e.relation)) return 'female';
+      if (['father_of','elder_brother_of','younger_brother_of','brother_of','uncle_of','nephew_of','grandfather_of'].includes(e.relation)) return 'male';
+    }
+    // 入边
+    for (const e of this.query("SELECT relation FROM edges WHERE target_id = ?", [nodeId])) {
+      if (['mother_of','elder_sister_of','younger_sister_of','sister_of','aunt_of','niece_of','grandmother_of'].includes(e.relation)) return 'female';
+      if (['father_of','elder_brother_of','younger_brother_of','brother_of','uncle_of','nephew_of','grandfather_of'].includes(e.relation)) return 'male';
+    }
+    // 从名字推断
+    const rows = this.query("SELECT name FROM nodes WHERE id = ?", [nodeId]);
+    if (rows.length > 0) {
+      const nm = rows[0].name;
+      if (/(姐|妹|妈|娘|奶|婆|姨|姑|女|玥|薇|茜|雪|芬|珍|花|云|韵|涵|雨|瑶)/.test(nm)) return 'female';
+      if (/(哥|弟|爸|爹|爷|公|叔|舅|男|勇|铭|权|斌|龙|锋|伟|工)/.test(nm)) return 'male';
+    }
+    return null;
+  }
+
+  /** 从关系边描述"与用户的身份" */
+  private _describeRelationForProfile(relation: string, direction: 'to' | 'from', personName: string): string | null {
+    // direction 'from' = 别人指向此人 → 此人是 relation 的承受方
+    // direction 'to' = 此人指向别人
+    if (direction === 'from') {
+      // source --rel--> person
+      if (relation === 'child_of') return `${personName}的孩子`;
+      if (relation === 'spouse_of') return `${personName}的配偶`;
+      if (relation.startsWith('sister') || relation.includes('sister')) return `${personName}的姐妹`;
+      if (relation.startsWith('brother') || relation.includes('brother')) return `${personName}的兄弟`;
+      if (relation === 'niece_of' || relation === 'nephew_of') return `${personName}的侄/甥辈`;
+    }
+    if (direction === 'to') {
+      if (relation === 'mother_of') return `${personName}的妈妈`;
+      if (relation === 'father_of') return `${personName}的爸爸`;
+      if (relation === 'parent_of') return `${personName}的家长`;
+      if (relation.startsWith('elder_sister')) return `${personName}的姐姐`;
+      if (relation.startsWith('younger_sister')) return `${personName}的妹妹`;
+      if (relation.startsWith('elder_brother')) return `${personName}的哥哥`;
+      if (relation.startsWith('younger_brother')) return `${personName}的弟弟`;
+      if (relation === 'spouse_of') return `${personName}的配偶`;
+      if (relation === 'aunt_of') return `${personName}的阿姨/姑姑`;
+      if (relation === 'uncle_of') return `${personName}的叔叔/舅舅`;
+      if (relation === 'cousin_of') return `${personName}的堂表亲`;
+    }
+    return null;
+  }
+
   /**
    * C2+C3: 从对话文本中提取人物档案。
    * - conversationText: 完整对话（用于第三人称匹配，如"张三是工程师"）
@@ -2347,6 +3213,704 @@ export class FamilyGraph implements FamilyGraphInterface {
   }
 
   /**
+   * 🏛️ 户籍制度 §三: 血缘关系传递推理 (V4.0 Phase 7)
+   * =============================================
+   * 反向边补全只保证 A→B 有 B→A，但家族关系需要跨节点传递。
+   *
+   * 规则:
+   *   ① 姐妹/兄弟共享父母 — A和B是手足，A有父母P → B也有父母P
+   *   ② 姐妹/兄弟共享姑姑/舅舅 — A的手足关系延伸到B
+   *   ③ 姐妹/兄弟共享堂表亲 — 同上
+   *   ④ 父母的父母是祖辈 — A→parent→P, P→parent→G → A是G的孙辈
+   *   ⑤ 父母的姐妹/兄弟是姑姑/舅舅 — A→parent→P, P→sibling→Q → Q是A的姑姑/舅舅
+   *
+   * 所有 INSERT 使用 INSERT OR IGNORE，启动时可重复执行不产生重复边。
+   */
+  inferFamilyLinks(): { inferred: number; details: string[] } {
+    const details: string[] = [];
+
+    // ── 预加载所有边到内存 ──
+    const allEdges: Array<{ src: string; tgt: string; rel: string }> = this.query(
+      'SELECT source_id as src, target_id as tgt, relation as rel FROM edges'
+    );
+    const edgeSet = new Set(allEdges.map(e => `${e.src}|${e.tgt}|${e.rel}`));
+
+    let added = 0;
+    const addEdge = (src: string, tgt: string, rel: string, revRel?: string): boolean => {
+      let didAdd = false;
+      const key = `${src}|${tgt}|${rel}`;
+      if (!edgeSet.has(key)) {
+        this.run('INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [uid(), src, tgt, rel, '{"_inferred":true}', new Date().toISOString(), new Date().toISOString()]);
+        edgeSet.add(key); added++; didAdd = true;
+      }
+      // 🏛️ 户籍铁律 §三.1: 每条家族边自动创建反向边
+      const reverseRel = revRel || REVERSE_RELATION[rel] || null;
+      if (reverseRel && reverseRel !== rel) {
+        const revKey = `${tgt}|${src}|${reverseRel}`;
+        if (!edgeSet.has(revKey)) {
+          this.run('INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [uid(), tgt, src, reverseRel, '{"_inferred":true}', new Date().toISOString(), new Date().toISOString()]);
+          edgeSet.add(revKey); added++; didAdd = true;
+        }
+      }
+      return didAdd;
+    };
+
+    // ── 收集所有手足关系对 (A, B)  ──
+    const SIBLING_RELS = new Set(['elder_sister_of','younger_sister_of','elder_brother_of',
+      'younger_brother_of','sister_of','brother_of','sibling_of']);
+    const siblingPairs: Array<[string, string]> = [];
+    for (const e of allEdges) {
+      if (SIBLING_RELS.has(e.rel)) {
+        siblingPairs.push([e.src, e.tgt]);
+      }
+    }
+
+    if (siblingPairs.length === 0) return { inferred: 0, details: [] };
+
+    // ═══ 规则①②③: 姐妹/兄弟共享父母/姑姑/堂表亲 ═══
+    const SHARED_RELS = new Set(['child_of','niece_of','nephew_of','cousin_of']);
+    for (const [sibA, sibB] of siblingPairs) {
+      for (const e of allEdges) {
+        if (e.src === sibA && SHARED_RELS.has(e.rel)) {
+          // sibA 有这条关系 → sibB 也应该有
+          if (addEdge(sibB, e.tgt, e.rel)) {
+            details.push(`rule①-③: sibling共享 →${e.tgt}(${e.rel})`);
+          }
+        }
+      }
+    }
+
+    // ═══ 规则④: 父母的父母是祖辈 ═══
+    // 收集 child_of 映射: child → [parentId, ...]
+    const childToParents: Map<string, string[]> = new Map();
+    for (const e of allEdges) {
+      if (e.rel === 'child_of') {
+        if (!childToParents.has(e.src)) childToParents.set(e.src, []);
+        childToParents.get(e.src)!.push(e.tgt);
+      }
+    }
+    // 对每个 parent，再查其 parent
+    for (const [child, parents] of childToParents) {
+      for (const parent of parents) {
+        const grandParents = childToParents.get(parent) || [];
+        for (const gp of grandParents) {
+          // 推断祖辈边: gp(祖辈) → child(孙辈)
+          // 检查 nodes 表获取 gp 性别以确定 grand*father* 或 grand*mother*
+          const gpNodes = this.query("SELECT properties FROM nodes WHERE id = ?", [gp]);
+          const gpGender = gpNodes.length > 0
+            ? (() => { try { return JSON.parse(gpNodes[0].properties || '{}').gender; } catch { return null; } })()
+            : null;
+          const gpRel = gpGender === 'male' ? 'grandfather_of' : 'grandmother_of';
+          if (addEdge(gp, child, gpRel)) { details.push(`rule④: →grandchild(grandchild_of)`); }
+          if (addEdge(child, gp, 'grandchild_of')) { details.push(`rule④: grandchild→grandparent`); }
+        }
+      }
+    }
+
+    // ═══ 规则⑤: 父母的姐妹/兄弟是姑姑/舅舅 ═══
+    for (const [child, parents] of childToParents) {
+      for (const parent of parents) {
+        // 找 parent 的手足
+        for (const e of allEdges) {
+          if ((e.src === parent || e.tgt === parent) && SIBLING_RELS.has(e.rel)) {
+            const auntUncle = e.src === parent ? e.tgt : e.src;
+            // 确定 aunt/uncle 的性别
+            const auNodes = this.query("SELECT properties FROM nodes WHERE id = ?", [auntUncle]);
+            const auGender = auNodes.length > 0
+              ? (() => { try { return JSON.parse(auNodes[0].properties || '{}').gender; } catch { return null; } })()
+              : null;
+            // aunt/uncle → child
+            const auRel = auGender === 'male' ? 'uncle_of' : 'aunt_of';
+            if (addEdge(auntUncle, child, auRel)) { details.push(`rule⑤: ${auntUncle}→${child}(${auRel})`); }
+            // child → aunt/uncle
+            const childRel = auGender === 'male' ? 'nephew_of' : 'niece_of';
+            if (addEdge(child, auntUncle, childRel)) { details.push(`rule⑤: ${child}→${auntUncle}(${childRel})`); }
+          }
+        }
+      }
+    }
+
+    if (added > 0) {
+      this.markDirty(true);
+      console.log(`[FamilyGraph] 血缘传递推理: ${added} 条新边`);
+    }
+    return { inferred: added, details };
+  }
+
+  /**
+   * 🏛️ 亲属称谓计算引擎 (V4.0 Phase 7)
+   * =================================
+   * 给定 FG 中任意两人，基于关系路径计算正确的中国亲属称谓。
+   *
+   * 核心理念: 称谓不是"查表"——是血缘距离+性别+长幼+父系/母系的四维计算结果。
+   *
+   * 使用:
+   *   fg.getKinshipTerm('徐诗雨', '徐诗韵')
+   *   // → { term: '姐姐', reverse: '妹妹', category: '手足', generation: 0 }
+   */
+  getKinshipTerm(fromPerson: string, toPerson: string): KinshipTerm | null {
+    const fromIds = this._findPersonIds(fromPerson);
+    const toIds = this._findPersonIds(toPerson);
+    if (fromIds.length === 0 || toIds.length === 0) return null;
+
+    const fromId = fromIds[0];
+    const toId = toIds[0];
+
+    const fromInfo = this._getPersonInfo(fromId);
+    const toInfo = this._getPersonInfo(toId);
+    if (!fromInfo || !toInfo) return null;
+
+    // ① 找最短路径（BFS，最多 5 跳）
+    const path = this._findKinshipPath(fromId, toId);
+    if (!path) return null;
+
+    // ② 分类路径 → 关系类型
+    const pattern = this._classifyKinshipPath(fromId, toId, path);
+    if (!pattern) return null;
+
+    // ③ 基于性别/年龄/父系母系 解析具体称谓
+    const term = this._resolveTerm(fromInfo, toInfo, pattern);
+
+    return term;
+  }
+
+  /** 获取某人与所有人的关系称谓列表 */
+  getAllKinshipTerms(personName: string): Array<{ relative: string; termAtoB: string; termBtoA: string; category: string }> {
+    const results: Array<{ relative: string; termAtoB: string; termBtoA: string; category: string }> = [];
+    const ids = this._findPersonIds(personName);
+    if (ids.length === 0) return results;
+
+    const allPersons = this.query("SELECT id, name FROM nodes WHERE type = 'person' AND name != ?", [personName]);
+    for (const p of allPersons) {
+      const term = this.getKinshipTerm(personName, p.name);
+      if (term) {
+        results.push({
+          relative: p.name,
+          termAtoB: term.term,           // fromPerson 称呼 toPerson
+          termBtoA: term.reverse,         // toPerson 称呼 fromPerson
+          category: term.category,
+        });
+      }
+    }
+    return results;
+  }
+
+  // ═══════════════════════════════════════════
+  //  内部: 路径寻找
+  // ═══════════════════════════════════════════
+
+  private _findPersonIds(name: string): string[] {
+    return this.query("SELECT id FROM nodes WHERE type = 'person' AND name = ?", [name])
+      .map((r: any) => r.id);
+  }
+
+  private _getPersonInfo(nodeId: string): PersonNodeInfo | null {
+    const rows = this.query("SELECT name, properties FROM nodes WHERE id = ?", [nodeId]);
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    let props: any = {};
+    try { props = JSON.parse(r.properties || '{}'); } catch {}
+    return {
+      id: nodeId,
+      name: r.name,
+      gender: props.gender || null,
+      age: props.age || props.birthYear || null,
+      surname: (r.name || '?')[0],
+    };
+  }
+
+  /** BFS 寻找两人间最短家族路径 */
+  private _findKinshipPath(fromId: string, toId: string): KinshipStep[] | null {
+    if (fromId === toId) return [];
+    const visited = new Set<string>([fromId]);
+    const queue: Array<{ nodeId: string; steps: KinshipStep[] }> = [{ nodeId: fromId, steps: [] }];
+
+    while (queue.length > 0) {
+      const { nodeId, steps } = queue.shift()!;
+      const neighbors = this._getGraphNeighbors(nodeId);
+
+      for (const nb of neighbors) {
+        if (visited.has(nb.targetId)) continue;
+        visited.add(nb.targetId);
+        const newSteps = [...steps, nb];
+
+        if (nb.targetId === toId) return newSteps;
+        if (newSteps.length >= 5) continue; // 超过5跳，忽略
+        queue.push({ nodeId: nb.targetId, steps: newSteps });
+      }
+    }
+    return null;
+  }
+
+  /** 获取某节点的家族邻居边 */
+  private _getGraphNeighbors(nodeId: string): KinshipStep[] {
+    const FAMILY_EDGES = new Set([
+      'mother_of','father_of','parent_of','child_of',
+      'elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of',
+      'elder_brother_of','younger_brother_of',
+      'spouse_of', 'husband_of', 'wife_of',
+      'grandfather_of','grandmother_of','grandchild_of',
+      'aunt_of','uncle_of','niece_of','nephew_of','cousin_of',
+    ]);
+    // 🏛️ §十五: 社交边同等参与图谱遍历
+    const SOCIAL_EDGES = new Set(Object.keys(SOCIAL_REVERSE));
+
+    const steps: KinshipStep[] = [];
+    // 出边
+    for (const e of this.query(
+      "SELECT target_id, relation FROM edges WHERE source_id = ?", [nodeId])) {
+      if (FAMILY_EDGES.has(e.relation) || SOCIAL_EDGES.has(e.relation)) {
+        const info = this._getPersonInfo(e.target_id);
+        steps.push({
+          fromId: nodeId, targetId: e.target_id, relation: e.relation,
+          targetName: info?.name || '?', targetGender: info?.gender || null,
+        });
+      }
+    }
+    // 入边
+    for (const e of this.query(
+      "SELECT source_id, relation FROM edges WHERE target_id = ?", [nodeId])) {
+      if (FAMILY_EDGES.has(e.relation) || SOCIAL_EDGES.has(e.relation)) {
+        const info = this._getPersonInfo(e.source_id);
+        steps.push({
+          fromId: nodeId, targetId: e.source_id, relation: '_reverse_' + e.relation,
+          targetName: info?.name || '?', targetGender: info?.gender || null,
+        });
+      }
+    }
+    return steps;
+  }
+
+  // ═══════════════════════════════════════════
+  //  内部: 路径分类
+  // ═══════════════════════════════════════════
+
+  private _classifyKinshipPath(fromId: string, toId: string, path: KinshipStep[]): RelationPattern | null {
+    if (path.length === 0) return { category: 'self' };
+    if (path.length === 1) return this._classifyOneStep(path[0]);
+
+    // ── 将路径压缩为结构签名 ──
+    //    P=parent边, C=child边, S=sibling边, M=spouse边, A=aunt/uncle边, N=niece/nephew边
+    const sig = path.map(s => {
+      if (this._isParentEdge(s)) return 'P';
+      if (this._isChildEdge(s)) return 'C';
+      if (this._isSiblingEdge(s)) return 'S';
+      if (this._isSpouseEdge(s)) return 'M';
+      return '?';
+    }).join('');
+
+    // ── 两步路径 ──
+    if (path.length === 2) {
+      if (sig === 'PP') return { category: 'grandparent' };
+      if (sig === 'CC') return { category: 'grandchild' };
+      if (sig === 'CS' || sig === 'PS') return { category: 'aunt_uncle', lineage: this._inferLineage(path, fromId) };
+      if (sig === 'SP' || sig === 'SC') return { category: 'niece_nephew', lineage: this._inferLineage(path, fromId) };
+      if (sig === 'SS') return { category: 'sibling', sub: 'indirect' };
+      if (sig.startsWith('M') && sig[1] === 'P') return { category: 'inlaw_parent' };
+      if (sig.startsWith('M') && sig[1] === 'S') return { category: 'spouse_sibling' };
+      if (sig === 'SM') return { category: 'inlaw_sibling' };
+      if (sig === 'CM') return { category: 'inlaw_child_spouse' };
+      if (sig[0] === 'P' && sig[1] === 'M') return { category: 'inlaw_parent' }; // 继父/母
+    }
+
+    // ── 三步路径 ──
+    if (path.length === 3) {
+      // 曾祖: C→P→P 或 P→P→P
+      if (sig.match(/^(C|)PP$/) && sig.includes('PP')) return { category: 'great_grandparent' };
+      // 曾孙: P→C→C
+      if (sig === 'PCC') return { category: 'great_grandchild' };
+      // 堂表亲 via 手足: C→P→S
+      if (sig === 'CPS') return { category: 'aunt_uncle', lineage: this._inferLineage(path, fromId) };
+      // 堂表亲 via 手足: S→P→C
+      if (sig === 'SPC') return { category: 'niece_nephew', lineage: this._inferLineage(path, fromId) };
+      // 堂表亲 via 手足→子: C→S→C
+      if (sig === 'CSC') return { category: 'cousin', lineage: this._inferLineage(path, fromId) };
+      // 姑父/姨父/婶婶/舅妈: C→P→S→M 无法一步描述...
+      // instead: C→S→M = 姑父/姨父/婶婶/舅妈 (aunt/uncle→spouse)
+      if (sig.match(/^(C|P|)SM$/)) return { category: 'inlaw_sibling_spouse', lineage: this._inferLineage(path, fromId) };
+      // 叔公/姑婆/舅公/姨婆: P→P→S  或  C→P→P→S (4-hop)
+      if (sig === 'PPS') return { category: 'grand_aunt_uncle', lineage: this._inferLineage(path, fromId) };
+      // 侄孙/外甥孙: S→C→C
+      if (sig === 'SCC') return { category: 'grand_niece_nephew', lineage: this._inferLineage(path, fromId) };
+      // 连襟/妯娌: M→S→M
+      if (sig === 'MSM') return { category: 'spouse_sibling', sub: 'inlaw' };
+    }
+
+    // ── 四步路径: 远房堂表/隔代表亲 ──
+    if (path.length === 4) {
+      // 堂叔/表叔 (grandparent's sibling's child): P→P→S→C
+      if (sig === 'PPSC') return { category: 'second_cousin', lineage: 'paternal' };
+      // 远房 cousin: C→P→S→C
+      if (sig === 'CPSC') return { category: 'cousin', lineage: this._inferLineage(path, fromId) };
+      // 叔公/姑婆 via C→P→P→S
+      if (sig === 'CPPS') return { category: 'grand_aunt_uncle', lineage: this._inferLineage(path, fromId) };
+      // 远房 cousin via sibling chain: C→S→P→C
+      if (sig === 'CSPC') return { category: 'second_cousin', lineage: this._inferLineage(path, fromId) };
+      // 姑父/姨父: C→P→S→M
+      if (sig === 'CPSM') return { category: 'inlaw_sibling_spouse', lineage: this._inferLineage(path, fromId) };
+      // 侄孙/外甥孙 via S→P→C→C
+      if (sig === 'SPCC') return { category: 'grand_niece_nephew', lineage: this._inferLineage(path, fromId) };
+    }
+
+    // ── 5跳: 高祖辈 ──
+    if (path.length === 5) {
+      if (sig === 'PPPPP' || sig === 'CPPPP') return { category: 'great_grandparent', sub: 'great2' };
+      if (sig === 'CCCCC' || sig === 'PCCCC') return { category: 'great_grandchild', sub: 'great2' };
+    }
+
+    return { category: 'relative' };
+  }
+
+  private _classifyOneStep(step: KinshipStep): RelationPattern | null {
+    if (this._isParentEdge(step)) return { category: 'parent' };
+    if (this._isChildEdge(step)) return { category: 'child' };
+    if (this._isSiblingEdge(step)) return { category: 'sibling', sub: 'direct' };
+    if (this._isSpouseEdge(step)) return { category: 'spouse' };
+    // 🏛️ §十五: 社交关系分类
+    if (Object.keys(SOCIAL_REVERSE).includes(step.relation)
+        || step.relation.startsWith('_reverse_') && Object.keys(SOCIAL_REVERSE).includes(step.relation.replace('_reverse_',''))) {
+      return { category: 'social', sub: step.relation.replace('_reverse_','') };
+    }
+    if (step.relation === 'aunt_of' || step.relation === 'uncle_of') {
+      const fromS = this._getPersonInfo(step.fromId)?.surname;
+      const toS = this._getPersonInfo(step.targetId)?.surname;
+      return { category: 'aunt_uncle', lineage: (fromS && toS && fromS === toS) ? 'paternal' : 'maternal' };
+    }
+    if (step.relation === 'niece_of' || step.relation === 'nephew_of') {
+      const fromS = this._getPersonInfo(step.fromId)?.surname;
+      const toS = this._getPersonInfo(step.targetId)?.surname;
+      return { category: 'niece_nephew', lineage: (fromS && toS && fromS === toS) ? 'paternal' : 'maternal' };
+    }
+    if (step.relation === 'cousin_of') {
+      const fromS = this._getPersonInfo(step.fromId)?.surname;
+      const toS = this._getPersonInfo(step.targetId)?.surname;
+      return { category: 'cousin', lineage: (fromS && toS && fromS === toS) ? 'paternal' : 'maternal' };
+    }
+    if (step.relation === 'grandfather_of' || step.relation === 'grandmother_of')
+      return { category: 'grandparent' };
+    if (step.relation === 'grandchild_of') return { category: 'grandchild' };
+    return null;
+  }
+
+  private _isParentEdge(step: KinshipStep): boolean {
+    return ['mother_of','father_of','parent_of'].includes(step.relation) ||
+           ['grandfather_of','grandmother_of'].includes(step.relation);
+  }
+  private _isChildEdge(step: KinshipStep): boolean {
+    return step.relation === 'child_of' ||
+           step.relation === '_reverse_mother_of' ||
+           step.relation === '_reverse_father_of' ||
+           step.relation === '_reverse_parent_of';
+  }
+  private _isSiblingEdge(step: KinshipStep): boolean {
+    return ['elder_sister_of','younger_sister_of','sister_of','brother_of',
+            'elder_brother_of','younger_brother_of','sibling_of'].includes(step.relation) ||
+           step.relation.startsWith('_reverse_elder') || step.relation.startsWith('_reverse_younger') ||
+           step.relation === '_reverse_sibling_of';
+  }
+  private _isSpouseEdge(step: KinshipStep): boolean {
+    return ['spouse_of','husband_of','wife_of'].includes(step.relation) ||
+           step.relation === '_reverse_spouse_of';
+  }
+
+  /** 推断父系/母系（基于路径中关键人物的姓氏匹配） */
+  private _inferLineage(path: KinshipStep[], fromId: string): 'paternal' | 'maternal' | 'unknown' {
+    // 找 path 中第一个 parent 节点，对比姓氏
+    for (const step of path) {
+      if (step.relation === 'child_of') {
+        const targetInfo = this._getPersonInfo(step.targetId);
+        const fromInfo = this._getPersonInfo(fromId);
+        if (targetInfo && fromInfo && targetInfo.surname === fromInfo.surname)
+          return 'paternal'; // 同姓 → 父系
+        if (targetInfo && step.targetGender === 'female')
+          return 'maternal'; // 母亲 → 母系
+      }
+    }
+    return 'unknown';
+  }
+
+  // ═══════════════════════════════════════════
+  //  内部: 称谓决策
+  // ═══════════════════════════════════════════
+
+  private _resolveTerm(from: PersonNodeInfo, to: PersonNodeInfo, pattern: RelationPattern): KinshipTerm {
+    const fromGender = from.gender;
+    const toGender = to.gender;
+    const fromAge = typeof from.age === 'number' ? from.age : null;
+    const toAge = typeof to.age === 'number' ? to.age : null;
+
+    // 默认相对年龄: 如无数据，根据边类型推断
+    const elderDefault = !fromAge || !toAge ? null : fromAge > toAge;
+
+    // 辅助：推断父系/母系（姓氏比较）
+    const detLineage = (p: RelationPattern): 'paternal'|'maternal' =>
+      (p.lineage && p.lineage !== 'unknown') ? p.lineage as 'paternal'|'maternal'
+      : (from.surname === to.surname ? 'paternal' : 'maternal');
+
+    // 辅助：基于年龄+边类型推断长幼
+    const isElder = elderDefault;
+
+    switch (pattern.category) {
+      // ── 自己 ──
+      case 'self':
+        return { term: '自己', reverse: '自己', category: 'self', generation: 0 };
+
+      // ── 父母/子女 ──
+      case 'parent': return {
+        term: toGender === 'male' ? '儿子' : toGender === 'female' ? '女儿' : '子女',
+        reverse: fromGender === 'male' ? '爸爸' : fromGender === 'female' ? '妈妈' : '父母',
+        category: 'parent', generation: 1,
+      };
+      case 'child': return {
+        term: toGender === 'male' ? '爸爸' : toGender === 'female' ? '妈妈' : '父母',
+        reverse: fromGender === 'male' ? '儿子' : fromGender === 'female' ? '女儿' : '子女',
+        category: 'child', generation: -1,
+      };
+
+      // ── 手足 ──
+      case 'sibling': {
+        const t = fromGender === 'male'
+          ? (isElder === true ? '哥哥' : isElder === false ? '弟弟' : '兄弟')
+          : fromGender === 'female'
+          ? (isElder === true ? '姐姐' : isElder === false ? '妹妹' : '姐妹')
+          : '手足';
+        const r = toGender === 'male'
+          ? (isElder === true ? '弟弟' : '哥哥')
+          : toGender === 'female'
+          ? (isElder === true ? '妹妹' : '姐姐')
+          : '手足';
+        return { term: t, reverse: r, category: 'sibling', generation: 0 };
+      }
+
+      // ── 配偶 ──
+      case 'spouse': return {
+        term: fromGender === 'male' ? '老公' : fromGender === 'female' ? '老婆' : '配偶',
+        reverse: toGender === 'male' ? '老公' : toGender === 'female' ? '老婆' : '配偶',
+        category: 'spouse', generation: 0,
+      };
+
+      // ── 爷奶/祖辈 ──
+      case 'grandparent': return {
+        term: fromGender === 'male' ? '爷爷' : fromGender === 'female' ? '奶奶' : '祖辈',
+        reverse: toGender === 'male' ? '孙子' : toGender === 'female' ? '孙女' : '孙辈',
+        category: 'grandparent', generation: 2,
+      };
+      case 'grandchild': return {
+        term: toGender === 'male' ? '孙子' : toGender === 'female' ? '孙女' : '孙辈',
+        reverse: fromGender === 'male' ? '爷爷' : fromGender === 'female' ? '奶奶' : '祖辈',
+        category: 'grandchild', generation: -2,
+      };
+
+      // ── 曾祖/曾孙 ──
+      case 'great_grandparent': {
+        const sub = pattern.sub || '';
+        const prefix = sub === 'great2' ? '高' : '曾';
+        return {
+          term: fromGender === 'male' ? (prefix + '祖父') : fromGender === 'female' ? (prefix + '祖母') : (prefix + '祖'),
+          reverse: toGender === 'male' ? (sub === 'great2' ? '玄孙' : '曾孙') : toGender === 'female' ? (sub === 'great2' ? '玄孙女' : '曾孙女') : (sub === 'great2' ? '玄孙辈' : '曾孙辈'),
+          category: 'great_grandparent', generation: sub === 'great2' ? 4 : 3,
+        };
+      }
+      case 'great_grandchild': {
+        const sub = pattern.sub || '';
+        const prefix = sub === 'great2' ? '玄' : '曾';
+        return {
+          term: toGender === 'male' ? (prefix + '孙') : toGender === 'female' ? (prefix + '孙女') : (prefix + '孙辈'),
+          reverse: fromGender === 'male' ? (sub === 'great2' ? '高祖' : '曾祖父') : fromGender === 'female' ? (sub === 'great2' ? '高祖母' : '曾祖母') : (sub === 'great2' ? '高祖' : '曾祖'),
+          category: 'great_grandchild', generation: sub === 'great2' ? -4 : -3,
+        };
+      }
+
+      // ── 叔伯姑舅姨 (父母辈旁系) ──
+      case 'aunt_uncle': {
+        const L = detLineage(pattern);
+        const fromMale = fromGender === 'male', fromFemale = fromGender === 'female';
+        const toMale = toGender === 'male', toFemale = toGender === 'female';
+        // from(长辈)叫to(晚辈)
+        const t = fromMale
+          ? (L === 'paternal' ? '叔叔' : '舅舅')
+          : fromFemale
+          ? (L === 'paternal' ? '姑姑' : '姨妈')
+          : (L === 'paternal' ? '叔叔/姑姑' : '舅舅/姨妈');
+        // to(晚辈)叫from(长辈)
+        const r = toMale
+          ? (L === 'paternal' ? '侄子' : '外甥')
+          : toFemale
+          ? (L === 'paternal' ? '侄女' : '外甥女')
+          : (L === 'paternal' ? '侄辈' : '外甥辈');
+        return { term: t, reverse: r, category: 'aunt_uncle', generation: 1 };
+      }
+
+      // ── 侄/甥辈 ──
+      case 'niece_nephew': {
+        const L = detLineage(pattern);
+        const toMale = toGender === 'male', toFemale = toGender === 'female';
+        const fromMale = fromGender === 'male', fromFemale = fromGender === 'female';
+        const t = toMale
+          ? (L === 'paternal' ? '侄子' : '外甥')
+          : toFemale
+          ? (L === 'paternal' ? '侄女' : '外甥女')
+          : (L === 'paternal' ? '侄辈' : '外甥辈');
+        const r = fromMale
+          ? (L === 'paternal' ? '叔叔' : '舅舅')
+          : fromFemale
+          ? (L === 'paternal' ? '姑姑' : '姨妈')
+          : (L === 'paternal' ? '叔叔/姑姑' : '舅舅/姨妈');
+        return { term: t, reverse: r, category: 'niece_nephew', generation: -1 };
+      }
+
+      // ── 堂表亲 ──
+      case 'cousin': {
+        const L = detLineage(pattern);
+        const fromMale = fromGender === 'male', fromFemale = fromGender === 'female';
+        const toMale = toGender === 'male', toFemale = toGender === 'female';
+        const elder = isElder;
+        const t = fromMale
+          ? (L === 'paternal' ? (elder === true ? '堂兄' : elder === false ? '堂弟' : '堂兄弟') : (elder === true ? '表兄' : elder === false ? '表弟' : '表兄弟'))
+          : fromFemale
+          ? (L === 'paternal' ? (elder === true ? '堂姐' : elder === false ? '堂妹' : '堂姐妹') : (elder === true ? '表姐' : elder === false ? '表妹' : '表姐妹'))
+          : (L === 'paternal' ? '堂亲' : '表亲');
+        const r = toMale
+          ? (L === 'paternal' ? '堂兄弟' : '表兄弟')
+          : toFemale
+          ? (L === 'paternal' ? '堂姐妹' : '表姐妹')
+          : (L === 'paternal' ? '堂亲' : '表亲');
+        return { term: t, reverse: r, category: 'cousin', generation: 0 };
+      }
+
+      // ── 叔公/姑婆/舅公/姨婆 (祖辈旁系) ──
+      case 'grand_aunt_uncle': {
+        const L = detLineage(pattern);
+        const t = fromGender === 'male'
+          ? (L === 'paternal' ? '叔公' : '舅公')
+          : fromGender === 'female'
+          ? (L === 'paternal' ? '姑婆' : '姨婆')
+          : (L === 'paternal' ? '叔公/姑婆' : '舅公/姨婆');
+        const r = toGender === 'male'
+          ? (L === 'paternal' ? '侄孙' : '外甥孙')
+          : toGender === 'female'
+          ? (L === 'paternal' ? '侄孙女' : '外甥孙女')
+          : (L === 'paternal' ? '侄孙辈' : '外甥孙辈');
+        return { term: t, reverse: r, category: 'grand_aunt_uncle', generation: 2 };
+      }
+
+      // ── 侄孙/外甥孙辈 ──
+      case 'grand_niece_nephew': {
+        const L = detLineage(pattern);
+        const t = toGender === 'male'
+          ? (L === 'paternal' ? '侄孙' : '外甥孙')
+          : toGender === 'female'
+          ? (L === 'paternal' ? '侄孙女' : '外甥孙女')
+          : (L === 'paternal' ? '侄孙辈' : '外甥孙辈');
+        const r = fromGender === 'male'
+          ? (L === 'paternal' ? '叔公' : '舅公')
+          : fromGender === 'female'
+          ? (L === 'paternal' ? '姑婆' : '姨婆')
+          : (L === 'paternal' ? '叔公/姑婆' : '舅公/姨婆');
+        return { term: t, reverse: r, category: 'grand_niece_nephew', generation: -2 };
+      }
+
+      // ── 远房堂表 (second cousin / 堂叔/表叔) ──
+      case 'second_cousin': {
+        const L = detLineage(pattern);
+        // from 是 to 的堂叔/表叔 (长一辈的远房 cousin)
+        const t = fromGender === 'male'
+          ? (L === 'paternal' ? '堂叔' : '表叔')
+          : fromGender === 'female'
+          ? (L === 'paternal' ? '堂姑' : '表姑')
+          : (L === 'paternal' ? '堂叔/堂姑' : '表叔/表姑');
+        const r = toGender === 'male'
+          ? (L === 'paternal' ? '堂侄' : '表侄')
+          : toGender === 'female'
+          ? (L === 'paternal' ? '堂侄女' : '表侄女')
+          : (L === 'paternal' ? '堂侄辈' : '表侄辈');
+        return { term: t, reverse: r, category: 'second_cousin', generation: 1 };
+      }
+
+      // ── 姻亲: 公婆/岳父母 (配偶的父母) ──
+      case 'inlaw_parent': {
+        const t = fromGender === 'male' ? '岳父' : fromGender === 'female' ? '岳母'
+          : toGender === 'male' ? '公公' : '婆婆';
+        const r = toGender === 'male' ? '女婿' : toGender === 'female' ? '儿媳' : '女婿/儿媳';
+        return { term: t, reverse: r, category: 'inlaw_parent', generation: 1 };
+      }
+
+      // ── 姻亲: 大/小姑子、大/小叔子、大/小姨子、大/小舅子 (配偶的手足) ──
+      case 'spouse_sibling': {
+        // from 的配偶 是 to 的手足 → from叫to 是 "配偶的手足"
+        // 反过来: to 叫 from 是 "手足的配偶"
+        const t = fromGender === 'male'
+          ? (toGender === 'male' ? '大舅子/小舅子' : '大姨子/小姨子')
+          : fromGender === 'female'
+          ? (toGender === 'male' ? '大伯子/小叔子' : '大姑子/小姑子')
+          : '配偶的手足';
+        const r = toGender === 'male'
+          ? (fromGender === 'male' ? '姐夫/妹夫' : '姐夫/妹夫')
+          : toGender === 'female'
+          ? (fromGender === 'male' ? '嫂子/弟媳' : '嫂子/弟媳')
+          : '手足的配偶';
+        return { term: t, reverse: r, category: 'spouse_sibling', generation: 0 };
+      }
+
+      // ── 姻亲: 姐夫/嫂子/弟媳/妹夫 (手足的配偶) ──
+      case 'inlaw_sibling_spouse': {
+        const L = detLineage(pattern);
+        // from 是 to 的手足的配偶 → from叫to:
+        // from 的姐妹的丈夫 = 姐夫/妹夫
+        // from 的兄弟的妻子 = 嫂子/弟媳
+        // 反过来: to 是从 from 角度看的手足的配偶的手足
+        const t = fromGender === 'male'
+          ? (L === 'paternal' ? '堂姐夫/堂妹夫' : '表姐夫/表妹夫')
+          : fromGender === 'female'
+          ? (L === 'paternal' ? '堂嫂/堂弟媳' : '表嫂/表弟媳')
+          : (L === 'paternal' ? '堂亲配偶' : '表亲配偶');
+        const r = toGender === 'male'
+          ? (L === 'paternal' ? '堂兄/堂弟' : '表兄/表弟')
+          : toGender === 'female'
+          ? (L === 'paternal' ? '堂姐/堂妹' : '表姐/表妹')
+          : (L === 'paternal' ? '堂亲' : '表亲');
+        return { term: t, reverse: r, category: 'inlaw_sibling_spouse', generation: 0 };
+      }
+
+      // ── 姻亲: 女婿/儿媳 (子女的配偶) ──
+      case 'inlaw_child_spouse': return {
+        term: toGender === 'male' ? '女婿' : toGender === 'female' ? '儿媳' : '子女的配偶',
+        reverse: fromGender === 'male' ? '岳父' : fromGender === 'female' ? '岳母' : '配偶的父母',
+        category: 'inlaw_child_spouse', generation: -1,
+      };
+
+      // ── 姻亲: 姐夫/嫂子 (手足的配偶——直接路径) ──
+      case 'inlaw_sibling': {
+        const fromMale = fromGender === 'male', fromFemale = fromGender === 'female';
+        const toMale = toGender === 'male', toFemale = toGender === 'female';
+        // from 的手足(to)的配偶 = from叫to:
+        if (toMale) {
+          // to 是男性 → 他是姐姐的丈夫(姐夫)或妹妹的丈夫(妹夫)
+          const t = isElder === true ? '姐夫' : isElder === false ? '妹夫' : '姐/妹夫';
+          const r = fromMale ? '小舅子' : fromFemale ? '小姨子' : '手/足的配偶';
+          return { term: t, reverse: r, category: 'inlaw_sibling', generation: 0 };
+        }
+        if (toFemale) {
+          // to 是女性 → 她是哥哥的妻子(嫂子)或弟弟的妻子(弟媳)
+          const t = isElder === true ? '嫂子' : isElder === false ? '弟媳' : '嫂/弟媳';
+          const r = fromMale ? '小叔子' : fromFemale ? '小姑子' : '手/足的配偶';
+          return { term: t, reverse: r, category: 'inlaw_sibling', generation: 0 };
+        }
+        return { term: '姻亲', reverse: '姻亲', category: 'inlaw_sibling', generation: 0 };
+      }
+
+      case 'social':
+        const sRel = SOCIAL_LABEL_CN[pattern.sub || ''] || '社交关系';
+        return { term: sRel, reverse: sRel, category: 'social', generation: 0 };
+
+      default:
+        return { term: '亲属', reverse: '亲属', category: 'relative', generation: 0 };
+    }
+  }
+
+  /**
    * v1.1: 从备份文件恢复图谱（轻量回滚）
    * 恢复前自动备份当前版本，恢复后自行校验完整性
    */
@@ -2567,7 +4131,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     );
     if (existing.length === 0) {
       await this.addEdge({ id: uid(), source_id: personId, target_id: featureId, relation });
-      console.log(`[FamilyGraph] 特征建边: ${personName} -${relation}-> ${featureName}`);
+      console.log("[FamilyGraph] 特征建边 [ok]"); // details sanitized
     }
   }
 
@@ -2672,6 +4236,191 @@ export class FamilyGraph implements FamilyGraphInterface {
   /**
    * 获取图谱统计信息（用于健康检查）
    */
+  // ═══════════════════════════════════════════════════
+  //  🛡️ §十六: FG→黑钻同步 + 完整性守护
+  // ═══════════════════════════════════════════════════
+
+  /**
+   * 🏛️ §十六: 将 FG 核心人物档案和关键关系同步到黑钻库
+   * ==================================================
+   * FG 数据属于客观事实，与对话记忆同级，纳入钙化休眠体系。
+   * 仅同步 completeness ≥ 0.3 的人物（有实质性档案内容），
+   * 以及所有家族关系边（非 acquaintance_of）。
+   *
+   * @param sqlite fusion_memory.db 的 SQLiteAdapter（由 server.ts 传入）
+   * @returns 同步计数
+   */
+  syncToBlackDiamond(sqlite: any, options?: { force?: boolean }): { profiles: number; relations: number; skipped: number } {
+    let profiles = 0, relations = 0, skipped = 0;
+
+    // ── ① 人物档案 → 黑钻 ──
+    const allPersons = this.query("SELECT id, name, properties FROM nodes WHERE type = 'person'");
+    for (const node of allPersons) {
+      try {
+        const props = JSON.parse(node.properties || '{}');
+        const completeness = props.completeness || 0;
+        if (completeness < 0.3 && !options?.force) { skipped++; continue; }
+
+        const summary = this._buildBlackDiamondSummary(node.name, props);
+        if (!summary) { skipped++; continue; }
+
+        // 幂等：已同步的跳过（通过 tags 中的 fg_person 标记）
+        const existing = (sqlite.queryAll?.("SELECT id FROM black_diamond WHERE tags LIKE '%\"fg_person\"%' AND summary LIKE ?", [`%${node.name}%`]) as any[]) || [];
+        if (existing.length > 0 && !options?.force) { skipped++; continue; }
+
+        const emotionTag = props.gender === 'female' ? '亲密' : props.gender === 'male' ? '尊重' : '中性';
+        const calcium = Math.min(3, Math.floor(completeness * 5)); // completeness 0-1 → calcium 0-3
+
+        sqlite.writeRaw(
+          `INSERT OR REPLACE INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, namespace, entry_channel, status)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'default', 'fg_sync', 'active')`,
+          [
+            `fg_${node.name}_${Date.now().toString(36)}`,
+            summary,
+            emotionTag,
+            null, // 无 source_id（不是从 memories 表晋升的）
+            calcium,
+            JSON.stringify(['fg_person', `person:${node.name}`, `calcium:${calcium}`, `completeness:${Math.round(completeness * 100)}%`]),
+            `[FG人物档案] ${node.name} · 完整度${Math.round(completeness * 100)}%`,
+            new Date().toISOString(), new Date().toISOString(),
+            null,
+          ],
+        );
+        profiles++;
+      } catch { skipped++; }
+    }
+
+    // ── ② 核心关系 → 黑钻 ──
+    const keyRelations = new Set(['mother_of','father_of','parent_of','child_of',
+      'spouse_of','elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of',
+      'elder_brother_of','younger_brother_of','grandfather_of','grandmother_of']);
+    const allEdges = this.query("SELECT source_id, target_id, relation FROM edges");
+    for (const edge of allEdges) {
+      if (!keyRelations.has(edge.relation)) continue;
+      const src = this._getPersonInfo(edge.source_id);
+      const tgt = this._getPersonInfo(edge.target_id);
+      if (!src || !tgt) continue;
+
+      const summary = `[FG家族关系] ${src.name} 是 ${tgt.name} 的${RELATION_LABEL_CN[edge.relation] || edge.relation}`;
+      const relId = `fg_rel_${src.name}_${tgt.name}_${edge.relation}`.replace(/[^a-zA-Z0-9一-鿿_]/g, '_');
+
+      sqlite.writeRaw(
+        `INSERT OR REPLACE INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, namespace, entry_channel, status)
+         VALUES (?, ?, '亲密', ?, 3, 0, ?, ?, ?, ?, NULL, 'default', 'fg_sync', 'active')`,
+        [
+          relId,
+          summary,
+          null,
+          JSON.stringify(['fg_relation', `family`, edge.relation, `from:${src.name}`, `to:${tgt.name}`]),
+          `[FG关系] ${src.name}→${tgt.name} (${edge.relation})`,
+          new Date().toISOString(), new Date().toISOString(),
+        ],
+      );
+      relations++;
+    }
+
+    if (profiles + relations > 0) {
+      console.log(`[FamilyGraph] 黑钻同步: ${profiles} 人 + ${relations} 关系`);
+    }
+    return { profiles, relations, skipped };
+  }
+
+  /** 构建黑钻摘要文本 */
+  private _buildBlackDiamondSummary(name: string, props: any): string | null {
+    const parts: string[] = [];
+    const rel = props.relation_to_user;
+    const age = props.birthYear ? `${new Date().getFullYear() - props.birthYear}岁` : props.age ? `${props.age}岁` : null;
+    const occ = props.occupation;
+    const traits = props.traits?.length ? props.traits.slice(0, 3).join('、') : null;
+    const gender = props.gender === 'male' ? '男' : props.gender === 'female' ? '女' : null;
+
+    if (gender) parts.push(gender);
+    if (age) parts.push(age);
+    if (rel) parts.push(rel);
+    if (occ) parts.push(occ);
+    if (traits) parts.push(`性格${traits}`);
+
+    return parts.length > 0 ? `【${name}】${parts.join('，')}` : null;
+  }
+
+  /**
+   * 🛡️ §十六: FG 完整性守护闸门
+   * ==========================
+   * 启动时自动执行。任何一项不通过→禁止系统进入生产模式。
+   */
+  fgIntegrityGuard(): { healthy: boolean; checks: Array<{ name: string; passed: boolean; detail: string }>; errors: string[] } {
+    const checks: Array<{ name: string; passed: boolean; detail: string }> = [];
+    const errors: string[] = [];
+
+    // ① 核心表存在
+    const nodeCount = this.query("SELECT COUNT(*) as cnt FROM nodes")[0]?.cnt || 0;
+    const edgeCount = this.query("SELECT COUNT(*) as cnt FROM edges")[0]?.cnt || 0;
+    checks.push({
+      name: '核心表非空', passed: nodeCount > 0 && edgeCount > 0,
+      detail: `nodes=${nodeCount} edges=${edgeCount}`,
+    });
+    if (nodeCount === 0) errors.push('nodes 表为空——FG 数据丢失');
+    if (edgeCount === 0) errors.push('edges 表为空——所有家族关系丢失');
+
+    // ② "我"节点存在
+    const meCount = this.query("SELECT COUNT(*) as cnt FROM nodes WHERE name = '我' AND type = 'person'")[0]?.cnt || 0;
+    checks.push({
+      name: '"我"节点存在', passed: meCount > 0,
+      detail: `me nodes: ${meCount}`,
+    });
+    if (meCount === 0) errors.push('"我"节点丢失——FG 核心身份不可用');
+
+    // ③ 无自指边
+    const selfLoops = this.query("SELECT COUNT(*) as cnt FROM edges WHERE source_id = target_id")[0]?.cnt || 0;
+    checks.push({
+      name: '无自指边', passed: selfLoops === 0,
+      detail: `self-loops: ${selfLoops}`,
+    });
+    if (selfLoops > 0) errors.push(`发现 ${selfLoops} 条自指边——数据结构异常`);
+
+    // ④ 家族反向边完整性
+    const missingRev = this.query(
+      "SELECT COUNT(*) as cnt FROM edges e1 WHERE e1.relation IN ('mother_of','father_of','elder_sister_of','younger_sister_of','elder_brother_of','younger_brother_of','aunt_of','uncle_of','niece_of','nephew_of') AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e1.target_id AND e2.target_id=e1.source_id)"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: '家族反向边完整', passed: missingRev === 0,
+      detail: `missing: ${missingRev}`,
+    });
+    if (missingRev > 0) errors.push(`${missingRev} 条家族边缺少反向边`);
+
+    // ⑤ entity_relations 无"姐妹"污染（仅当 sqlite 可用时）
+    // 此检查依赖外部 fusion_memory.db，仅作为信息输出不阻断启动
+
+    // ⑥ 所有人有档案
+    const totalPersons = this.query("SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person'")[0]?.cnt || 0;
+    const withName = this.query("SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND name IS NOT NULL AND name != ''")[0]?.cnt || 0;
+    checks.push({
+      name: '所有人有姓名', passed: withName === totalPersons,
+      detail: `${withName}/${totalPersons}`,
+    });
+    if (withName < totalPersons) errors.push(`${totalPersons - withName} 人缺少姓名`);
+
+    // ⑥ V3.2: 全部 person 节点有合法户籍 UUID
+    const personsWithoutUUID = this.query(
+      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (uuid IS NULL OR uuid = '' OR uuid NOT LIKE '_-_____')"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: '全部节点有合法UUID', passed: personsWithoutUUID === 0,
+      detail: personsWithoutUUID === 0 ? `${withName}/${withName}` : `缺失: ${personsWithoutUUID}/${withName}`,
+    });
+    if (personsWithoutUUID > 0) errors.push(`${personsWithoutUUID} 个 person 节点缺少合法户籍 UUID`);
+
+    const healthy = errors.length === 0;
+    if (healthy) {
+      console.log('[FamilyGraph] 🛡️ 完整性守护: 通过 ✓ (' + checks.filter(c => c.passed).length + '/' + checks.length + ')');
+    } else {
+      console.error('[FamilyGraph] 🔴 完整性守护失败:');
+      for (const e of errors) console.error('  - ' + e);
+    }
+
+    return { healthy, checks, errors };
+  }
+
   getStats(): { personCount: number; edgeCount: number; locationCount: number; objectCount: number } {
     const persons = this.query('SELECT COUNT(*) as cnt FROM nodes WHERE type = ?', ['person']);
     const edges = this.query('SELECT COUNT(*) as cnt FROM edges');

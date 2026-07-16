@@ -78,7 +78,7 @@ export class M5Orchestrator {
         this._currentRole = 'lover';
         console.log('[M5Role] 消息含亲密词，强制→lover');
       }
-    } catch (_re) {}
+    } catch (_re) { /* 亲密词检测非关键 */ }
     console.log('[M5Role] ' + this._currentRole + ' (from chat.ts)');
 
     // Step 3: LLM 受控生成（唯一LLM调用点）

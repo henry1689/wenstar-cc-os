@@ -70,6 +70,7 @@ export class MasterHarris extends EventEmitter {
   get isStarted() { return this._started; }
   get tianquanReady() { return this._tianquan?.isReady ?? false; }
   get busConnected() { return this._bus?.connected ?? false; }
+  get busClient() { return this._bus; }
   get dispatchCount() { return this._dispatchCount; }
 
   async start(): Promise<void> {

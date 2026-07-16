@@ -87,6 +87,15 @@ export class DeepSeekLLMProvider implements LLMProvider {
   }
 
   /**
+   * 原始 LLM 调用（绕过玉瑶 persona 和角色路由）
+   * 供提取类、分析类任务使用（如 ProfileAcquisitionEngine）
+   */
+  async rawCall(messages: DeepSeekMessage[], maxTokens: number, temperature: number): Promise<string> {
+    const result = await this.callDeepSeekApi(messages, maxTokens, temperature, {});
+    return result.text;
+  }
+
+  /**
    * 调用 DeepSeek API（带超时+重试，5s~30s→降级）
    * 返回 { text, usage } 或抛出错误
    */

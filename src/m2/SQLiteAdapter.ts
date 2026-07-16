@@ -128,15 +128,26 @@ export class SQLiteAdapter {
       this.db = new SQL.Database() as unknown as SqlJsDatabase;
     }
 
-    // 执行 DDL
-    const ddl = readFileSync(SCHEMA_PATH, 'utf-8');
-    this.db.run(ddl);
+    // ⚠️ 迁移必须在 DDL 之前执行：旧数据库缺少新列时，schema.sql 中的
+    //    CREATE INDEX IF NOT EXISTS ... ON memories(source_type) 会因列不存在而 crash
+    // V4.0: source_type 列（新库 DDL 中已有，旧库需迁移补列）
+    try { this.db.run("ALTER TABLE memories ADD COLUMN source_type TEXT DEFAULT 'conversation'"); } catch { /* 列已存在 */ }
+    // V4.0: black_diamond 增强字段
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN entry_channel TEXT DEFAULT 'auto'"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN entry_reason TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN stabilization_score REAL DEFAULT 1.0"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN manual_quota_consumed INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN status TEXT DEFAULT 'active'"); } catch { /* 列已存在 */ }
 
-    // 迁移：为已有数据库追加 vad_spectrum 列（SQLite 不支持 IF NOT EXISTS）
+    // 旧列迁移（V4.0 新列已在上方处理）
     try { this.db.run("ALTER TABLE memories ADD COLUMN vad_spectrum TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN primary_emotion TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN secondary_emotions TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN promoted_to_diamond INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+
+    // 执行 DDL（在补全所有列之后，保证 CREATE INDEX 不会因缺列而崩溃）
+    const ddl = readFileSync(SCHEMA_PATH, 'utf-8');
+    this.db.run(ddl);
 
     // 索引迁移：emotion 列可能在新库中已在 DDL 中创建，旧库需通过迁移创建
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_emotion ON memories(primary_emotion)"); } catch { /* 列不存在或索引已存在 */ }

@@ -32,17 +32,21 @@ export class TianquanEventBus {
   async emit(event: TianquanEvent): Promise<void> {
     if (!this.enabled) return;
 
-    // ── 路由守卫 ──
-    this._enforceRouting(event);
+    try {
+      // ── 路由守卫 ──
+      this._enforceRouting(event);
 
-    // 注入缺省字段
-    const enriched = {
-      ...event,
-      traceId: event.traceId || crypto.randomUUID(),
-      timestamp: event.timestamp || Date.now(),
-    };
+      // 注入缺省字段
+      const enriched = {
+        ...event,
+        traceId: event.traceId || crypto.randomUUID(),
+        timestamp: event.timestamp || Date.now(),
+      };
 
-    await this.bus.emit(enriched as any);
+      await this.bus.emit(enriched as any);
+    } catch (e) {
+      console.warn('[TianquanEventBus] emit 异常:', (e as Error)?.message || e, 'event:', event.type);
+    }
   }
 
   /**

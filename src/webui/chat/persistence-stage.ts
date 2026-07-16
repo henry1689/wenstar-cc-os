@@ -86,6 +86,21 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   }
 
   // ── Step 2: conversations.db（对话历史库） ──
+  // V3.2: 解析当前对话归属的实体 UUID
+  const resolveBelongUUID = (): string | null => {
+    try {
+      const fg = input.ctx.m4?.getRealFamilyGraph?.();
+      if (!fg) return null;
+      // 角色扮演: 归属角色 UUID
+      if (rp) return fg.getUUIDByName?.(rp) || null;
+      // 普通对话: 归属第一个提到的 person 实体
+      const firstPerson = input.dna.entity_genes?.find((g: any) => g.type === 'person' && g.name && g.name !== '我');
+      if (firstPerson) return fg.getUUIDByName?.(firstPerson.name) || null;
+      return null;
+    } catch { return null; }
+  };
+  const belongUUID = resolveBelongUUID();
+
   try {
     input.ctx.conversationDB?.insertConversation('user', input.message, {
       seqPos: input.seqPos, topic,
@@ -97,6 +112,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       locationFingerprint: input.dna.location_fingerprint || '',
       isTest: input.ctx.testMode ? 1 : 0,
       roleplayChar: rp || undefined,
+      belongEntityUuid: belongUUID || undefined,
     });
     input.ctx.conversationDB?.insertConversation('assistant', input.reply, {
       seqPos: input.seqPos + 1, topic,
@@ -105,6 +121,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       globalUid: input.dna.global_uid || (input.dna as any).dna_root_id,
       locationFingerprint: input.dna.location_fingerprint || '',
       roleplayChar: rp || undefined,
+      belongEntityUuid: belongUUID || undefined,
     });
   } catch (e: any) {
     console.error('[Persist] ❌ conversations.db 写入失败:', e?.message);

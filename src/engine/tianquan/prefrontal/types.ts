@@ -7,6 +7,8 @@
  */
 
 import type { SceneSnapshot } from '../temporal/types.js';
+import type { DNA } from '../../../m1/types/dna.js';
+import type { M3Decision } from '../../../m3/types/perception.js';
 
 // ─── 工作记忆 ───
 
@@ -160,13 +162,42 @@ export interface MetacognitionSummary {
 
 // ─── 前额域上下文 ───
 
-/** PrefrontalCortex 处理输入 */
+/** PrefrontalCortex 处理输入 (V4.0 Phase 6 扩展: 完整上下文替代 globalThis 传递) */
 export interface PrefrontalInput {
+  /** 场景快照（Phase 6: 可选，PFC 可在内部分配） */
   snapshot: SceneSnapshot;
+  /** 会话标识 */
   sessionId: string;
+  /** 原始用户输入 */
   rawInput: string;
-  /** V4.0 Phase 3: 外部上下文块（CoreMemory/经验/情绪/时空等），PFC 组装后返回 */
+  /** V4.0 Phase 3: 外部上下文块（Phase 6 废弃，改为 PFC 内部组装） */
   contextBlocks?: ContextBlock[];
+  // ── V4.0 Phase 6: 完整输入上下文（替代 globalThis.__xxx 中转）──
+  /** M1 DNA 编码（实体基因、场景标签等） */
+  dna?: DNA;
+  /** M3 感知三元组（愉悦/唤醒/亲密） */
+  perception?: { pleasure: number; arousal: number; intimacy: number };
+  /** M3 感知决策 */
+  decision?: M3Decision;
+  /** M4 检索上下文（记忆列表、摘要、家族上下文等） */
+  ctxM4?: any;
+  /** 丰富后的对话历史（最近 10 轮） */
+  enrichedHistory?: Array<{ role: string; content: string }>;
+  /** 当前角色扮演角色名（null=非角色模式） */
+  currentRoleplay?: string | null;
+  /** 当前角色路由（secretary/lover/counselor/strategist/recaller） */
+  currentRole?: string;
+  /** M4 检索的情绪记忆列表 */
+  emotionalMemories?: any[];
+  /** M4 检索的记忆文本片段 */
+  memoryFragments?: string[];
+  // ── V4.0 Phase 7: 运行时上下文 ──
+  /** 时空感知块（天气/模式豁免等，由 chat.ts 构建后传入） */
+  temporalBlock?: string;
+  /** 气象查询结果（由 chat.ts weatherContext 传入） */
+  weatherContext?: string;
+  /** 是否启用时空规则引擎 */
+  enableTemporalEngine?: boolean;
 }
 
 /** V4.0 Phase 3: 上下文块 — PFC 组装 LLM 上下文的标准化输入 */
@@ -179,9 +210,18 @@ export interface ContextBlock {
   priority: number;
 }
 
-/** PrefrontalCortex 处理输出 */
+/** PrefrontalCortex 处理输出 (V4.0 Phase 6 扩展: 统一组装产物) */
 export interface PrefrontalOutput {
   directive: PrefrontalDirective;
   /** 工作记忆当前状态 */
   wmState: WorkingMemoryState;
+  // ── V4.0 Phase 6: PFC 统一组装输出（替代 chat.ts 手工拼装 finalKnowledgeText）──
+  /** 组装完成的系统提示词（直接传给 M5.orchestrate 第3参数） */
+  assembledSystemPrompt?: string;
+  /** 组装完成的上下文块文本（CoreMemory + 经验 + 情绪 + 遗忘 + 时空） */
+  assembledContext?: string;
+  /** PFC 守卫消息（约束违规时返回给 chat.ts 注入到 enrichedWithGuard） */
+  guardMessage?: string;
+  /** 情绪上下文（供角色路由/安全网使用，从 HeartStateStore 提取） */
+  emotionContext?: { pleasure: number; arousal: number; intimacy: number; dominantEmotion?: string };
 }

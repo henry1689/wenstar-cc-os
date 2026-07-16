@@ -740,4 +740,10 @@ export class MockLLMProvider implements LLMProvider {
     // 默认 → 日常闲聊
     return { text: pickNoRepeat(NEUTRAL) };
   }
+
+  /** V3.2 PAE: 原始 LLM 调用（Mock 版 — 返回空提取结果） */
+  async rawCall(_messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, _maxTokens: number, _temperature: number): Promise<string> {
+    // Mock 模式下直接返回"无提取"，依靠正则管道 fallback
+    return JSON.stringify({ persons: [], reasoningTrace: 'MockLLMProvider: no extraction' });
+  }
 }

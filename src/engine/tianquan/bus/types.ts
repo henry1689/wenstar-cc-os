@@ -51,10 +51,11 @@ export interface SceneSnapshotReadyEvent {
   traceId: string;
   timestamp: number;
   sessionId: string;
+  /** 轻量通知 — 消费者通过 getGlobal('snapshotBuilder') 获取完整快照 */
   payload: {
-    snapshot: SceneSnapshot;
-    /** 快照构建耗时 ms */
-    buildTimeMs: number;
+    contextSignature: string;
+    calciumScore: number;
+    entityCount: number;
   };
 }
 
