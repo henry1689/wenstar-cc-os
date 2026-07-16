@@ -1893,18 +1893,14 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
         if (seqPos % 10 === 0) _cm.refreshFromProfile().catch(() => {});
         _cm.refreshFromSession(message.substring(0, 80));
         const coreCtx = _cm.getContextWindow();
+        (globalThis as any).__pfcCoreCtx = coreCtx;
         // 🎭 角色扮演模式：用角色身份覆写 CoreMemory persona 块，阻止"你的名字是玉瑶"泄漏
         if (_currentRoleplay && typeof _cm.setRoleplayOverride === 'function') {
           const _rpRelCtx = _buildRoleRelationContext(ctx_m4, _currentRoleplay);
           _cm.setRoleplayOverride(_currentRoleplay, _rpRelCtx);
           const _rpCoreCtx = _cm.getContextWindow();
-          if (_rpCoreCtx && finalKnowledgeText) {
-            finalKnowledgeText = _rpCoreCtx + String.fromCharCode(10,10) + finalKnowledgeText;
-          }
-        } else if (coreCtx && finalKnowledgeText) {
-          finalKnowledgeText = coreCtx + String.fromCharCode(10,10) + finalKnowledgeText;
-        } else if (coreCtx) {
-          finalKnowledgeText = coreCtx;
+          (globalThis as any).__pfcCoreCtx = _rpCoreCtx;
+          // V4.0 Phase 3: CoreMemory 改由 PFC 组装，此处仅暂存值
         }
       } catch {} /* Core Memory 不可用不阻塞 */
 
@@ -1918,9 +1914,7 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
           const _firstWord = (message.match(/[一-龥]{2,4}/g) || []).find((w: string) => w.length >= 2 && !'的了在是我有不和就'.includes(w));
           if (_firstWord) {
             const _exp = _hIdx.lookupExperienceByKeyword(_firstWord);
-            if (_exp) {
-              finalKnowledgeText = '【相关经验】\n' + _exp + String.fromCharCode(10,10) + (finalKnowledgeText || '');
-            }
+            (globalThis as any).__pfcExp = _exp || null;
           }
         }
       } catch {} /* 经验摘要不可用不阻塞 */
@@ -1935,8 +1929,8 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
           if (_regulation.shouldSoothe && _regulation.basis) {
             const _regCtx = _reg.formatForContext(_regulation);
             if (_regCtx) {
-              finalKnowledgeText = _regCtx + String.fromCharCode(10,10) + (finalKnowledgeText || '');
-            }
+              (globalThis as any).__pfcReg = '【情绪调节】' + _regCtx;
+            } else { (globalThis as any).__pfcReg = null; }
           }
         }
       } catch {} /* 情绪调节不可用不阻塞 */
@@ -2002,15 +1996,19 @@ memoryText = memoryText.replace(/（[^）]*）/g, '');let finalKnowledgeText = k
             };
           }
 
-          // V4.0 Phase 3: 收集所有上下文块交由 PFC 统一组装
+          // V4.0 Phase 3: 收集上下文块 — 传递给 PFC 统一组装
           const _ctxBlocks: any[] = [];
-          // CoreMemory（由下方 ad-hoc 路径提前计算，此处只做标记，PFC 合并时用 priority=100）
-          // 海马体经验（priority=80）
+          // CoreMemory（已由上级 ad-hoc 块计算，priority=100）
+          const _cc = (globalThis as any).__pfcCoreCtx;
+          if (_cc) _ctxBlocks.push({ source: 'core_memory', content: typeof _cc === 'string' ? _cc.substring(0, 600) : '', priority: 100 });
+          // 海马体经验摘要（priority=80）
+          const _pfcExp = (globalThis as any).__pfcExp;
+          if (_pfcExp) _ctxBlocks.push({ source: 'experience', content: _pfcExp, priority: 80 });
           // 情绪调节（priority=75）
-          // 时空规则（priority=50）
-          // 这些块由 PFC 内部的 directive.payload.assembledContext 统一组装
+          const _pfcReg = (globalThis as any).__pfcReg;
+          if (_pfcReg) _ctxBlocks.push({ source: 'emotion_regulation', content: _pfcReg, priority: 75 });
 
-          const _pfcInput = { snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message };
+          const _pfcInput = { snapshot: _snap, sessionId: String(seqPos) || '', rawInput: message, contextBlocks: _ctxBlocks.length > 0 ? _ctxBlocks : undefined };
           const _pfcResult = await _pfc.process(_pfcInput, decision);
           (globalThis as any).__pfcDirective = _pfcResult?.directive || null;
 
