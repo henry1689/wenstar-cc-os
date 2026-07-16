@@ -600,6 +600,16 @@ async function initPipeline(): Promise<void> {
     } catch { /* 可选 */ }
     console.log('  天权前额叶决策域已启动 ✓');
 
+    // ⑥ 新皮层生成调度器 (V4.0 Phase 5 — cortex激活)
+    try {
+      const { GenerationOrchestrator } = await import('../engine/cortex/GenerationOrchestrator.js');
+      const cortexOrchestrator = new GenerationOrchestrator();
+      await cortexOrchestrator.init(tianquanBus as any);
+      (globalThis as any).__cortexOrchestrator = cortexOrchestrator;
+      setGlobal('cortexOrchestrator' as any, cortexOrchestrator as any);
+      console.log('  天权新皮层生成调度器已激活 ✓');
+    } catch (e) { console.warn('[启动] cortex 未激活:', (e as Error)?.message || e); }
+
     // ⑤ 第二大脑 Gateway 初始化 (V4.0 Phase 2)
     try {
       const { SecondBrainGateway } = await import('../engine/tianquan/knowledge/SecondBrainGateway.js');

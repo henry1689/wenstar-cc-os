@@ -111,6 +111,8 @@ export class SceneSnapshotBuilder {
         }
       : undefined;
 
+    // V4.0 Phase 5: 推送快照就绪事件到天权事件总线
+    try { const _bus = (globalThis as any).__tianquanBus; if (_bus && typeof _bus.emit === "function") { _bus.emit({ type: "scene:snapshot_ready", traceId: snapshotId, timestamp: Date.now(), sessionId: sessionId || "", payload: { contextSignature, calciumScore, entityCount: entityAnchors.persons.length } }).catch(() => {}); } } catch { /* bus不可用 */ }
     return {
       snapshotId,
       contextSignature,
