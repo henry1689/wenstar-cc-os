@@ -24,6 +24,10 @@ const MAX_SLOTS = 7;
 
 export class WorkingMemory {
   private slots: WorkingMemorySlot[];
+  // V4.0 Phase 3: 槽位利用率监控
+  private _totalLoads = 0;
+  private _totalEvictions = 0;
+  private _firstLoadAt = 0;
 
   constructor() {
     this.slots = Array.from({ length: MAX_SLOTS }, (_, i) => ({
@@ -49,7 +53,7 @@ export class WorkingMemory {
       emptySlot.status = 'loading';
       emptySlot.loadedAt = Date.now();
       emptySlot.intermediateResults = [];
-      return emptySlot.slotId;
+      this._totalLoads++;if(!this._firstLoadAt)this._firstLoadAt=Date.now();return emptySlot.slotId;
     }
 
     // 2. 无空位 → LRU 驱逐
@@ -61,7 +65,7 @@ export class WorkingMemory {
     lruSlot.status = 'loading';
     lruSlot.loadedAt = Date.now();
     lruSlot.intermediateResults = [];
-    return lruSlot.slotId;
+    this._totalLoads++;this._totalEvictions++;return lruSlot.slotId;
   }
 
   /**
@@ -122,7 +126,8 @@ export class WorkingMemory {
   /**
    * 获取当前工作记忆全局状态
    */
-  getState(): WorkingMemoryState {
+  getUsageStats(): {totalLoads:number;totalEvictions:number;avgSlotLifetimeMs:number;uptimeMs:number} {const uptime=this._firstLoadAt?Date.now()-this._firstLoadAt:0;const avgLife=this._totalLoads>0?uptime/this._totalLoads:0;return {totalLoads:this._totalLoads,totalEvictions:this._totalEvictions,avgSlotLifetimeMs:Math.round(avgLife),uptimeMs:uptime};}
+getState(): WorkingMemoryState {
     const activeSlots = this.slots.filter(s => s.occupied).length;
     return {
       maxSlots: MAX_SLOTS,

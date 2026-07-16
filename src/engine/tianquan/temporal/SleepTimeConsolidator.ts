@@ -431,7 +431,23 @@ export class SleepTimeConsolidator {
         inductions++;
       }
 
-      if (inductions > 0) console.log(`[SleepTime] 情景→语义: ${inductions} 条归纳 (实体${entityMentions.size}个, 词组${wordMap.size}个)`);
+      if (inductions > 0) {
+        console.log(`[SleepTime] 情景→语义: ${inductions} 条归纳 (实体${entityMentions.size}个, 词组${wordMap.size}个)`);
+        // V4.0 Phase 3: 异步同步到 MasterProfile（fire-and-forget）
+        setImmediate(() => {
+          try {
+            const mp = (globalThis as any).__masterProfile;
+            if (mp && typeof mp.upsert === 'function') {
+              for (const [name, data] of entityMentions) {
+                if (data.count >= 3) {
+                  mp.upsert({ category: 'auto_inducted', subcategory: this._classifyPattern(name, data),
+                    content: `在 ${data.days.size} 天内 ${data.count} 次提及 ${name}`, source: 'sleep_consolidation', confidence: 0.5 });
+                }
+              }
+            }
+          } catch { /* 画像不可用不阻塞 */ }
+        });
+      }
       return inductions;
     } catch { return 0; }
   }

@@ -10,7 +10,7 @@
 
 // @ts-ignore - sql.js ships its own types via dist/sql-wasm.js
 import initSqlJs from 'sql.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EntityGene } from '../m1/types/dna.js';
@@ -493,6 +493,44 @@ export class FamilyGraph implements FamilyGraphInterface {
     } catch (e) {
       console.warn('[FG Shield] 自动备份失败:', e);
     }
+    // V4.0 Phase 3: 异步清理旧备份（不阻塞主流程）
+    setImmediate(() => this._cleanupOldBackups());
+  }
+
+  /** V4.0 Phase 3: 备份分级清理 — 7天内每天1份/30天内每周1份/30天+每月1份 */
+  private _cleanupOldBackups(): void {
+    try {
+      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
+      if (!existsSync(backupDir)) return;
+      const files = readdirSync(backupDir)
+        .filter((f: string) => f.startsWith('family_graph_backup_') && f.endsWith('.db'));
+      if (files.length < 30) return; // 不足30份不触发清理
+
+      const now = Date.now(); const oneDay = 86400000;
+      const byDay = new Map<string, { path: string; mtime: number }[]>();
+      for (const f of files) {
+        const fp = join(backupDir, f); const st = statSync(fp);
+        const dk = new Date(st.mtimeMs).toISOString().substring(0, 10);
+        if (!byDay.has(dk)) byDay.set(dk, []);
+        byDay.get(dk)!.push({ path: fp, mtime: st.mtimeMs });
+      }
+
+      const toKeep = new Set<string>();
+      for (const [i, day] of [...byDay.keys()].sort().entries()) {
+        const dfs = byDay.get(day)!.sort((a, b) => b.mtime - a.mtime);
+        const age = (now - dfs[0].mtime) / oneDay;
+        if (age <= 7) { toKeep.add(dfs[0].path); }
+        else if (age <= 30) { if (new Date(dfs[0].mtime).getDay() === 1) toKeep.add(dfs[0].path); }
+        else { if (new Date(dfs[0].mtime).getDate() <= 7) toKeep.add(dfs[0].path); }
+      }
+
+      let deleted = 0;
+      for (const f of files) {
+        const fp = join(backupDir, f);
+        if (!toKeep.has(fp)) { unlinkSync(fp); deleted++; }
+      }
+      if (deleted > 0) console.log('[FG Shield] 备份清理: 删除 ' + deleted + '/' + files.length + ' 份, 保留 ' + toKeep.size + ' 份');
+    } catch { /* 清理失败不影响主功能 */ }
   }
 
   /**

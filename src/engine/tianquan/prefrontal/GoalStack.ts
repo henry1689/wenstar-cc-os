@@ -142,4 +142,30 @@ export class GoalStack {
     // 去重
     this.longTerm = [...new Set(this.longTerm)];
   }
+
+
+  /** V4.0 Phase 3: 基于 MetacognitionReview 反馈动态调整长期目标权重
+   *  低频触发的目标降权（不被 Persist），高频目标加权（排在前面） */
+  private _goalHitCount = new Map<string,number>();
+  private _totalReviewRounds=0;
+
+  /** 记录某目标在复盘中被触发 */  
+  recordGoalHit(goal: string): void {
+    this._goalHitCount.set(goal,(this._goalHitCount.get(goal)||0)+1);
+  }
+
+  /** 每100轮复盘后调整: 低频(<5%)→降权, 高频(>30%)→加权 */
+  afterReviewCycle(): {demoted:string[],promoted:string[]} {
+    this._totalReviewRounds++;
+    if(this._totalReviewRounds%100!==0) return {demoted:[],promoted:[]};
+    const demoted:string[]=[],promoted:string[]=[];
+    for(const g of this.longTerm){
+      const hits=this._goalHitCount.get(g)||0;
+      const ratio=hits/this._totalReviewRounds;
+      if(ratio<0.05) demoted.push(g);
+      if(ratio>0.30) promoted.push(g);
+    }
+    this._goalHitCount.clear(); this._totalReviewRounds=0;
+    return {demoted,promoted};
+  }
 }

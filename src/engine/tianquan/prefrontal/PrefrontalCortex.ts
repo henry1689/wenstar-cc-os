@@ -181,10 +181,21 @@ export class PrefrontalCortex {
    * 获取当前状态快照（供 API 查询）
    */
   getStatus(): Record<string, unknown> {
+    const wmUsage = this.workingMemory.getUsageStats();
     return {
       workingMemory: {
         activeSlots: this.workingMemory.activeCount,
         capacity: this.workingMemory.capacity,
+        // V4.0 Phase 3: 槽位利用率监控
+        usage: {
+          totalLoads: wmUsage.totalLoads,
+          totalEvictions: wmUsage.totalEvictions,
+          avgSlotLifetimeMs: wmUsage.avgSlotLifetimeMs,
+          uptimeMs: wmUsage.uptimeMs,
+          evictionRate: wmUsage.uptimeMs > 0
+            ? Math.round(wmUsage.totalEvictions / (wmUsage.uptimeMs / 60000)) + '/min'
+            : '0/min',
+        },
       },
       goalStack: this.goalStack.getState(),
       busReady: !!this.bus,
