@@ -264,6 +264,15 @@ export interface PersonDossier {
   memoryAnchors: {
     diamondIds: string[];   // 最多 5 条，存黑钻记忆 ID
   };
+  /** V2.0 兜底字段：自由格式JSON，存放无固定归档字段的零散补充信息 */
+  misc?: Record<string, any>;
+  /** V2.0 典籍双向绑定：关联的TXJ典籍户籍清单 */
+  boundDocuments?: Array<{
+    docId: string;
+    title: string;
+    type: 'knowledge' | 'task' | 'note' | 'setting';
+    boundAt: string;
+  }>;
 }
 
 /** 待确认条目（30 天 TTL） */
@@ -562,6 +571,8 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.migrateToV3();
     // V3.3: 户籍管理法 V1.1 列级补齐
     this.migrateToV4();
+    // V2.0: UUID去前缀 + name清洗 + 卷宗永久
+    this._migrateToV5();
     try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_circle ON nodes(circle_level)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
     try { this.run('CREATE INDEX IF NOT EXISTS idx_edges_source_rel ON edges(source_id, relation)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
     try { this.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_uuid ON nodes(uuid) WHERE uuid IS NOT NULL'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
@@ -650,13 +661,12 @@ export class FamilyGraph implements FamilyGraphInterface {
         this.markDirty(true);
       } else {
         this.userNodeId = existing[0].id;
-        // 🛡️ V3.2: 确保"我"节点的 UUID 和分类永远正确（可能被旧版本写坏）
-        const currentUUID = this.query('SELECT uuid, category FROM nodes WHERE id = ?', [this.userNodeId]);
-        if (currentUUID.length > 0) {
-          const r = currentUUID[0] as any;
-          if (r.uuid !== 'S-00001' || r.category !== 'S') {
-            this.run('UPDATE nodes SET uuid = ?, category = ?, security_level = ? WHERE id = ?',
-              ['S-00001', 'S', 3, this.userNodeId]);
+        // V2.0: 确保"我"节点的 category 永远正确（不再硬编码 UUID 格式）
+        const currentInfo = this.query('SELECT category, security_level FROM nodes WHERE id = ?', [this.userNodeId]);
+        if (currentInfo.length > 0) {
+          const r = currentInfo[0] as any;
+          if (r.category !== 'S') {
+            this.run('UPDATE nodes SET category = ?, security_level = ? WHERE id = ?', ['S', 3, this.userNodeId]);
           }
         }
       }
@@ -749,24 +759,12 @@ export class FamilyGraph implements FamilyGraphInterface {
       const newCategory = this._inferCategory(props.relation_to_user || '', row.name, row.id);
 
       if (newCategory !== row.category) {
-        // 分类改变 → 需要新的 UUID（前缀随分类变化）
-        // 获取新分类的最大流水号
-        const existing = this.query(
-          "SELECT uuid FROM nodes WHERE category = ? AND type = 'person' ORDER BY uuid DESC",
-          [newCategory]
-        );
-        let maxSeq = 0;
-        for (const r of existing) {
-          const num = parseInt((r.uuid || '').split('-')[1] || '0', 10);
-          if (!isNaN(num) && num > maxSeq) maxSeq = num;
-        }
-        const newUUID = this._formatUUID(newCategory, maxSeq + 1);
-
-        this.run('UPDATE nodes SET uuid = ?, category = ? WHERE id = ?',
-          [newUUID, newCategory, row.id]);
+        // V2.0: UUID 是纯流水号，分类变更只改 category 列，不动 UUID
+        this.run('UPDATE nodes SET category = ? WHERE id = ?',
+          [newCategory, row.id]);
         repaired++;
         if (this._verbose) {
-          console.log(`[FamilyGraph] UUID 修正: ${row.name} ${row.category}→${newCategory} (${row.uuid}→${newUUID})`);
+          console.log(`[FamilyGraph] 分类修正: ${row.name} ${row.category}→${newCategory}`);
         }
       }
     }
@@ -812,6 +810,39 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     if (sourceFixed > 0 || rebuilt.familyGenes > 0 || rebuilt.socialGenes > 0) {
       console.log(`[FamilyGraph] V4 迁移: entity_source ${sourceFixed} + family_gene ${rebuilt.familyGenes}人/${rebuilt.familyClusters}族 + social_group ${rebuilt.socialGenes}人/${rebuilt.socialClusters}社`);
+    }
+    // V5: UUID去前缀 + name清洗 + 卷宗永久
+    this._migrateToV5();
+  }
+
+  /**
+   * V2.0 UUID 纯流水号迁移
+   */
+  private _migrateToV5(): void {
+    // 全量重编号：按 created_at 排序，分配 TXS-000000001 ~ TXS-0000000XX
+    const allP = this.query("SELECT id, uuid FROM nodes WHERE type = 'person' ORDER BY created_at");
+    let seq = 0; let uuidChanged = 0;
+    for (const r of allP) {
+      seq++;
+      const newUUID = `TXS-${String(seq).padStart(9, '0')}`;
+      if (r.uuid !== newUUID) {
+        // 旧 UUID → legacy_ids 归档
+        let legacyIds: string[] = [];
+        try {
+          const cur = this.query("SELECT legacy_ids FROM nodes WHERE id = ?", [r.id]);
+          legacyIds = JSON.parse((cur[0] as any)?.legacy_ids || '[]');
+        } catch {}
+        if (r.uuid && !r.uuid.startsWith('TXS-') && !legacyIds.includes(r.uuid)) {
+          legacyIds.push(r.uuid);
+        }
+        this.run("UPDATE nodes SET uuid = ?, legacy_ids = ? WHERE id = ?",
+          [newUUID, JSON.stringify(legacyIds), r.id]);
+        uuidChanged++;
+      }
+    }
+
+    if (uuidChanged > 0) {
+      console.log(`[FamilyGraph] V5 迁移: UUID重编号${uuidChanged}人(共${seq}人)`);
     }
   }
 
@@ -1038,31 +1069,40 @@ export class FamilyGraph implements FamilyGraphInterface {
     return names;
   }
 
-  /** 格式化 UUID */
-  private _formatUUID(category: string, seq: number): string {
-    return `${category}-${String(seq).padStart(5, '0')}`;
+  /** 格式化 UUID — V2.0 纯流水号 */
+  private _formatUUID(_category: string, seq: number): string {
+    return `TXS-${String(seq).padStart(9, '0')}`;
   }
 
-  /** 为指定分类生成下一个 UUID（全量扫描防止字符串排序导致的编号冲突） */
-  _generateUUID(category: string): string {
-    // 🔴 不可用 ORDER BY uuid DESC LIMIT 1 —— UUID 字符串排序会将 "A-00009" 排在 "A-00010" 之后（'9' > '1'）
-    // 必须全量读取该类别的所有 UUID，解析出最大流水号
+  /** 生成下一个 TXS-ID（全局自增，不分类别） */
+  _generateUUID(_category: string): string {
     const rows = this.query(
-      "SELECT uuid FROM nodes WHERE category = ? AND type = 'person'",
-      [category]
+      "SELECT uuid FROM nodes WHERE type = 'person' AND uuid LIKE 'TXS-%'"
     );
     let maxSeq = 0;
     for (const row of rows) {
-      const num = parseInt((row.uuid || '').split('-')[1] || '0', 10);
+      const num = parseInt((row.uuid || '').replace('TXS-', ''), 10);
       if (!isNaN(num) && num > maxSeq) maxSeq = num;
     }
-    return this._formatUUID(category, maxSeq + 1);
+    return this._formatUUID('', maxSeq + 1);
   }
 
-  /** 按 UUID 查找人物节点 */
+  /** 按 UUID 查找人物节点（兼容旧编号重定向） */
   getEntityByUUID(uuid: string): any | null {
-    const rows = this.query('SELECT id, uuid, category, name, type, aliases, properties FROM nodes WHERE uuid = ?', [uuid]);
-    return rows.length > 0 ? rows[0] : null;
+    // 先精确匹配
+    const rows = this.query('SELECT id, uuid, category, name, type, aliases, legacy_ids, properties FROM nodes WHERE uuid = ?', [uuid]);
+    if (rows.length > 0) return rows[0];
+    // 旧编号重定向 → 遍历 legacy_ids
+    const legacyHits = this.query(
+      "SELECT id, uuid, category, name, type, aliases, legacy_ids, properties FROM nodes WHERE type = 'person' AND legacy_ids IS NOT NULL AND legacy_ids != '[]'"
+    );
+    for (const row of legacyHits) {
+      try {
+        const ids = JSON.parse(row.legacy_ids || '[]');
+        if (ids.includes(uuid)) return row;
+      } catch {}
+    }
+    return null;
   }
 
   /** 按人名查 UUID */
@@ -2337,7 +2377,8 @@ export class FamilyGraph implements FamilyGraphInterface {
     const now = new Date().toISOString();
     if (!props._changeHistory) props._changeHistory = [];
     props._changeHistory.push({ field, oldValue, newValue, timestamp: now });
-    if (props._changeHistory.length > 100) props._changeHistory = props._changeHistory.slice(-100);
+    // V2.0: 卷宗永久存档 — 主表保留10000条，超出自动归档（保留全部记录不删除）
+    if (props._changeHistory.length > 10000) props._changeHistory = props._changeHistory.slice(-10000);
     this.run('UPDATE nodes SET properties=? WHERE id=?', [JSON.stringify(props), node.id]);
   }
 
@@ -2567,7 +2608,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       if (oldVal !== undefined && newVal !== undefined && JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
         if (!merged._changeHistory) merged._changeHistory = [];
         merged._changeHistory.push({ field, oldValue: oldVal, newValue: newVal, timestamp: new Date().toISOString() });
-        if (merged._changeHistory.length > 100) merged._changeHistory = merged._changeHistory.slice(-100);
+        if (merged._changeHistory.length > 10000) merged._changeHistory = merged._changeHistory.slice(-10000);
       }
     }
 
@@ -2623,7 +2664,7 @@ export class FamilyGraph implements FamilyGraphInterface {
       newValue: value,
       timestamp: new Date().toISOString(),
     });
-    if (props._changeHistory.length > 100) props._changeHistory = props._changeHistory.slice(-100);
+    if (props._changeHistory.length > 10000) props._changeHistory = props._changeHistory.slice(-10000);
 
     // 更新 mention 计数和最后提及时间
     props.mention_count = (props.mention_count || 0) + 1;
@@ -4688,8 +4729,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (withName < totalPersons) errors.push(`${totalPersons - withName} 人缺少姓名`);
 
     // ⑥ V3.2: 全部 person 节点有合法户籍 UUID
+    // V2.0: 接受 TXS-9位纯流水号 或 旧格式(A-00001等)
     const personsWithoutUUID = this.query(
-      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (uuid IS NULL OR uuid = '' OR uuid NOT LIKE '_-_____')"
+      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (uuid IS NULL OR uuid = '' OR (uuid NOT LIKE 'TXS-%' AND uuid NOT LIKE '_-_____'))"
     )[0]?.cnt || 0;
     checks.push({
       name: '全部节点有合法UUID', passed: personsWithoutUUID === 0,
