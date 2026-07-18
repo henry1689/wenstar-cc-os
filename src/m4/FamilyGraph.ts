@@ -2591,9 +2591,6 @@ export class FamilyGraph implements FamilyGraphInterface {
         }
       }
     }
-    if (updates.occupation && merged.dossier.basicInfo) {
-      merged.dossier.basicInfo.education = merged.dossier.basicInfo.education || updates.occupation;
-    }
     if (updates.relation_to_user && merged.dossier.relationMap) {
       merged.dossier.relationMap.relationToUser = updates.relation_to_user;
     }
