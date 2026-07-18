@@ -1,269 +1,149 @@
-# 太虚境户籍制落地蓝皮书 V2.0
+# 太虚境户籍制落地蓝皮书 V3.0
 
-> 法律依据：《太虚境户籍管理法 V1.1》（38条）  
-> 本文定位：第四效力层级——法律→本文→技术规范→代码  
-> 版本：V2.0  
-> 创建日期：2026-07-17  
-> 状态：Phase 1-4 已完成，Phase 5-7 规划中
-
----
-
-## 一、法律条款 → 技术实现映射
-
-### 1.1 已实现（Phase 1-4 成果）
-
-| 法律条款 | 法律要求 | 技术实现 | 状态 |
-|:--|------|------|:--:|
-| §5-§6 | TXS-ID 编码格式 | `nodes.uuid`，`_generateUUID()`，UNIQUE INDEX | ✅ |
-| §6.3 | 分类前缀 A-X, S | `nodes.category`，`_inferCategory()` 多源推断 | ✅ |
-| §15-§16 | Dossier 七分区 | `PersonDossier` 10 模块，含 basicInfo/imageTraits/relationMap/familyNetwork/health/lifeMilestones/socialCapital | ✅ |
-| §18 | PendingItem 置信入库 | `PAE.computeConfidence()`，`promotePendingItems()` | ✅ |
-| §20-§22 | Edges 法定定位 | edges 表，家族边+社交边，反向边自动补全 | ✅ |
-| §23 | 三级密级 | `nodes.security_level` 1/2/3 | ✅ |
-| §24 | 动态门阀 | `UUIDGatekeeper`，白名单三通道过滤 | ✅ |
-| §27-§28 | 实体生命周期 | `nodes.status` 待实现（见 Phase 5） | ⚠️ |
-| §32-§33 | 完整性守护 | `fgIntegrityGuard` 6/6 + `acquisitionIntegrityGuard` 6/6 | ✅ |
-| §35 | 效力层级 | 法律→redlines→蓝皮书→PAE→代码 | ✅ |
-
-### 1.2 待实现（Phase 5-7）
-
-| 法律条款 | 法律要求 | 需新增的代码 | 优先级 |
-|:--|------|------|:--:|
-| §4 | 分户治理：家庭户/社群户 | `family_gene` + `social_group_genes` 列 | 🔴 |
-| §7 | 社团动态拓展 | `social_group_genes` BFS 自动聚合 | 🔴 |
-| §8 | TXS-ID 历史编号溯源 | `nodes.legacy_ids` 列 | 🔴 |
-| §13 | entity_source 六类来源 | `nodes.entity_source` 列 | 🔴 |
-| §27-§28 | 四档实体状态自动转换 | `nodes.status` 列 + `StatusAutoManager` | 🟡 |
-| §17 | 系统只读档案原则 | PFC/ConstraintValidator 强制读 dossier | 🟡 |
-| §19 | 档案人工异议机制 | `ConflictDetector` 升级为人工复核 | 🟢 |
-| §24-§25 | 授权凭证 + 用户数据主权 | `AuthorizationCredential` 类 | 🟢 |
-| §14 | 交互协议档案 | `dossier.interactionProtocol` 子对象 | 🟡 |
-| §26 | 调取审计日志 | `audit_log` 表 | 🟢 |
+> 法律依据：《太虚境户籍管理法 V2.0》（41条）
+> 本文定位：第四效力层级——法律→红线→本文→PAE→代码
+> 版本：V3.0（V5迁移配套版）
+> 日期：2026-07-18
 
 ---
 
-## 二、nodes 表全字段定义（目标态）
+## 一、户籍登记表 + 人生卷宗 双分架构
 
-```
-nodes 表（身份证卡面 + 法定不变属性）:
-┌──────────────────┬──────────┬─────────────────────────────────┐
-│ 列名              │ 类型     │ 说明                            │
-├──────────────────┼──────────┼─────────────────────────────────┤
-│ id               │ TEXT PK  │ SQLite 内部主键                  │
-│ type             │ TEXT     │ 'person'/'object'/'place' 等    │
-│ name             │ TEXT     │ 官方本名 (official_name)         │
-│ aliases          │ TEXT     │ JSON 别名数组 (alias_list)       │
-│ uuid             │ TEXT UQ  │ TXS-ID 法定身份证号               │
-│ category         │ CHAR(1)  │ A/B/C/D/E/F/G/H/X/S              │
-│ entity_source    │ TEXT     │ real/ai/roleplay/fictional/       │
-│                  │          │ historical/placeholder            │
-│ status           │ TEXT     │ active/dormant/archived/deceased  │
-│ security_level   │ INTEGER  │ 1公开/2内部/3私密                │
-│ family_gene      │ TEXT     │ 家族血脉码 "FA01"                │
-│ social_group_genes│ TEXT    │ 社团码 "CO01|SC01" (|分隔)       │
-│ legacy_ids       │ TEXT     │ JSON 历史 TXS-ID 数组            │
-│ circle_level     │ INTEGER  │ 圈层等级 (deprecated, 调试期=0)   │
-│ tags             │ TEXT     │ JSON 标签数组                     │
-│ properties       │ TEXT     │ JSON 完整人事档案 (PersonDossier) │
-│ created_at       │ TEXT     │ ISO 创建时间                     │
-│ updated_at       │ TEXT     │ ISO 更新时间                     │
-└──────────────────┴──────────┴─────────────────────────────────┘
-```
+### 1.1 户籍登记表（结构化固定表格）
+
+存储位置：`nodes` 行级列 + `dossier.basicInfo` + `dossier.relationMap` 当前快照。
+
+| 字段 | 存储位置 | 允许空 | 说明 |
+|------|---------|:--:|------|
+| TXS-ID | nodes.uuid | ❌ | 终身不变，9位流水号 |
+| 法定姓名 | nodes.name | ✅ | 只存本名，不存关系称谓 |
+| 别名列表 | nodes.aliases | ✅ | JSON数组，含昵称、曾用名 |
+| 实体本源类型 | nodes.entity_source | ❌ | real/ai/fictional/historical/placeholder |
+| 性别 | dossier.basicInfo.gender | ✅ | 待采集 |
+| 出生年份 | dossier.basicInfo.birthYear | ✅ | 待采集 |
+| 出生地 | dossier.basicInfo.birthPlace | ✅ | 待采集 |
+| 所属家庭户 | nodes.family_gene | ✅ | FA01，edges BFS 分配 |
+| 所属社团 | nodes.social_group_genes | ✅ | CO01/SC01/WW，edges BFS 分配 |
+| 与用户关系 | dossier.relationMap.relationToUser | ✅ | 母亲/同事/朋友... |
+| 实体状态 | nodes.status | ❌ | active/dormant/archived/deceased |
+| 安全密级 | nodes.security_level | ❌ | 1公开/2内部/3私密 |
+| 立户时间 | nodes.created_at | ❌ | ISO时间戳 |
+| 兜底字段 | dossier.misc | ✅ | 自由格式JSON |
+
+🔴 空白属于合法在册状态。未采集到的信息留空，不编造，不推测。公安不会凭空填写猜测内容。
+
+### 1.2 人生卷宗（无限增量时序记录）
+
+存储位置：`dossier.imageTraits` + `dossier.personalityPrefs` + `dossier.lifeMilestones` + `conversations` 表 + `_changeHistory` + `dossier.boundDocuments`
+
+| 板块 | 存储 | 规则 |
+|------|------|------|
+| 固有完整人设档案 | dossier.imageTraits / personalityPrefs / health | PAE高置信入库，碎片闲聊只进PendingItem |
+| 时序人生履历 | dossier.lifeMilestones / lifeResume | 时间排序，每条绑定佐证索引 |
+| 全时序对话归档 | conversations 表 | 按 belong_entity_uuid 归拢，只增不删 |
+| 全生命周期变更流水 | _changeHistory + 归档分表 | 永久留存，无上限 |
+| 附属典籍卷宗 | dossier.boundDocuments | 双向绑定 TXJ 典籍 |
+
+🔴 卷宗只增不删铁律：任何历史记录禁止删除、覆盖、篡改。所有修改以新增记录形式追加。`_changeHistory` 无存储上限。
 
 ---
 
-## 三、Phase 5 — 列级补齐（entity_source / status / legacy_ids / family_gene / social_group_genes）
+## 二、UUID 编码规范（V2.0）
 
-### 3.1 新增列
+### 格式：`TXS-{9位自增流水号}`
 
-ALTER TABLE 幂等迁移，所有列有合理默认值：
+分类信息完全移入 `nodes.category` 可变列。分类变了 → 改 category 列 → TXS-ID 不动。
 
-| 列 | 默认值 | 说明 |
-|------|--------|------|
-| `entity_source` | `'placeholder'` | 登记时必须指定，存量迁移时根据已有数据推断 |
-| `status` | `'active'` | 存量全部 active |
-| `legacy_ids` | `'[]'` | 空数组，X 类升级时追加旧 ID |
-| `family_gene` | `NULL` | 由 `_rebuildGroupGenes()` BFS 填充 |
-| `social_group_genes` | `'WW'` | 🔴 法第三条第2款——不可为空，自由人默认标记 |
-
-### 3.2 存量迁移规则 (migrateToV4)
-
-```
-entity_source 推断:
-  有 relation_to_user + 有 family edge → 'real'
-  无 relation_to_user + name 含角色名模式 → 'fictional'
-  name = '玉瑶' → 'ai'
-  name 含 '妈妈/爸爸/老公/姐姐/妹妹' 等亲属单字 → 'real'
-  name 为占位泛称('同事/客户/老板/朋友') → 'placeholder'
-  默认 → 'real'
-
-status:
-  全部 → 'active'
-
-legacy_ids:
-  全部 → '[]'
-
-family_gene:
-  edges BFS(母/父/子/配偶/兄弟) → 连通分量 → FA01/FA02/...
-
-social_group_genes:
-  edges BFS(同事/同学/商业边) → 连通分量 → CO01/SC01/...
-  无任何社团 → 'WW'
-```
-
-### 3.3 新增 `_rebuildGroupGenes()` 方法
-
-双轮 BFS 全量重建，幂等：
-
-```
-Round 1: FA 家族码
-  边: mother_of/father_of/child_of/sibling_of/spouse_of
-  继承: child 继承 parent 的 FA
-  婚入: spouse_of → 继承配偶的 FA
-
-Round 2: 社会社团码
-  边: colleague_of/boss_of/subordinate_of → CO
-  边: classmate_of → SC  
-  边: client_of/partner_of/operated_by → BU
-  无边 → 保持 WW
-```
-
-### 3.4 `fgIntegrityGuard` 扩展至第 11 项
-
-| # | 检查项 | 不通过后果 |
+| 分类 | 含义 | 判定来源 |
 |:--|------|------|
-| ⑦ | 全部节点有 entity_source | 降级运行 |
-| ⑧ | 全部节点有合法 status | 降级运行 |
-| ⑨ | family_gene 与 edges 一致性 | edges BFS 重写 |
-| ⑩ | social_group_genes 非空（含 WW） | 补全 WW |
-| ⑪ | node 有 family_edge → category = A | 自动修正 |
+| A | 亲属 | edges(家族边←→'我') |
+| B | 职场 | edges(同事边←→'我') 或 relation 标签 |
+| C | 泛社交朋友 | edges 或 relation 标签 |
+| D | 校园基础 | edges 或 relation 标签 |
+| E | 商业合作 | edges 或 relation 标签 |
+| F | 竞争/对立 | edges 或 relation 标签 |
+| G | 未分类/陌生人 | 默认 |
+| H | 超自然/虚构/历史 | 手动标注 |
+| X | 亲密伴侣 | relation 标签 或 热力≥0.8升级 |
+| S | 系统实体 | 固定 |
 
-### 3.5 改动文件
+### 旧号兼容
 
-| 文件 | 改动 |
+旧版带前缀 UUID（如 `A-00003`）全部存入 `nodes.legacy_ids` 数组。`getEntityByUUID()` 先匹配当前 TXS-ID，未命中则遍历 legacy_ids 重定向。
+
+---
+
+## 三、name 列标准化
+
+### 规则
+
+| 规则 | 说明 |
 |------|------|
-| `FamilyGraph.ts` | `_setupTables()`: CREATE TABLE 加 5 列；`migrateToV4()`: 存量迁移；`_rebuildGroupGenes()`: 双轮 BFS；`fgIntegrityGuard`: 5 项扩展 |
-| `types/graph.ts` | `FamilyGraph` 接口新增 `_rebuildGroupGenes` |
+| name 只存法定本名 | "王全芬""熊勇""徐诗雨" |
+| 本名未知时允许留空 | 不填入关系称谓 |
+| 关系称谓在 edges 中 | "妈妈" = mother_of 边，"老公" = spouse_of 边 |
+| 曾用名/昵称/称谓别名存 aliases | ["芬姐","妈妈","阿姨"] |
+| alias 数组自动去重 | 同一实体多称谓合并 |
+
+### fgIntegrityGuard 校验
+
+name 列出现关系称谓（单字亲属词：妈/爸/姐/妹/哥/弟/儿/女/夫/妻等）→ 提示修正。
 
 ---
 
-## 四、Phase 6 — 功能层补齐
+## 四、entity_source 五类
 
-### 4.1 StatusAutoManager（`src/m4/StatusAutoManager.ts`）
+| 来源 | 标识 | 治理规则 |
+|------|:--|------|
+| real | 现实真实人物 | AI不编造，模糊猜测归PendingItem |
+| ai | 原生AI人格 | 基线人设锁定，对话不覆盖 |
+| fictional | 虚构/影视/超自然 | 基础设定可导入，交互经历归档 |
+| historical | 真实历史人物 | 正史锁定，仅归档交互内容 |
+| placeholder | 占位泛称 | 匹配实名后合并，≥3次会晤自动升级 |
 
-职责：根据 last_mentioned 时间自动降级实体状态。
+### 占位实体自动升级
 
-```
-规则:
-  active → dormant:  last_mentioned < 90天前
-  dormant → archived: last_mentioned < 365天前
-  dormant → active:   被提及或对话时
-  archived → active:  仅手动操作
-  deceased:           不可逆，不可自动变更
-
-触发:
-  每次 fgIntegrityGuard 启动时检查
-  每次 getPersonProfile 时顺带检查该实体
-```
-
-### 4.2 交互协议档案（Dossier 扩展）
-
-在 `dossier.relationMap` 下新增子对象：
-
-```typescript
-interactionProtocol: {
-  addressForm: string;       // "叫名字"/"叫姐"/"叫阿姨"/"叫老板"
-  interactionTone: string;   // "formal"/"casual"/"intimate"/"deferential"
-  topicBounds: string[];     // ["工作","家庭","不谈政治"]
-  roleplayPermission: 'allow' | 'deny' | 'ask';
-  exposeLevel: 1 | 2 | 3;   // 向 LLM 暴露信息的等级
-}
-```
-
-### 4.3 系统只读档案硬约束
-
-在 `ConstraintValidator.ts` 中强化——人物身份、性格、关系判定**只读 dossier 结构化字段**，不从对话碎片推导：
-
-```typescript
-// 现有: 用 familyContext（来自 FG）→ ✅ 正确
-// 新增: 人格一致性校验——LLM 回复中的人物描述 vs dossier 档案
-// 冲突时 → 以 dossier 为准 → 存入 conflicts[]
-```
-
-### 4.4 授权凭证（`src/m4/AuthorizationCredential.ts`）
-
-```typescript
-class AuthorizationCredential {
-  credentialId: string;
-  targetUUID: string;       // 允许查阅的 TXS-ID
-  allowedPartitions: string[]; // 可访问的档案分区
-  issuedAt: string;
-  expiresAt: string;        // 会话结束自动作废
-}
-```
+placeholder 被独立会晤 ≥ 3 次或用户补充真名 → 自动触发合并流程 → entity_source 更新。
 
 ---
 
-## 五、Phase 7 — 治理层补齐
+## 五、废除角色扮演 → 实体会晤
 
-### 5.1 档案人工异议流程
+### 核心转变
 
-在 `ConflictDetector` 中新增人工复核通道：
+旧：玉瑶扮演所有人。新：每个人用自己的身份直接对话。
 
-```
-检测到冲突 → 生成冲突工单 → 推送用户 → 等待人工确认
-  → 确认: 更正档案 + 标注"人工异议修正"
-  → 拒绝: 保留原档案 + 关闭工单
-  → 超时: 自动关闭，保留原档案
-```
+| 旧模式 | 新模式 |
+|--------|--------|
+| 检测扮演意图 | 检测会晤目标实体 |
+| 创建RP分支覆盖FG | 加载目标实体dossier |
+| 注入扮演规则 | 门阀设定目标TXS-ID |
+| 玉瑶扮别人 | 目标实体本人回复 |
+| 退出角色恢复 | 切换会晤对象 |
 
-### 5.2 调取审计日志
+### 代码层面
 
-新建 `audit_log` 表：
-
-```sql
-CREATE TABLE audit_log (
-  id TEXT PRIMARY KEY,
-  operation TEXT NOT NULL,      -- 'access'|'modify'|'merge'|'authorize'
-  operator_uuid TEXT,            -- 操作者 TXS-ID
-  target_uuid TEXT,              -- 被操作实体 TXS-ID
-  partition TEXT,                -- 被访问的档案分区
-  credential_id TEXT,            -- 授权凭证编号
-  detail TEXT,
-  created_at TEXT NOT NULL
-);
-```
+V5: 删除 entity_source 中的 roleplay 枚举。
+下一轮: 彻底删除 ChatEntry 扮演检测、FamilyGraphRoleBranch、setFamilyGraphOverride、rpJustExited、角色扮演 guard message、roleplay personas。
 
 ---
 
-## 六、实施顺序
+## 六、实施路线图
 
 ```
-Phase 5 (列级补齐)          ← 🔴 立即做，4天
-  ├── ALTER TABLE 5列
-  ├── migrateToV4()
-  ├── _rebuildGroupGenes()
-  └── fgIntegrityGuard 5→11项
-
-Phase 6 (功能层)            ← 🟡 5-7天后
-  ├── StatusAutoManager
-  ├── 交互协议档案
-  ├── 系统只读档案
-  └── AuthorizationCredential
-
-Phase 7 (治理层)            ← 🟢 10天后
-  ├── 人工异议流程
-  └── 调取审计日志
+Phase 1-4   ✅ 已完成  UUID底座 + PAE + 门阀 + 卷宗 + 热力
+Phase 5     ✅ 已完成  5列补齐 + gene码 + 10项守护
+Phase V5    🔴 当前    UUID去前缀 + name清洗 + 卷宗永久 + dossier扩展
+Phase 6     待实施    交互协议档案 + 系统只读档案 + 授权凭证
+Phase 7     待实施    档案异议 + 审计日志
+Phase 8     待实施    roleplay代码彻底删除 + 实体会晤框架
 ```
 
 ---
 
 ## 七、不改的部分
 
-- ❌ UUID 编号体系
-- ❌ edges 表结构
-- ❌ PAE 核心引擎
-- ❌ UUIDGatekeeper
-- ❌ RelationHeatTracker
-- ❌ M1/M3/M5 核心模块
-- ❌ chat.ts / server.ts 主流程
+- edges 表结构
+- PAE / UUIDGatekeeper / RelationHeatTracker
+- M1/M3/M4/M5 核心模块
+- conversation 表结构（仅追加 belong_entity_uuid 列）
