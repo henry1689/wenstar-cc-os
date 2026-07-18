@@ -1,608 +1,269 @@
-# 🏛️ 太虚境户籍制实体管理+动态门阀白名单 — 蓝皮书
+# 太虚境户籍制落地蓝皮书 V2.0
 
-> **文档类型**：顶层架构设计 + 使用说明  
-> **版本**：V1.1  
-> **创建日期**：2026-07-17  
-> **最后更新**：2026-07-17  
-> **状态**：Phase 1 完成，Phase 2-4 待实施  
-> **定位**：WenStar OS 天权脑中枢的底层专利级架构，人机共享最高权限文档  
-> **关联制度**：[fg-kinship-redlines.md §十八](redlines/fg-kinship-redlines.md) · [pae-profile-acquisition-engine.md](pae-profile-acquisition-engine.md)
+> 法律依据：《太虚境户籍管理法 V1.1》（38条）  
+> 本文定位：第四效力层级——法律→本文→技术规范→代码  
+> 版本：V2.0  
+> 创建日期：2026-07-17  
+> 状态：Phase 1-4 已完成，Phase 5-7 规划中
 
 ---
 
-## ⛔ 顶层设计声明（最高等级保护）
+## 一、法律条款 → 技术实现映射
 
-### 本系统的地位
+### 1.1 已实现（Phase 1-4 成果）
 
-**户籍制 UUID 体系 + 动态门阀白名单是 WenStar OS 的最高等级架构设计之一。**
+| 法律条款 | 法律要求 | 技术实现 | 状态 |
+|:--|------|------|:--:|
+| §5-§6 | TXS-ID 编码格式 | `nodes.uuid`，`_generateUUID()`，UNIQUE INDEX | ✅ |
+| §6.3 | 分类前缀 A-X, S | `nodes.category`，`_inferCategory()` 多源推断 | ✅ |
+| §15-§16 | Dossier 七分区 | `PersonDossier` 10 模块，含 basicInfo/imageTraits/relationMap/familyNetwork/health/lifeMilestones/socialCapital | ✅ |
+| §18 | PendingItem 置信入库 | `PAE.computeConfidence()`，`promotePendingItems()` | ✅ |
+| §20-§22 | Edges 法定定位 | edges 表，家族边+社交边，反向边自动补全 | ✅ |
+| §23 | 三级密级 | `nodes.security_level` 1/2/3 | ✅ |
+| §24 | 动态门阀 | `UUIDGatekeeper`，白名单三通道过滤 | ✅ |
+| §27-§28 | 实体生命周期 | `nodes.status` 待实现（见 Phase 5） | ⚠️ |
+| §32-§33 | 完整性守护 | `fgIntegrityGuard` 6/6 + `acquisitionIntegrityGuard` 6/6 | ✅ |
+| §35 | 效力层级 | 法律→redlines→蓝皮书→PAE→代码 | ✅ |
 
-它与 FG 家族图谱、黑钻知识库同级，属于系统的"骨骼"——不是功能模块，不是可插拔插件，而是数据模型和检索机制的根本约定。
+### 1.2 待实现（Phase 5-7）
 
-### 与 DNA 编码系统的关系：车间递进，互不冲突
-
-DNA 编码系统（M1）遵循**车间递进**原则——数据经过哪个"车间"，就加上哪个车间的字段。正如 `DNAEncoder.generateSubId(rootId, 'M02', 3)` 生成 `原根码.M02.003` 的递进编码，UUID 户籍编号体系也是这个模式：
-
-```
-DNA 编码管道（M1）:
-  原始输入 → L0 路由 → L1 序列化 → L2 内容提取 → L3 实体标注
-  每经过一个车间 → 追加该车间的字段
-
-户籍 UUID 体系（FG/M4）:
-  person 实体 → 户籍车间 → 追加 uuid + category 字段
-  关系边 → 关系车间 → 追加 relation + properties
-  对话数据 → 归档车间 → 追加 belong_entity_uuid（Phase 3）
-```
-
-**二者不冲突的原因**：
-
-| 维度 | DNA 编码（M1） | 户籍 UUID（FG/M4） |
-|------|:--:|:--:|
-| 职责 | 消息内容的特征提取 | 实体身份的永久标识 |
-| 生命周期 | 每条消息独立编码，用完即弃 | 实体一经登记，UUID 永久不变 |
-| 追加时机 | M1 阶段 | 实体创建时（FG 节点写入） |
-| 字段作用域 | `entity_genes[].name` | `nodes.uuid` + `nodes.category` |
-
-DNA 的 `entity_genes` 输出的是"这段对话提到了谁"，户籍 UUID 回答的是"这个人是谁"。前者是消息级元数据，后者是实体级身份标识。**两者叠加使用，不替代、不重复、不冲突。**
-
-### 最高保护等级铁律
-
-> 🔴 **修改本体系任何组件前，必须通过 `fgIntegrityGuard` 6/6 项 + 人工审核**
-> 🔴 **本体系的 UUID 编号规则、分类体系、门阀逻辑不可降级或弱化**
-> 🔴 **`migrateToV3()` 是幂等迁移——重复执行不影响已有数据**
-> 🔴 **任何系统升级不得删除或绕过 UUID 字段和门阀检查**
+| 法律条款 | 法律要求 | 需新增的代码 | 优先级 |
+|:--|------|------|:--:|
+| §4 | 分户治理：家庭户/社群户 | `family_gene` + `social_group_genes` 列 | 🔴 |
+| §7 | 社团动态拓展 | `social_group_genes` BFS 自动聚合 | 🔴 |
+| §8 | TXS-ID 历史编号溯源 | `nodes.legacy_ids` 列 | 🔴 |
+| §13 | entity_source 六类来源 | `nodes.entity_source` 列 | 🔴 |
+| §27-§28 | 四档实体状态自动转换 | `nodes.status` 列 + `StatusAutoManager` | 🟡 |
+| §17 | 系统只读档案原则 | PFC/ConstraintValidator 强制读 dossier | 🟡 |
+| §19 | 档案人工异议机制 | `ConflictDetector` 升级为人工复核 | 🟢 |
+| §24-§25 | 授权凭证 + 用户数据主权 | `AuthorizationCredential` 类 | 🟢 |
+| §14 | 交互协议档案 | `dossier.interactionProtocol` 子对象 | 🟡 |
+| §26 | 调取审计日志 | `audit_log` 表 | 🟢 |
 
 ---
 
-## 目录
-
-- [⛔ 顶层设计声明](#顶层设计声明最高等级保护)
-- [一、核心理念：太虚境是一个真实的主观世界](#一核心理念太虚境是一个真实的主观世界)
-- [二、UUID 户籍编号体系](#二uuid-户籍编号体系)
-- [三、动态门阀白名单机制](#三动态门阀白名单机制)
-- [四、卷宗归档系统](#四卷宗归档系统)
-- [五、安全密级设计](#五安全密级设计)
-- [六、关系自动升级引擎](#六关系自动升级引擎)
-- [七、运行闭环（6 步）](#七运行闭环6-步)
-- [八、四大独创性代差优势](#八四大独创性代差优势)
-- [九、与现有系统的关系](#九与现有系统的关系)
-- [十、分阶段实施路线图](#十分阶段实施路线图)
-- [十一、使用说明（运维手册）](#十一使用说明运维手册)
-
----
-
-## 一、核心理念：太虚境是一个真实的主观世界
-
-### 1.1 世界观定位
-
-太虚境不是一个"角色扮演引擎"，而是一个**主观真实的平行世界**。在这个世界里：
-
-- **每一个实体都是常住居民**，不是临时创建的交互工具
-- **居民永久存在、持续成长**，对话只是"唤醒"居民进行交流，不是"创建角色"
-- **居民拥有完整的人生线**，档案随每次交互不断丰富
-- **居民之间的关系络是真实的户籍关系网**，不是临时的角色卡连线
-
-### 1.2 与市面上角色扮演框架的根本区别
-
-| 维度 | Character.AI / SillyTavern | 太虚境户籍制 |
-|------|--------------------------|-------------|
-| **实体生命周期** | 会话开始→创建，会话结束→销毁 | 永久居民，一经登记永不注销 |
-| **身份标识** | 临时卡片名，无唯一 ID | UUID 户籍编号（A-00001、B-00003...） |
-| **关系网络** | 角色之间互相孤立，A 不知道 B 存在 | 户籍图谱深度联动，社交行为受图谱约束 |
-| **权限隔离** | 独立文件夹/进程，物理割裂 | 单库+检索层动态门阀，逻辑隔离 |
-| **数据归档** | 对话结束后散落或无归档 | 每条数据自动归属对应的 UUID 卷宗 |
-| **拓展能力** | 必须预设角色卡 | 随口提及→即时分配 UUID→纳入户籍系统 |
-
-### 1.3 类比：公安户籍管理体系
-
-| 公安户籍 | 太虚境对应 | 说明 |
-|---------|----------|------|
-| 全国户籍总数据库 | **黑钻知识库** | 所有实体全部登记在册 |
-| 户口本 / 身份证号 | **UUID 编号** | 唯一身份标识，永久不变 |
-| 户籍关系网 | **人际关系图谱 (FG)** | 亲属、同事、朋友等全部关系 |
-| 办事权限安检 | **动态门阀** | 会话白名单控制能调取谁的卷宗 |
-| 卷宗归档 | **belong_entity_uuid** | 每条数据标记归属 UUID |
-
----
-
-## 二、UUID 户籍编号体系
-
-### 2.1 编号规则
+## 二、nodes 表全字段定义（目标态）
 
 ```
-UUID 格式: {分类前缀}-{5位流水号}
-
-分类前缀 (1 个大写字母):
-  A — 亲属 (Affinity)    例: A-00001 = 母亲
-  B — 同事 (Business)    例: B-00001 = 玉瑶（AI 助理）
-  C — 朋友 (Companion)   例: C-00001 = 大学室友
-  D — 同学 (Classmate)   例: D-00001 = 高中同学
-  E — 友商 (Enterprise)  例: E-00001 = 合作伙伴
-  F — 敌对 (Foe)         例: F-00001 = 竞争对手
-  G — 陌生人 (Guest)     例: G-00001 = 路人
-  H — 仙狐鬼异类 (Hypernatural) 例: H-00001 = 虚构/历史/神话人物
-  X — 情人 (Lover)        例: X-00001 = 伴侣/爱人（与亲属 A 严格区分）
-  S — 系统 (System)      例: S-00001 = 太虚境自身
-
-🔴 A 类铁律：A-亲属只能通过 edges 推断（mother_of/father_of/sibling_of 等←→'我'）。
-   文字标签（如"伴侣""姑姑""男朋友"）不能将任何人推入 A。text 只能产生 B-F、X、G。
-🔴 X 类铁律：X-情人通过①文字标签("伴侣"/"爱人"/"男朋友"等) ②热力自动升级(≥0.8) 两种方式产生。
-   陌生人、同事、朋友均可升级为 X，但 A-亲属 不可降级为 X。
-
-流水号: 5 位数字，不足 5 位左侧补 0，自增不回收
-```
-
-### 2.2 编号分配规则
-
-| 场景 | 分类推断规则 |
-|------|-------------|
-| `relation_to_user` 含"母/父/兄/弟/姐/妹/儿/女/配偶/夫/妻"等 | → **A**（亲属） |
-| `relation_to_user` 含"同事/下属/上司/老板/员工/部"等 | → **B**（同事） |
-| `relation_to_user` 含"朋友/闺蜜/兄弟/知己"等 | → **C**（朋友） |
-| `relation_to_user` 含"同学/校友/老师/学生"等 | → **D**（同学） |
-| `relation_to_user` 含"客户/合作/合伙/供应商"等 | → **E**（友商） |
-| `relation_to_user` 含"敌人/对手/仇恨"等 | → **F**（敌对） |
-| `relation_to_user` 为空或"认识的人/陌生人"等 | → **G**（陌生人） |
-| 角色扮演角色 / 影视人物 / 神话 / 虚构 | → **H**（仙狐鬼异类） |
-| 系统自身 / AI 助理 | → **S**（系统） |
-
-**规则优先级**：relation_to_user > 角色扮演标记 > 默认（G）
-
-### 2.3 UUID 在系统中的位置
-
-```
-family_graph.db → nodes 表
-  ├── id            TEXT (SQLite 内部主键，现有 uid)
-  ├── uuid          TEXT UNIQUE (户籍编号，如 "A-00001")   ← Phase 1 新增
-  ├── category      CHAR(1) (分类前缀，如 "A")              ← Phase 1 新增
-  ├── name          TEXT (中文名)
-  ├── type          TEXT ('person' / 'object' / ...)
-  ├── aliases       TEXT (JSON 别名数组)
-  ├── properties    TEXT (JSON 完整档案)
-  └── ...
-```
-
-### 2.4 UUID 的强制关联规则
-
-> **铁律**：凡是被 FG 记录的信息，必须携带所属 UUID。
-
-| 数据位置 | UUID 关联方式 |
-|---------|-------------|
-| `nodes.properties`（人物档案） | `nodes.uuid` 列 |
-| `edges`（人际关系边） | `source_id` → `nodes.uuid`, `target_id` → `nodes.uuid` |
-| `conversations`（对话记录） | `belong_entity_uuid` 列 ← Phase 3 新增 |
-| `knowledge_base`（知识条目） | `belong_entity_uuid` 列 ← Phase 3 新增 |
-| `black_diamond`（黑钻沉淀） | `tags` 中包含 `uuid:xxx` |
-| `memories`（记忆片段） | `fg_entity_names` 已有 + `uuid` 补充 |
-
----
-
-## 三、动态门阀白名单机制
-
-### 3.1 设计哲学
-
-门阀是**检索层的安检闸口**，不是存储层的物理隔离。
-
-```
-底层存储：单一数据库，所有实体数据共存（简单、稳定）
-检索入口：UUIDGatekeeper 门阀过滤器（灵活、毫秒级切换）
-```
-
-### 3.2 门阀工作模型
-
-```
-用户说: "帮我找一下诗雨最近的情况"
-        │
-        ▼
-┌───────────────────────────────────────┐
-│          UUIDGatekeeper               │
-│                                       │
-│  当前白名单: [A-00002]  (徐诗雨)       │
-│                                       │
-│  HippocampalIndex.search("诗雨最近")   │
-│        │                               │
-│        ▼                               │
-│  原始结果: 500 条记忆片段               │
-│        │                               │
-│        ▼                               │
-│  filterByWhitelist(results, whitelist) │
-│        │                               │
-│        ▼                               │
-│  放行: 45 条 (属于 A-00002 + PUBLIC)    │
-│  拦截: 455 条 (属于 A-00001 母亲、     │
-│                A-00003 同事、          │
-│                B-00002 老板…)          │
-└───────────────────────────────────────┘
-```
-
-### 3.3 门阀规则
-
-```
-放行条件（满足任一即放行）:
-  ① 数据的 belong_entity_uuid ∈ 白名单 UUID 列表
-  ② 数据的安全密级 = 公开级 (security_level = 1)
-  ③ 数据无 belong_entity_uuid（历史数据，未知归属）
-
-拦截条件:
-  ① 数据的 belong_entity_uuid ∉ 白名单
-  ② 数据的安全密级 ≥ 内部级 (security_level ≥ 2)
-  ③ 白名单非空（空白名单 = 门阀未激活 = 全部放行）
-```
-
-### 3.4 场景化白名单管理
-
-| 场景 | 白名单内容 | 效果 |
-|------|----------|------|
-| **单人对话** | `[A-00002]` (徐诗雨) | 只检索诗雨的卷宗 → 不串扰 |
-| **多人同框** | `[A-00002, B-00003]` (诗雨+林土锋) | 临时开放两个 UUID → 会话结束收回 |
-| **角色扮演** | `[H-00005]` (影视角色) | 仅角色卷宗 → 不泄露真实亲友数据 |
-| **无白名单** | `[]` | 门阀未激活 → 全部放行（兼容旧模式） |
-
-### 3.5 门阀生命周期
-
-```
-会话创建 → UUIDGatekeeper.setSessionWhitelist([UUID])  // 设定白名单
-       ↓
-每轮对话 → 记忆检索 + 知识检索 → 门阀过滤 → 放行白名单内数据
-       ↓
-会话结束 → UUIDGatekeeper.clearSession()               // 权限立刻收回
+nodes 表（身份证卡面 + 法定不变属性）:
+┌──────────────────┬──────────┬─────────────────────────────────┐
+│ 列名              │ 类型     │ 说明                            │
+├──────────────────┼──────────┼─────────────────────────────────┤
+│ id               │ TEXT PK  │ SQLite 内部主键                  │
+│ type             │ TEXT     │ 'person'/'object'/'place' 等    │
+│ name             │ TEXT     │ 官方本名 (official_name)         │
+│ aliases          │ TEXT     │ JSON 别名数组 (alias_list)       │
+│ uuid             │ TEXT UQ  │ TXS-ID 法定身份证号               │
+│ category         │ CHAR(1)  │ A/B/C/D/E/F/G/H/X/S              │
+│ entity_source    │ TEXT     │ real/ai/roleplay/fictional/       │
+│                  │          │ historical/placeholder            │
+│ status           │ TEXT     │ active/dormant/archived/deceased  │
+│ security_level   │ INTEGER  │ 1公开/2内部/3私密                │
+│ family_gene      │ TEXT     │ 家族血脉码 "FA01"                │
+│ social_group_genes│ TEXT    │ 社团码 "CO01|SC01" (|分隔)       │
+│ legacy_ids       │ TEXT     │ JSON 历史 TXS-ID 数组            │
+│ circle_level     │ INTEGER  │ 圈层等级 (deprecated, 调试期=0)   │
+│ tags             │ TEXT     │ JSON 标签数组                     │
+│ properties       │ TEXT     │ JSON 完整人事档案 (PersonDossier) │
+│ created_at       │ TEXT     │ ISO 创建时间                     │
+│ updated_at       │ TEXT     │ ISO 更新时间                     │
+└──────────────────┴──────────┴─────────────────────────────────┘
 ```
 
 ---
 
-## 四、卷宗归档系统
+## 三、Phase 5 — 列级补齐（entity_source / status / legacy_ids / family_gene / social_group_genes）
 
-### 4.1 归档规则
+### 3.1 新增列
 
-所有新产生的数据，在产生瞬间立即归档到对应实体的卷宗下：
+ALTER TABLE 幂等迁移，所有列有合理默认值：
 
-```
-用户说: "诗雨最近在学烘焙"
-  → 对话记录 → conversations.belong_entity_uuid = "A-00002"
-  → 知识提取 → knowledge_base.belong_entity_uuid = "A-00002"
-  → 档案更新 → PAE 写入 → nodes.properties uuid = "A-00002"
-  → 黑钻沉淀 → black_diamond.tags = "uuid:A-00002"
-```
+| 列 | 默认值 | 说明 |
+|------|--------|------|
+| `entity_source` | `'placeholder'` | 登记时必须指定，存量迁移时根据已有数据推断 |
+| `status` | `'active'` | 存量全部 active |
+| `legacy_ids` | `'[]'` | 空数组，X 类升级时追加旧 ID |
+| `family_gene` | `NULL` | 由 `_rebuildGroupGenes()` BFS 填充 |
+| `social_group_genes` | `'WW'` | 🔴 法第三条第2款——不可为空，自由人默认标记 |
 
-### 4.2 归档字段定义
-
-| 表名 | 新增列 | 类型 | 说明 |
-|------|--------|------|------|
-| `conversations` | `belong_entity_uuid` | TEXT | 该条对话属于哪个实体 |
-| `knowledge_base` | `belong_entity_uuid` | TEXT | 该条知识属于哪个实体 |
-| `memories` | （已有 `fg_entity_names`） | TEXT | 逗号分隔的 UUID 列表 |
-| `black_diamond` | （已有 `tags`） | TEXT | 追加 `uuid:xxx` 格式 |
-
-### 4.3 归属判定逻辑
+### 3.2 存量迁移规则 (migrateToV4)
 
 ```
-对话中: 根据当前会话的主体 UUID 自动归档
-知识提取: 根据知识内容中提到的人名 → 查 FG → 取 UUID → 归档
-PAE 采集: 提取到的人物档案信息 → 直接写入该人物的 dossier
+entity_source 推断:
+  有 relation_to_user + 有 family edge → 'real'
+  无 relation_to_user + name 含角色名模式 → 'fictional'
+  name = '玉瑶' → 'ai'
+  name 含 '妈妈/爸爸/老公/姐姐/妹妹' 等亲属单字 → 'real'
+  name 为占位泛称('同事/客户/老板/朋友') → 'placeholder'
+  默认 → 'real'
+
+status:
+  全部 → 'active'
+
+legacy_ids:
+  全部 → '[]'
+
+family_gene:
+  edges BFS(母/父/子/配偶/兄弟) → 连通分量 → FA01/FA02/...
+
+social_group_genes:
+  edges BFS(同事/同学/商业边) → 连通分量 → CO01/SC01/...
+  无任何社团 → 'WW'
 ```
+
+### 3.3 新增 `_rebuildGroupGenes()` 方法
+
+双轮 BFS 全量重建，幂等：
+
+```
+Round 1: FA 家族码
+  边: mother_of/father_of/child_of/sibling_of/spouse_of
+  继承: child 继承 parent 的 FA
+  婚入: spouse_of → 继承配偶的 FA
+
+Round 2: 社会社团码
+  边: colleague_of/boss_of/subordinate_of → CO
+  边: classmate_of → SC  
+  边: client_of/partner_of/operated_by → BU
+  无边 → 保持 WW
+```
+
+### 3.4 `fgIntegrityGuard` 扩展至第 11 项
+
+| # | 检查项 | 不通过后果 |
+|:--|------|------|
+| ⑦ | 全部节点有 entity_source | 降级运行 |
+| ⑧ | 全部节点有合法 status | 降级运行 |
+| ⑨ | family_gene 与 edges 一致性 | edges BFS 重写 |
+| ⑩ | social_group_genes 非空（含 WW） | 补全 WW |
+| ⑪ | node 有 family_edge → category = A | 自动修正 |
+
+### 3.5 改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `FamilyGraph.ts` | `_setupTables()`: CREATE TABLE 加 5 列；`migrateToV4()`: 存量迁移；`_rebuildGroupGenes()`: 双轮 BFS；`fgIntegrityGuard`: 5 项扩展 |
+| `types/graph.ts` | `FamilyGraph` 接口新增 `_rebuildGroupGenes` |
 
 ---
 
-## 五、安全密级设计
+## 四、Phase 6 — 功能层补齐
 
-### 5.1 三级密级
+### 4.1 StatusAutoManager（`src/m4/StatusAutoManager.ts`）
 
-| 级别 | 数值 | 名称 | 内容范围 | 访问权限 |
-|------|:--:|------|---------|---------|
-| **1 级** | 1 | 公开级 | 对外身份、岗位、基础性格 | 关系网内所有实体可查阅 |
-| **2 级** | 2 | 内部级 | 工作方案、业务沟通、工作记忆 | 仅同部门协作实体 + 临时授权 |
-| **3 级** | 3 | 私密级 | 私人回忆、亲密对话、私密体征 | 仅双方 UUID 可访问，最高安全等级 |
-
-### 5.2 双重校验公式
+职责：根据 last_mentioned 时间自动降级实体状态。
 
 ```
-访问允许 = (UUID ∈ 白名单) AND (密级 ≤ 白名单授权等级)
+规则:
+  active → dormant:  last_mentioned < 90天前
+  dormant → archived: last_mentioned < 365天前
+  dormant → active:   被提及或对话时
+  archived → active:  仅手动操作
+  deceased:           不可逆，不可自动变更
+
+触发:
+  每次 fgIntegrityGuard 启动时检查
+  每次 getPersonProfile 时顺带检查该实体
 ```
 
-**示例**：
-- 玉瑶(B-00001)要查看诗雨(A-00002)的公开档案 → 白名单含 A-00002 + 密级1 → ✅ 允许
-- 林土锋(B-00003)要查看诗雨(A-00002)的私密回忆 → 白名单无 A-00002 → ❌ 拒绝
-- 诗雨(A-00002)的公开档案对所有人可见 → 密级1 → ✅ 任何白名单 UUID 均可查
+### 4.2 交互协议档案（Dossier 扩展）
 
-### 5.3 密级设置规则
-
-```
-默认密级:
-  新创建实体 → security_level = 1 (公开级)
-  
-手动升级:
-  用户标记某条数据为"私密" → security_level = 3
-  用户标记某人数据为"内部" → security_level = 2
-
-自动降级:
-  公开级数据永不降级
-  内部级数据在脱敏后（人名替换）可降为公开级
-  私密级数据永不降级（除非用户明确删除）
-```
-
----
-
-## 六、关系自动升级引擎
-
-### 6.1 设计思路
-
-既然是真实的主观世界，人与人之间的关系不应是静态的。"多聊天就变得更亲密"是人类社会关系演化的基本规律。
-
-### 6.2 热力计分模型
-
-```
-RelationHeatScore = 频次因子 × 情绪因子 × 时间衰减因子
-
-频次因子: 最近 30 天内提及/对话该实体的次数 / 30 (最大 1.0)
-情绪因子: 平均 intimacy 感知值 (来自 Perception24D，范围 -1~1，映射到 0~2)
-时间衰减: 最近一次交互距今 > 7 天 → ×0.9, > 30 天 → ×0.7
-```
-
-### 6.3 升级阈值
-
-| 热力值 | 关系状态 | 效果 |
-|--------|---------|------|
-| 0.0 ~ 0.2 | 疏远 | 基础称谓，无特殊行为 |
-| 0.2 ~ 0.5 | 友好 | 称谓带亲切感，门阀放行更多公开数据 |
-| 0.5 ~ 0.8 | 信任 | 内部级数据可查，言辞更亲近 |
-| 0.8 ~ 1.0 | 亲密 | 私密级数据授权，最高信任度 |
-| > 1.0 | 灵魂伴侣 | 全密级开放，专属语调 |
-
-### 6.4 关系升级边界
-
-> **铁律**：关系升级只影响门阀的数据访问权限和称谓语气，**不改变关系边的客观事实**。母亲永远是 `mother_of`，不会因为"多聊天"变成朋友。
-
----
-
-## 七、运行闭环（6 步）
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    太虚境户籍运行闭环                      │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ① 新增人物                                              │
-│     分配 UUID → 录入 FG 图谱 → 创建标准户籍档案          │
-│                                                         │
-│  ② 开启会话                                              │
-│     设定白名单 → 门阀挂载海马体检索入口                   │
-│                                                         │
-│  ③ 检索记忆                                              │
-│     仅放行白名单 UUID 卷宗 + PUBLIC → 其余全部拦截        │
-│                                                         │
-│  ④ 对话交互                                              │
-│     所有新增数据自动标记 belong_entity_uuid               │
-│     PAE 自动采集人物档案                                  │
-│                                                         │
-│  ⑤ 切换对象                                              │
-│     即时修改白名单 → 门阀动态切换                         │
-│                                                         │
-│  ⑥ 会话结束                                              │
-│     临时跨 UUID 授权全部失效 → 户籍数据原样封存           │
-│     关系热力更新 → 达到阈值 → 自动升级关系状态            │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 八、四大独创性代差优势
-
-### 8.1 设计理念：临时实例 vs 完整平行世界
-
-| | 市面产品 | 太虚境 |
-|--|---------|--------|
-| 实体定位 | 角色卡片 = 临时交互工具 | 常住居民 = 永久存在、持续成长 |
-| 生命周期 | 会话创建→销毁 | 一经登记，永不注销 |
-| 世界观 | 每次对话是一个独立沙箱 | 所有对话在同一个主观真实世界中 |
-
-### 8.2 隔离机制：物理割裂 vs 动态门阀
-
-| | 市面产品 | 太虚境 |
-|--|---------|--------|
-| 存储方式 | 独立文件夹/独立向量库/独立进程 | 底层共库，单一 SQLite |
-| 隔离方式 | 存储层物理隔离 | 检索层逻辑隔离（UUIDGatekeeper） |
-| 灵活性 | 切换僵化，多角色联动极复杂 | 毫秒级切换，门阀动态调整 |
-| 维护成本 | 高（每个角色存一份向量库） | 低（共库+门阀，bug 面积极小） |
-
-### 8.3 关联能力：互相孤立 vs 户籍图谱深度联动
-
-| | 市面产品 | 太虚境 |
-|--|---------|--------|
-| 角色间关系 | 无关联，A 不知道 B 存在 | 自带完整社会关系网 |
-| 行为推演 | 无，依赖 LLM 随机生成 | 可依托关系网自主推演 |
-| 权限边界 | 无，要么全开要么全关 | 门阀控制，只知公开属性 |
-
-### 8.4 拓展边界：预设角色 vs 无限即兴生成
-
-| | 市面产品 | 太虚境 |
-|--|---------|--------|
-| 新增角色 | 必须手动创建角色卡 | 随口提及→分配 UUID→纳入系统 |
-| 角色定制 | 受限于预设模板 | 完全跟随用户主观意志 |
-
----
-
-## 九、与现有系统的关系
-
-### 9.1 系统关系图
-
-```
-┌─────────────────────────────────────────────────────┐
-│              WenStar OS 天权脑中枢                    │
-│                                                     │
-│  ┌─────────────┐   ┌─────────────────────┐          │
-│  │ FamilyGraph │◄──│ UUIDGatekeeper      │          │
-│  │ (户籍图谱)  │   │ (动态门阀)           │          │
-│  │             │   │                     │          │
-│  │ nodes.uuid  │   │ whitelist[]         │          │
-│  │ category    │   │ filterByWhitelist() │          │
-│  │ security_lvl│   │ setSession()        │          │
-│  └──────┬──────┘   └────────┬────────────┘          │
-│         │                    │                       │
-│         ▼                    ▼                       │
-│  ┌──────────────────────────────────────┐           │
-│  │        ProfileAcquisitionEngine      │           │
-│  │        (PAE 档案自动采集)            │           │
-│  │        采集时同步写入 UUID            │           │
-│  └──────────────────────────────────────┘           │
-│         │                    │                       │
-│         ▼                    ▼                       │
-│  ┌──────────┐   ┌──────────────────────┐           │
-│  │ chat.ts  │   │ PFC (前额叶)          │           │
-│  │ 门阀生   │   │ 消费门阀结果          │           │
-│  │ 命周期   │   │ 约束校验增强          │           │
-│  └──────────┘   └──────────────────────┘           │
-│                                                     │
-│  不改: M1/M3/M5 核心模块, LLM Provider             │
-└─────────────────────────────────────────────────────┘
-```
-
-### 9.2 各组件改动
-
-| 组件 | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
-|------|:--:|:--:|:--:|:--:|
-| `FamilyGraph.nodes` | +uuid, +category | — | — | +security_level |
-| `FamilyGraph.edges` | — | — | — | — |
-| `fusion_memory.conversations` | — | — | +belong_entity_uuid | — |
-| `fusion_memory.knowledge_base` | — | — | +belong_entity_uuid | — |
-| `UUIDGatekeeper` (新建) | — | ✅ 完整类 | — | — |
-| `HippocampalIndex` | — | +whitelist参数 | — | — |
-| `KnowledgeContextBuilder` | — | +门阀调用 | — | — |
-| `chat.ts` | — | 白名单生命周期 | +归档逻辑 | — |
-| `PAE` | — | — | +UUID 写入 | — |
-| `RelationHeatTracker` (新建) | — | — | — | ✅ |
-
----
-
-## 十、分阶段实施路线图
-
-### Phase 1：UUID 底座（当前阶段）🔴
-
-**目标**：给所有现有实体分配 UUID，不改变任何运行逻辑。
-
-```
-交付物:
-  ① nodes 表新增 uuid TEXT UNIQUE, category CHAR(1) 列
-  ② migrateToV3(): 现有 38 个实体自动生成 UUID
-  ③ FG 新增: generateUUID(category), getEntityByUUID(uuid)
-  ④ fgIntegrityGuard 新增第 6 项检查: "全部节点有合法 UUID"
-  ⑤ 所有 addNode() 调用自动生成 UUID
-
-风险: 零（纯增量字段）
-验证: fgIntegrityGuard 6/6 通过
-```
-
-### Phase 2：动态门阀
-
-**目标**：海马体检索入口加白名单过滤。
-
-```
-交付物:
-  ① 新增 UUIDGatekeeper 类
-  ② HippocampalIndex.search() 支持 whitelist 参数
-  ③ KnowledgeContextBuilder 知识检索加过滤
-  ④ chat.ts 会话白名单生命周期管理
-```
-
-### Phase 3：卷宗归档
-
-**目标**：所有新数据标记 belong_entity_uuid。
-
-```
-交付物:
-  ① conversations 表 +belong_entity_uuid
-  ② knowledge_base 表 +belong_entity_uuid
-  ③ 对话持久化 → 自动归档
-  ④ PAE 写入时同步 UUID
-```
-
-### Phase 4：安全密级 + 关系升级
-
-**目标**：三级密级 + 互动热度自动升级。
-
-```
-交付物:
-  ① nodes 表 +security_level INTEGER
-  ② UUIDGatekeeper 叠加密级检查
-  ③ RelationHeatTracker 热力计算
-  ④ 阈值触发关系升级
-```
-
----
-
-## 十一、使用说明（运维手册）
-
-### 11.1 启动检查
-
-每次系统启动时，日志会输出：
-
-```
-[FG] 完整性守护 6/6 通过:
-  ✅ 核心表非空: nodes=38 edges=140
-  ✅ "我"节点存在: 1
-  ✅ 无自指边: 0
-  ✅ 家族反向边完整: 0
-  ✅ 所有人有姓名: 38/38
-  ✅ 全部节点有合法UUID: 38/38    ← Phase 1 新增
-```
-
-### 11.2 UUID 查询
-
-```sql
--- 按 UUID 查找人物
-SELECT name, uuid, category, properties FROM nodes WHERE uuid = 'A-00002';
-
--- 按分类统计
-SELECT category, COUNT(*) FROM nodes WHERE type = 'person' GROUP BY category;
-
--- 查找某人物卷宗下的所有对话（Phase 3 可用）
-SELECT * FROM conversations WHERE belong_entity_uuid = 'A-00002';
-```
-
-### 11.3 门阀调试（Phase 2 可用）
+在 `dossier.relationMap` 下新增子对象：
 
 ```typescript
-// 查看当前会话的白名单
-console.log(UUIDGatekeeper.currentWhitelist);
-
-// 手动设置白名单
-UUIDGatekeeper.setSessionWhitelist(['A-00002']);  // 只查诗雨
-UUIDGatekeeper.setSessionWhitelist([]);            // 全部放行（无门阀）
-
-// 查看被拦截的数据量
-const stats = UUIDGatekeeper.getSessionStats();
-// → { total: 500, allowed: 45, blocked: 455 }
+interactionProtocol: {
+  addressForm: string;       // "叫名字"/"叫姐"/"叫阿姨"/"叫老板"
+  interactionTone: string;   // "formal"/"casual"/"intimate"/"deferential"
+  topicBounds: string[];     // ["工作","家庭","不谈政治"]
+  roleplayPermission: 'allow' | 'deny' | 'ask';
+  exposeLevel: 1 | 2 | 3;   // 向 LLM 暴露信息的等级
+}
 ```
 
-### 11.4 手动分配 UUID
+### 4.3 系统只读档案硬约束
 
-当用户提及新人物时，系统自动分配 UUID。也可手动查询或修改：
+在 `ConstraintValidator.ts` 中强化——人物身份、性格、关系判定**只读 dossier 结构化字段**，不从对话碎片推导：
 
-```sql
--- 查看某人 UUID
-SELECT name, uuid, category FROM nodes WHERE name = '徐诗雨';
-
--- 手动修改分类
-UPDATE nodes SET uuid = 'C-00001', category = 'C' WHERE name = '张三';
+```typescript
+// 现有: 用 familyContext（来自 FG）→ ✅ 正确
+// 新增: 人格一致性校验——LLM 回复中的人物描述 vs dossier 档案
+// 冲突时 → 以 dossier 为准 → 存入 conflicts[]
 ```
 
-### 11.5 从备份恢复 UUID
+### 4.4 授权凭证（`src/m4/AuthorizationCredential.ts`）
 
-UUID 是 `nodes` 表的列，正常备份即可覆盖。恢复后执行：
-
+```typescript
+class AuthorizationCredential {
+  credentialId: string;
+  targetUUID: string;       // 允许查阅的 TXS-ID
+  allowedPartitions: string[]; // 可访问的档案分区
+  issuedAt: string;
+  expiresAt: string;        // 会话结束自动作废
+}
 ```
-fgIntegrityGuard() → 确认 6/6 通过
-```
-
-### 11.6 常见问题
-
-| 问题 | 原因 | 解决 |
-|------|------|------|
-| "全部节点有合法 UUID" 检查不通过 | 迁移未完成或手动插入节点未带 UUID | 运行 `migrateToV3()` |
-| 两个节点有相同 UUID | 手动修改导致冲突 | `UPDATE nodes SET uuid = generateNewUUID() WHERE ...` |
-| 门阀开启后检索结果为空 | 白名单未正确设置 | 检查 `UUIDGatekeeper.currentWhitelist` |
 
 ---
 
-> **文档维护**：Phase 每完成一步，同步更新本文档。  
-> **代码修改前**：必须阅读 [fg-kinship-redlines.md](redlines/fg-kinship-redlines.md) 全部铁律。  
-> **UUID 体系是最高等级架构**：任何修改不得降低隔离安全性。
+## 五、Phase 7 — 治理层补齐
+
+### 5.1 档案人工异议流程
+
+在 `ConflictDetector` 中新增人工复核通道：
+
+```
+检测到冲突 → 生成冲突工单 → 推送用户 → 等待人工确认
+  → 确认: 更正档案 + 标注"人工异议修正"
+  → 拒绝: 保留原档案 + 关闭工单
+  → 超时: 自动关闭，保留原档案
+```
+
+### 5.2 调取审计日志
+
+新建 `audit_log` 表：
+
+```sql
+CREATE TABLE audit_log (
+  id TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,      -- 'access'|'modify'|'merge'|'authorize'
+  operator_uuid TEXT,            -- 操作者 TXS-ID
+  target_uuid TEXT,              -- 被操作实体 TXS-ID
+  partition TEXT,                -- 被访问的档案分区
+  credential_id TEXT,            -- 授权凭证编号
+  detail TEXT,
+  created_at TEXT NOT NULL
+);
+```
+
+---
+
+## 六、实施顺序
+
+```
+Phase 5 (列级补齐)          ← 🔴 立即做，4天
+  ├── ALTER TABLE 5列
+  ├── migrateToV4()
+  ├── _rebuildGroupGenes()
+  └── fgIntegrityGuard 5→11项
+
+Phase 6 (功能层)            ← 🟡 5-7天后
+  ├── StatusAutoManager
+  ├── 交互协议档案
+  ├── 系统只读档案
+  └── AuthorizationCredential
+
+Phase 7 (治理层)            ← 🟢 10天后
+  ├── 人工异议流程
+  └── 调取审计日志
+```
+
+---
+
+## 七、不改的部分
+
+- ❌ UUID 编号体系
+- ❌ edges 表结构
+- ❌ PAE 核心引擎
+- ❌ UUIDGatekeeper
+- ❌ RelationHeatTracker
+- ❌ M1/M3/M5 核心模块
+- ❌ chat.ts / server.ts 主流程

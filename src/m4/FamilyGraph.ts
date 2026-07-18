@@ -528,6 +528,11 @@ export class FamilyGraph implements FamilyGraphInterface {
         uuid TEXT,
         category CHAR(1),
         security_level INTEGER DEFAULT 1,
+        entity_source TEXT DEFAULT 'placeholder',
+        status TEXT DEFAULT 'active',
+        legacy_ids TEXT DEFAULT '[]',
+        family_gene TEXT,
+        social_group_genes TEXT DEFAULT 'WW',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -555,9 +560,14 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.migrateToV2();
     // V3.2: UUID 户籍编号体系迁移
     this.migrateToV3();
+    // V3.3: 户籍管理法 V1.1 列级补齐
+    this.migrateToV4();
     try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_circle ON nodes(circle_level)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
     try { this.run('CREATE INDEX IF NOT EXISTS idx_edges_source_rel ON edges(source_id, relation)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
     try { this.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_uuid ON nodes(uuid) WHERE uuid IS NOT NULL'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
+    try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_family_gene ON nodes(family_gene)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
+    try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_social_genes ON nodes(social_group_genes)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
+    try { this.run('CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)'); } catch (e) { console.warn(`[FamilyGraph] 操作失败`, (e as Error)?.message || e); }
 
     this.markDirty();
     this.ready = true;
@@ -633,8 +643,8 @@ export class FamilyGraph implements FamilyGraphInterface {
         const meId = uid();
         const now = new Date().toISOString();
         const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
-        this.run("INSERT INTO nodes (id, type, name, properties, uuid, category, security_level, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?, ?, ?, ?)",
-          [meId, meProps, 'S-00001', 'S', 3, now, now]);
+        this.run("INSERT INTO nodes (id, type, name, properties, uuid, category, security_level, entity_source, status, legacy_ids, family_gene, social_group_genes, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [meId, meProps, 'S-00001', 'S', 3, 'ai', 'active', '[]', null, 'WW', now, now]);
         this.userNodeId = meId;
         console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
         this.markDirty(true);
@@ -764,6 +774,177 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (repaired > 0) {
       console.log(`[FamilyGraph] V3.2.1 分类复核: ${repaired} 个节点已修正`);
     }
+  }
+
+  /**
+   * V3.3 户籍管理法 V1.1 列级补齐：
+   * 新增 entity_source / status / legacy_ids / family_gene / social_group_genes
+   * 存量迁移 + 双轮 BFS 分配基因码
+   */
+  migrateToV4(): void {
+    // Step 1: 新增列（幂等）
+    try { this.run('ALTER TABLE nodes ADD COLUMN entity_source TEXT DEFAULT "placeholder"'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN status TEXT DEFAULT "active"'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN legacy_ids TEXT DEFAULT "[]"'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN family_gene TEXT'); } catch (e) { /* 列已存在 */ }
+    try { this.run('ALTER TABLE nodes ADD COLUMN social_group_genes TEXT DEFAULT "WW"'); } catch (e) { /* 列已存在 */ }
+
+    // Step 2: entity_source 存量推断
+    const needSource = this.query(
+      "SELECT id, name, properties FROM nodes WHERE type = 'person' AND (entity_source IS NULL OR entity_source = '' OR entity_source = 'placeholder')"
+    );
+    let sourceFixed = 0;
+    for (const row of needSource) {
+      const props = JSON.parse(row.properties || '{}');
+      const source = this._inferEntitySource(row.name, props.relation_to_user || '');
+      this.run('UPDATE nodes SET entity_source = ? WHERE id = ?', [source, row.id]);
+      sourceFixed++;
+    }
+
+    // Step 3: status 存量补齐
+    this.run("UPDATE nodes SET status = 'active' WHERE type = 'person' AND (status IS NULL OR status = '')");
+
+    // Step 4: legacy_ids 存量补齐
+    this.run("UPDATE nodes SET legacy_ids = '[]' WHERE type = 'person' AND legacy_ids IS NULL");
+
+    // Step 5: family_gene + social_group_genes → BFS 全量分配
+    const rebuilt = this._rebuildGroupGenes();
+
+    if (sourceFixed > 0 || rebuilt.familyGenes > 0 || rebuilt.socialGenes > 0) {
+      console.log(`[FamilyGraph] V4 迁移: entity_source ${sourceFixed} + family_gene ${rebuilt.familyGenes}人/${rebuilt.familyClusters}族 + social_group ${rebuilt.socialGenes}人/${rebuilt.socialClusters}社`);
+    }
+  }
+
+  /** entity_source 存量推断 */
+  private _inferEntitySource(name: string, relation: string): string {
+    if (name === '玉瑶') return 'ai';
+    if (name === '我') return 'ai';
+    if (/^(同事|客户|老板|朋友|同学|经理|主管|工程师|前台|供应商|合作方)$/.test(name)) return 'placeholder';
+    if (relation && /^(同事|下属|上司|老板|员工|领导|部属|搭档|助理|秘书|前台|主管|客户|合作|合伙|供应商|友商)/.test(relation) && !/母|父|妈|爸|哥|弟|姐|妹|儿|女|配偶|夫|妻|老公|老婆|伴侣|爱人/.test(relation)) {
+      // 有职场/商业标签但无亲属标签 → real（现实同事）
+      return 'real';
+    }
+    if (!relation || relation === '') return 'placeholder';
+    return 'real';
+  }
+
+  /**
+   * 双轮 BFS 全量重建 family_gene 和 social_group_genes
+   * 返回统计信息
+   */
+  _rebuildGroupGenes(): { familyGenes: number; familyClusters: number; socialGenes: number; socialClusters: number } {
+    const result = { familyGenes: 0, familyClusters: 0, socialGenes: 0, socialClusters: 0 };
+
+    // ── Round 1: 家族血脉码 (FA) ──
+    const allPersons = this.query("SELECT id, name FROM nodes WHERE type = 'person'") as Array<{ id: string; name: string }>;
+    const visited = new Set<string>();
+    const familyEdges = this.query(
+      `SELECT source_id, target_id, relation FROM edges WHERE relation IN ('mother_of','father_of','child_of','sibling_of','spouse_of','parent_of','grandparent_of','grandchild_of','elder_sister_of','younger_sister_of','elder_brother_of','younger_brother_of','aunt_of','uncle_of','niece_of','nephew_of')`
+    ) as Array<{ source_id: string; target_id: string; relation: string }>;
+
+    // 建立无向邻接表
+    const adj = new Map<string, Set<string>>();
+    for (const e of familyEdges) {
+      if (!adj.has(e.source_id)) adj.set(e.source_id, new Set());
+      if (!adj.has(e.target_id)) adj.set(e.target_id, new Set());
+      adj.get(e.source_id)!.add(e.target_id);
+      adj.get(e.target_id)!.add(e.source_id);
+    }
+
+    let faSeq = 1;
+    for (const p of allPersons) {
+      if (visited.has(p.id)) continue;
+      if (!adj.has(p.id)) continue; // 孤立的节点不分配 FA
+
+      // BFS 找连通分量
+      const component: string[] = [];
+      const queue = [p.id];
+      visited.add(p.id);
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        component.push(cur);
+        const neighbors = adj.get(cur);
+        if (neighbors) {
+          for (const nb of neighbors) {
+            if (!visited.has(nb)) {
+              visited.add(nb);
+              queue.push(nb);
+            }
+          }
+        }
+      }
+
+      // 为该连通分量生成家族码
+      const gene = `FA${String(faSeq).padStart(2, '0')}`;
+      faSeq++;
+      const ids = component.map(id => `'${id}'`).join(',');
+      this.run(`UPDATE nodes SET family_gene = ? WHERE id IN (${ids})`, [gene]);
+      result.familyGenes += component.length;
+      result.familyClusters++;
+    }
+
+    // ── 清空 social_group_genes → 重新计算 ──
+    this.run("UPDATE nodes SET social_group_genes = 'WW' WHERE type = 'person'");
+
+    // ── Round 2: 社会社团码 ──
+    const socialTypes = [
+      { edges: ['colleague_of','boss_of','subordinate_of','partner_of'], prefix: 'CO' },
+      { edges: ['classmate_of'], prefix: 'SC' },
+      { edges: ['client_of','operated_by'], prefix: 'BU' },
+    ];
+
+    let globalSeq = 1;
+    for (const st of socialTypes) {
+      const sEdges = this.query(
+        `SELECT source_id, target_id FROM edges WHERE relation IN (${st.edges.map(e => `'${e}'`).join(',')})`
+      ) as Array<{ source_id: string; target_id: string }>;
+      if (sEdges.length === 0) continue;
+
+      const sAdj = new Map<string, Set<string>>();
+      for (const e of sEdges) {
+        if (!sAdj.has(e.source_id)) sAdj.set(e.source_id, new Set());
+        if (!sAdj.has(e.target_id)) sAdj.set(e.target_id, new Set());
+        sAdj.get(e.source_id)!.add(e.target_id);
+        sAdj.get(e.target_id)!.add(e.source_id);
+      }
+
+      const sVisited = new Set<string>();
+      for (const p of allPersons) {
+        if (sVisited.has(p.id)) continue;
+        if (!sAdj.has(p.id)) continue;
+
+        const component: string[] = [];
+        const queue = [p.id];
+        sVisited.add(p.id);
+        while (queue.length > 0) {
+          const cur = queue.shift()!;
+          component.push(cur);
+          const neighbors = sAdj.get(cur);
+          if (neighbors) {
+            for (const nb of neighbors) {
+              if (!sVisited.has(nb)) {
+                sVisited.add(nb);
+                queue.push(nb);
+              }
+            }
+          }
+        }
+
+        const gene = `${st.prefix}${String(globalSeq).padStart(2, '0')}`;
+        globalSeq++;
+        for (const id of component) {
+          // 追加到已有 social_group_genes（不覆盖）
+          const current = this.query('SELECT social_group_genes FROM nodes WHERE id = ?', [id]);
+          const curVal = (current[0]?.social_group_genes || 'WW');
+          const newVal = curVal === 'WW' ? gene : `${curVal}|${gene}`;
+          this.run('UPDATE nodes SET social_group_genes = ? WHERE id = ?', [newVal, id]);
+        }
+        result.socialGenes += component.length;
+        result.socialClusters++;
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -947,7 +1128,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     this.run(
-      'INSERT OR IGNORE INTO nodes (id, type, name, aliases, properties, uuid, category, security_level, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (id, type, name, aliases, properties, uuid, category, security_level, entity_source, status, legacy_ids, family_gene, social_group_genes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         node.id,
         node.type,
@@ -957,6 +1138,11 @@ export class FamilyGraph implements FamilyGraphInterface {
         uuid,
         category,
         1,  // V3.2: security_level 默认 1（公开级）
+        (node.properties as any)?.entity_source || 'real',  // V3.3
+        'active',   // V3.3: 新节点默认活跃
+        '[]',       // V3.3: 新节点无历史 ID
+        null,       // V3.3: family_gene 由 BFS 分配
+        'WW',       // V3.3: 新节点默认自由人
         new Date().toISOString(),
         new Date().toISOString(),
       ]
@@ -965,6 +1151,8 @@ export class FamilyGraph implements FamilyGraphInterface {
   }
 
   async addEdge(edge: GraphEdge): Promise<void> {
+    // 🔴 V3.3 自指边拦截: 禁止 source = target
+    if (edge.source_id === edge.target_id) return;
     this.run(
       'INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
@@ -977,7 +1165,70 @@ export class FamilyGraph implements FamilyGraphInterface {
         new Date().toISOString(),
       ]
     );
+    // ── V3.3 基因码自动同步 ──
+    this._syncGenesOnNewEdge(edge.source_id, edge.target_id, edge.relation);
     this.markDirty(true);
+  }
+
+  /** V3.3: 建边时自动同步 family_gene / social_group_genes */
+  private _syncGenesOnNewEdge(sourceId: string, targetId: string, relation: string): void {
+    const familyRelations = ['mother_of','father_of','child_of','sibling_of','spouse_of',
+      'parent_of','grandparent_of','grandchild_of','elder_sister_of','younger_sister_of',
+      'elder_brother_of','younger_brother_of','aunt_of','uncle_of','niece_of','nephew_of'];
+    const socialRelations: Record<string, string> = {
+      'colleague_of':'CO', 'boss_of':'CO', 'subordinate_of':'CO', 'partner_of':'CO',
+      'classmate_of':'SC',
+      'client_of':'BU', 'operated_by':'BU',
+    };
+
+    if (familyRelations.includes(relation)) {
+      // 家族边 → 继承 family_gene
+      const sGene = this.query('SELECT family_gene FROM nodes WHERE id = ?', [sourceId]);
+      const tGene = this.query('SELECT family_gene FROM nodes WHERE id = ?', [targetId]);
+      const gene = (sGene[0]?.family_gene) || (tGene[0]?.family_gene);
+      if (gene) {
+        this.run('UPDATE nodes SET family_gene = ? WHERE id = ? AND family_gene IS NULL', [gene, sourceId]);
+        this.run('UPDATE nodes SET family_gene = ? WHERE id = ? AND family_gene IS NULL', [gene, targetId]);
+      }
+    }
+
+    const socialPrefix = socialRelations[relation];
+    if (socialPrefix) {
+      // 社交边 → 追加 social_group_genes
+      const existing = this.query(
+        `SELECT id, social_group_genes FROM nodes WHERE (id = ? OR id = ?) AND social_group_genes IS NOT NULL AND social_group_genes != 'WW' AND social_group_genes LIKE ?`,
+        [sourceId, targetId, `%${socialPrefix}%`]
+      );
+      if (existing.length === 0) {
+        // 双方都没有该前缀的社团码 → 分配新码
+        const maxSeq = this._getMaxSocialSeq(socialPrefix);
+        const newGene = `${socialPrefix}${String(maxSeq + 1).padStart(2, '0')}`;
+        for (const id of [sourceId, targetId]) {
+          const cur = this.query('SELECT social_group_genes FROM nodes WHERE id = ?', [id]);
+          const curVal = (cur[0]?.social_group_genes || 'WW');
+          const newVal = curVal === 'WW' ? newGene : `${curVal}|${newGene}`;
+          this.run('UPDATE nodes SET social_group_genes = ? WHERE id = ?', [newVal, id]);
+        }
+      }
+    }
+  }
+
+  private _getMaxSocialSeq(prefix: string): number {
+    const rows = this.query(
+      "SELECT social_group_genes FROM nodes WHERE type = 'person' AND social_group_genes IS NOT NULL AND social_group_genes LIKE ?",
+      [`%${prefix}%`]
+    );
+    let maxSeq = 0;
+    for (const r of rows) {
+      const genes = (r.social_group_genes || '').split('|');
+      for (const g of genes) {
+        if (g.startsWith(prefix)) {
+          const num = parseInt(g.substring(2), 10);
+          if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        }
+      }
+    }
+    return maxSeq;
   }
 
   async findRelated(entityName: string, relation?: string): Promise<GraphQueryResult[]> {
@@ -2149,7 +2400,32 @@ export class FamilyGraph implements FamilyGraphInterface {
     } else {
       if(this._verbose)console.log('[FG:S] getPersonProfile(' + personName + '→' + node.name + ') age=MISSING');
     }
+    // ── V3.3 状态自动降级: 根据 last_mentioned 自动调整 status ──
+    this._checkStatusDowngrade(node, result);
     return result;
+  }
+
+  /** V3.3: 根据 last_mentioned 时间自动降级实体状态 */
+  private _checkStatusDowngrade(node: any, profile: PersonProfile): void {
+    try {
+      const currentStatus = (node as any).status || 'active';
+      if (currentStatus === 'deceased') return; // 注销状态不可逆
+      if (currentStatus === 'archived') return; // 封存状态仅手动恢复
+
+      const lastMentioned = profile.last_mentioned;
+      if (!lastMentioned) return;
+
+      const daysSince = (Date.now() - new Date(lastMentioned).getTime()) / 86400_000;
+
+      if (currentStatus === 'active' && daysSince > 90) {
+        this.run('UPDATE nodes SET status = ? WHERE id = ?', ['dormant', node.id]);
+      } else if (currentStatus === 'dormant' && daysSince > 365) {
+        this.run('UPDATE nodes SET status = ? WHERE id = ?', ['archived', node.id]);
+      } else if (currentStatus === 'dormant' && daysSince < 90) {
+        // 最近被提及 → 恢复 active
+        this.run('UPDATE nodes SET status = ? WHERE id = ?', ['active', node.id]);
+      }
+    } catch { /* 状态更新失败不影响读取 */ }
   }
 
   /**
@@ -4357,6 +4633,9 @@ export class FamilyGraph implements FamilyGraphInterface {
    * 启动时自动执行。任何一项不通过→禁止系统进入生产模式。
    */
   fgIntegrityGuard(): { healthy: boolean; checks: Array<{ name: string; passed: boolean; detail: string }>; errors: string[] } {
+    // 🔴 V3.3: 先清理残余自指边（inferFamilyLinks 可能产生）
+    this.run('DELETE FROM edges WHERE source_id = target_id');
+
     const checks: Array<{ name: string; passed: boolean; detail: string }> = [];
     const errors: string[] = [];
 
@@ -4417,6 +4696,46 @@ export class FamilyGraph implements FamilyGraphInterface {
       detail: personsWithoutUUID === 0 ? `${withName}/${withName}` : `缺失: ${personsWithoutUUID}/${withName}`,
     });
     if (personsWithoutUUID > 0) errors.push(`${personsWithoutUUID} 个 person 节点缺少合法户籍 UUID`);
+
+    // ⑦ V3.3: 全部 person 节点有 entity_source
+    const withoutSource = this.query(
+      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (entity_source IS NULL OR entity_source = '')"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: '全部节点有entity_source', passed: withoutSource === 0,
+      detail: withoutSource === 0 ? `${totalPersons}/${totalPersons}` : `缺: ${withoutSource}/${totalPersons}`,
+    });
+    if (withoutSource > 0) errors.push(`${withoutSource} 个节点缺少 entity_source`);
+
+    // ⑧ V3.3: 全部 person 节点有合法 status
+    const badStatus = this.query(
+      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (status IS NULL OR status NOT IN ('active','dormant','archived','deceased'))"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: '全部节点status合法', passed: badStatus === 0,
+      detail: badStatus === 0 ? `${totalPersons}/${totalPersons}` : `非法: ${badStatus}`,
+    });
+    if (badStatus > 0) errors.push(`${badStatus} 个节点 status 非法`);
+
+    // ⑨ V3.3: social_group_genes 非空
+    const withoutSocial = this.query(
+      "SELECT COUNT(*) as cnt FROM nodes WHERE type = 'person' AND (social_group_genes IS NULL OR social_group_genes = '')"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: 'social_group_genes非空', passed: withoutSocial === 0,
+      detail: withoutSocial === 0 ? `${totalPersons}/${totalPersons}` : `空: ${withoutSocial}`,
+    });
+    if (withoutSocial > 0) errors.push(`${withoutSocial} 个节点 social_group_genes 为空`);
+
+    // ⑩ V3.3: A 类节点必须有 family_edge 到'我'
+    const aWithoutEdge = this.query(
+      "SELECT COUNT(*) as cnt FROM nodes n WHERE n.type = 'person' AND n.category = 'A' AND n.name != '我' AND NOT EXISTS (SELECT 1 FROM edges e JOIN nodes n2 ON (e.source_id = n2.id OR e.target_id = n2.id) WHERE (e.source_id = n.id OR e.target_id = n.id) AND n2.name = '我' AND e.relation IN ('mother_of','father_of','spouse_of','sibling_of','child_of','parent_of','grandparent_of','grandchild_of','elder_sister_of','younger_sister_of','elder_brother_of','younger_brother_of'))"
+    )[0]?.cnt || 0;
+    checks.push({
+      name: 'A类全部有家族边', passed: aWithoutEdge === 0,
+      detail: aWithoutEdge === 0 ? '全部符合' : `缺失: ${aWithoutEdge}人`,
+    });
+    if (aWithoutEdge > 0) errors.push(`${aWithoutEdge} 个 A 类节点缺少家族边到"我"`);
 
     const healthy = errors.length === 0;
     if (healthy) {
