@@ -396,8 +396,8 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
     // 注入最近对话历史
     if (_isEntityMeeting) {
-      // 🆕 V4.0: 会晤模式 — 只注入最近几轮（会晤开始后的），不用玉瑶时代的旧历史
-      const recentTurns = history.slice(-6);
+      // 🆕 V4.0 → V5.0: 会晤模式 — 历史轮数 6→20（约10轮对话），足够维持话题连贯性
+      const recentTurns = history.slice(-20);
       for (const turn of recentTurns) {
         messages.push({ role: turn.role, content: turn.content });
       }
@@ -433,7 +433,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
     // 当前用户消息
     const userMsgContent = _isEntityMeeting
-      ? rawInput  // 🆕 V4.0: 会晤模式不注入 contextBlock
+      ? `[${entities.join('、')} 的视角] 鸿艺对你说：${rawInput}`  // 🆕 V5.0: 会晤模式加身份标签
       : (hasSelfProfile && isSelfIntroQuery ? rawInput : `${contextBlock}\n鸿艺: ${rawInput}`);
     messages.push({ role: 'user', content: userMsgContent });
     // LLM params from config center

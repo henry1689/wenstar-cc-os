@@ -14,6 +14,8 @@ import { decompose, mergeDecomposedResults } from '../../m4/QueryDecomposer.js';
 export interface RetrievalInput {
   ctx: any;
   message: string;
+  /** 🆕 V5.1: 会晤实体名 — 非空时跳过所有记忆检索 */
+  _meetingEntityName?: string | null;
   dna: DNA;
   p: Perception24D;
   enrichedHistory: Array<{ content: string }>;
@@ -35,7 +37,18 @@ export interface RetrievalOutput {
 }
 
 export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutput> {
-  const { ctx, message, dna, p, enrichedHistory, memoryFragments, _bdVecCache } = input;
+  const { ctx, message, dna, p, enrichedHistory, memoryFragments, _bdVecCache, _meetingEntityName } = input;
+
+  // 🛡️ V5.1: 会晤信息隔离墙 — 会晤实体不检索任何用户记忆
+  if (_meetingEntityName) {
+    return {
+      isTopicShift: false, isFollowUp: false, hasContinuationMarkers: false,
+      isCasualChat: true, isLimitedRetrieval: false, hasNewEntity: false, hasPersonEntity: false,
+      emotionalMemories: [],
+      memoryGate: { mode: 'casual' as const, needsMemorySearch: false, needsKnowledgeSearch: false, fillerPhrase: '', hallucinationGuard: '', strictMode: false },
+      memoryGateFillerUsed: false,
+    };
+  }
 
   // 时间导航：检测用户是否在问"昨天/上周说了什么"
   const _tmMatch = message.match(/(昨天|前天|上周|上个月|前几天|最近|刚才)/);

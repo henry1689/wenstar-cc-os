@@ -821,18 +821,18 @@ export class FamilyGraph implements FamilyGraphInterface {
         const now = new Date().toISOString();
         const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
         this.run("INSERT INTO nodes (id, type, name, properties, uuid, category, security_level, entity_source, status, legacy_ids, family_gene, social_group_genes, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [meId, meProps, 'S-00001', 'S', 3, 'ai', 'active', '[]', null, 'WW', now, now]);
+          [meId, meProps, 'U-00001', 'U', 3, 'ai', 'active', '[]', null, 'WW', now, now]);
         this.userNodeId = meId;
         console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
         this.markDirty(true);
       } else {
         this.userNodeId = existing[0].id;
-        // V2.0: 确保"我"节点的 category 永远正确（不再硬编码 UUID 格式）
+        // 🛡️ V5.0: "我"节点 category = U (User)，不再是 S (Self — 仅玉瑶)
         const currentInfo = this.query('SELECT category, security_level FROM nodes WHERE id = ?', [this.userNodeId]);
         if (currentInfo.length > 0) {
           const r = currentInfo[0] as any;
-          if (r.category !== 'S') {
-            this.run('UPDATE nodes SET category = ?, security_level = ? WHERE id = ?', ['S', 3, this.userNodeId]);
+          if (r.category !== 'U') {
+            this.run('UPDATE nodes SET category = ?, security_level = ? WHERE id = ?', ['U', 3, this.userNodeId]);
           }
         }
       }
@@ -1350,8 +1350,9 @@ export class FamilyGraph implements FamilyGraphInterface {
    *   ⑤ 兜底 → G
    */
   private _inferCategory(relation: string, name: string, nodeId?: string): string {
-    // ── 第零层: "我"自身 或 玉瑶(系统宿主) → S ──
-    if (name === '我' || name === '玉瑶') return 'S';
+    // ── 第零层: 玉瑶(系统宿主) → S ｜ "我"(用户自身) → U ──
+    if (name === '玉瑶') return 'S';
+    if (name === '我') return 'U';
 
     // ── 第一层: edges 表（最高权威——关系边是客观事实）──
     if (nodeId) {
@@ -1523,7 +1524,7 @@ export class FamilyGraph implements FamilyGraphInterface {
    * @param reason - 变更原因
    */
   setCategory(entityName: string, newCategory: string, reason: string = '手动操作'): { success: boolean; error?: string } {
-    const validCategories = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'X', 'S'];
+    const validCategories = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'X', 'S', 'U'];
     if (!validCategories.includes(newCategory)) {
       return { success: false, error: `非法分类: ${newCategory}。合法值: ${validCategories.join('/')}` };
     }
@@ -4228,6 +4229,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     );
 
     for (const edge of allEdges) {
+      // 🛡️ V5.3: 永远不为"我"创建家族反向边——用户不是户籍人物
+      if (edge.srcName === '我' || edge.tgtName === '我') continue;
+
       const reverseRel = REVERSE_RELATION[edge.relation] || SOCIAL_REVERSE[edge.relation];
       if (!reverseRel || reverseRel === edge.relation) continue; // 自反关系（spouse_of, friend_of）无需补全
 
@@ -4276,7 +4280,13 @@ export class FamilyGraph implements FamilyGraphInterface {
     const edgeSet = new Set(allEdges.map(e => `${e.src}|${e.tgt}|${e.rel}`));
 
     let added = 0;
+    // 🛡️ V5.3: 获取"我"的节点 ID——所有推理跳过用户节点
+    const meNodes = this.query("SELECT id FROM nodes WHERE name = '我'");
+    const meId = meNodes.length > 0 ? meNodes[0].id : null;
+
     const addEdge = (src: string, tgt: string, rel: string, revRel?: string): boolean => {
+      // 🛡️ V5.3: 绝不创建涉及"我"的推理边——用户不是户籍人物
+      if (src === meId || tgt === meId) return false;
       let didAdd = false;
       const key = `${src}|${tgt}|${rel}`;
       if (!edgeSet.has(key)) {

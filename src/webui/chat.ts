@@ -566,12 +566,15 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     let enrichedHistory: Array<ConversationTurn & { topic?: string }>;
     enrichedHistory = ctx.conversationHistory.slice(-40);
         // ── 记忆检索：时间导航 + 情感检索 + 黑钻检索（已拆分至 retrieval-stage） ──
+    // 🛡️ V5.1: 会晤模式下获取当前实体名，传入检索以启用信息隔离
+    const _activeMeetingName = ctx._entityMeeting?.isActive() ? ctx._entityMeeting.getEntityName() : null;
     let {
       isTopicShift, isFollowUp, hasContinuationMarkers, isCasualChat,
       isLimitedRetrieval, hasNewEntity, hasPersonEntity,
       emotionalMemories, memoryGate, memoryGateFillerUsed,
     } = await runRetrieval({
       ctx, message, dna, p, enrichedHistory, memoryFragments, _bdVecCache,
+      _meetingEntityName: _activeMeetingName,
     });
 	    // P0-1: 仿生智脑 + 知识库 + VAD 并行执行（三者均为异步网络调用，互不依赖）
     const _bionicPromise = fetchBionicMemories(message, isTopicShift, hasContinuationMarkers, memoryFragments, enrichedHistory, { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, dna.scene_tags);
@@ -779,6 +782,13 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     biosGatedMemories = _preM4.biosGatedMemories;
     clueReply = _preM4.clueReply;
 
+    // 🛡️ V5.1: 会晤信息隔离墙 — 清零所有记忆碎片
+    if (_meetingEntityName) {
+      memoryFragments.length = 0;
+      biosGatedMemories = [];
+      emotionalMemories.length = 0;
+    }
+
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
 
     // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体（角色扮演时跳过，避免污染主FG）
@@ -838,6 +848,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     if (!hallucinationGuard) hallucinationGuard = '';
 
     // V4.0 Phase 7: Fusion + ActivePush → refinePostM4Context
+    // 🛡️ V5.1: 会晤模式下跳过三源熔铸和"玉瑶想起"主动推送
+    if (!_meetingEntityName) {
     const _refined = await refinePostM4Context({
       message, dna, p,
       ctx: { knowledgeBase: ctx.knowledgeBase, storage: ctx.storage },
@@ -849,6 +861,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
       isCasualChat,
     });
     knowledgeBaseText = _refined.knowledgeBaseText;
+    }
 
     // ── V3.2 Hook B: 档案自动采集 — LLM 提取用户消息中的人物档案信息 ──
     let _acquisitionReport: any = null;
@@ -1084,7 +1097,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     const _appearanceGuard = _hasPeopleData
       ? '【强制规则·人物外貌】如果有人问你"长什么样""什么样子"，你只能回答上面【人物档案】中写明的外貌和身体特征。没写的细节你一概不知道，直接说不知道。绝对禁止编造。'
       : '';
-    const allGuardMsgs = [hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard].filter(Boolean).join('\n');
+    // 🛡️ 调试开关: WS_NO_CONTENT_FILTER=true 时跳过所有内容限制
+    const _noFilter = ConfigService.getBool('WS_NO_CONTENT_FILTER', false);
+    const allGuardMsgs = _noFilter ? '' : [hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard].filter(Boolean).join('\n');
 
     let reply = '';
 

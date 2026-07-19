@@ -92,6 +92,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   // Level 3: 日常聊天含人名 → 轻量匹配，仅注入高置信度命中
   // Level 4: 纯闲聊 → 跳过，节省 token
   const _meetingEntity = (input as any).ctx?._meetingEntityName;
+  // 🛡️ V5.1: 会晤信息隔离墙 — 会晤模式只搜本实体知识，不搜任何其他内容
+  const _isEntityMeeting = !!_meetingEntity;
   const _entitySearchMsg = _meetingEntity ? _meetingEntity : '';
   const _explicitQuery = /知识库|看过|知道.*吗|有没有|是否|曾经|查一下|搜一下|帮我查|告诉我.*关于/.test(message);
   const _hasPersonName = (dna.entity_genes || []).some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1);
@@ -109,6 +111,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         const _entityResults = await ctx.knowledgeBase.weightedSearch(
           _entitySearchMsg, dna.scene_tags || [],
           { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, 3,
+          _meetingEntity ? undefined : undefined,  // 🆕 V5.1: 会晤实体知识限定
         );
         if (_entityResults && _entityResults.length > 0) {
           const _entityContent = _entityResults.map((k: any) =>
@@ -125,6 +128,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     }
 
     // 🆕 V4.0·Phase 2: 始终搜知识库，按搜索等级决定注入强度
+    // 🛡️ V5.1: 会晤隔离墙 — 会晤模式下不搜通用知识库
+    if (!_isEntityMeeting) {
     const sceneTags = dna.scene_tags || [];
     let knResults = await ctx.knowledgeBase.weightedSearch(
       _entitySearchMsg || searchMsg || message, sceneTags,
@@ -251,9 +256,12 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         }
       }
     } catch (err: any) { console.warn('[EntityOverlap] 关联知识检索失败:', err); }
+    } // 🛡️ V5.1: 会晤隔离墙 — 关闭 if(!_isEntityMeeting)
   } catch (err: any) { console.warn('[KnowledgeSearch] 检索失败:', err); }
 
   // ── 亲密模式两性知识 ──
+  // 🛡️ V5.1: 会晤模式下不加载两性知识
+  if (!_isEntityMeeting) {
   try {
     const _isIntimateMode = (p.intimacy || 0) >= 2 || /高潮|操|干|插|顶|射|做爱|性交|爱爱|上床|湿了|硬了|进去|想要|吻我|抱我|摸我|亲我|胸|乳头|阴|龟头|鸡巴|阴道|舔|吸/.test(message);
     if (_isIntimateMode && ctx.knowledgeBase) {
@@ -271,8 +279,11 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       }
     }
   } catch (_intErr: any) { console.warn('[IntimateKB] 检索失败:', _intErr); }
+  } // 🛡️ V5.1: 会晤隔离墙 — 亲密KB结束
 
   // ── VAD 谱曲引擎 (8100) ──
+  // 🛡️ V5.1: 会晤模式下跳过 VAD 情感曲谱
+  if (!_isEntityMeeting) {
   try {
     const toneHint = await _getVadToneHint(message);
     if (toneHint) console.log('[VADTone] toneHint: ' + toneHint.substring(0, 80));
@@ -312,12 +323,15 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       knowledgeBaseText = combined ? (knowledgeBaseText ? combined + '\n\n' + knowledgeBaseText : combined) : knowledgeBaseText;
     }
   } catch (err: any) { console.warn('[VADTone] 谱曲引擎(8100)不可用，跳过:', err.message); }
+  } // 🛡️ V5.1: 会晤隔离墙 — VAD结束
 
   // ── 仿生智脑检索 ──
   const bionicMemories = await input._bionicPromise;
 
   // ── 线索助理 ──
+  // 🛡️ V5.1: 会晤模式下跳过线索助理（用户记忆线索不适用于会晤实体）
   let clueReply: string | null = null;
+  if (!_isEntityMeeting) {
   try {
     // V4.0: 角色扮演已移除，线索助理始终运行
     const clueResult = await ctx.clueAssistant?.processUserInput({
@@ -330,6 +344,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         memoryFragments.push('【线索参考】用户可能在回忆某件事，但如果你不确定具体内容就说不记得了');
       }
   } catch (err: any) { console.warn('[ClueAssistant] 失败:', err); }
+  } // 🛡️ V5.1: 会晤隔离墙 — 线索助理结束
 
   // ── BIOS 五级闸门 ──
   let biosGatedMemories = emotionalMemories;

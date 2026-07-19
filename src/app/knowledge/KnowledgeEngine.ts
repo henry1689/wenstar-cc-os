@@ -772,6 +772,7 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     sceneTags: string[],
     perception?: { pleasure: number; arousal: number; intimacy: number },
     limit = 5,
+    belongEntityUuid?: string,  // 🆕 V5.0: 按户籍 TXS-ID 过滤
   ): Promise<Array<KnowledgeItem & { matchScore: number; breakdown: { scene: number; emotion: number; text: number } }>> {
     const trimmed = (keyword || '').trim();
 
@@ -794,8 +795,9 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     const FILE_SOURCE_FILTER = ['md','txt','pdf','docx','xlsx','csv','json','jpg','png','gif','webp','mp4','mov','webm','mkv','architecture','protocol','research','person'];
     const srcFilter = FILE_SOURCE_FILTER.map(s => `'${s}'`).join(',');
     // 🆕 V4.0: 去掉了 LIMIT 50，改为全表扫描（459行全扫约50ms，SQLite 无压力）
+    const uuidFilter = belongEntityUuid ? `AND belong_entity_uuid = '${belongEntityUuid.replace(/'/g, "''")}'` : '';
     const allRows: any[] = sqlite.queryAll(
-      `SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`
+      `SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ${uuidFilter} ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`
     );
     if (!allRows.length) {
       console.log('[KBw] 空库');

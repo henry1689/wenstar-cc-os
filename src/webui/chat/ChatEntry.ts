@@ -163,5 +163,18 @@ export async function runChatEntry(
     }
   } catch (_fe) { console.warn("[FamilyGraph] 图谱匹配失败:", _fe); }
 
+  // 🆕 V5.0: TXS-ID 贯穿 — 为所有 person 类型 entity_genes 解析 UUID
+  try {
+    const _fg = ctx.m4?.getFamilyGraph?.();
+    if (_fg && dna.entity_genes?.length) {
+      for (const gene of dna.entity_genes) {
+        if (gene.type === 'person' && !gene.uuid) {
+          const _uuid = _fg.getUUIDByName?.(gene.name);
+          if (_uuid) gene.uuid = _uuid;
+        }
+      }
+    }
+  } catch (_e) { /* UUID resolution is non-critical */ }
+
   return { dna, ruleEngineBlocked, ruleEngineReply, weatherContext };
 }

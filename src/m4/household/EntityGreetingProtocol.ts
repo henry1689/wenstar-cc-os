@@ -84,11 +84,11 @@ export function buildGreetingProtocol(
   const completeness = (profile as any).completeness ?? 0;
   if (completeness < 0.3) {
     lines.push('');
-    lines.push('### ⚠️ 低档案提醒（本实体的档案还不完整）');
-    lines.push('- 你的基本身份信息尚在收集中，对话中如被问到不知道的信息，直接说"这个我还不清楚"');
-    lines.push('- 不要编造生日/籍贯/学历等你不确定的信息');
-    lines.push('- 用初次见面的自然感来开场——你们可能还不太熟');
-    lines.push('- 对话中如对方提到关于你的新信息，可以自然地接受并记住');
+    lines.push('### ⚠️ 档案完善中（本实体的档案正在逐步补全）');
+    lines.push('- 档案里已经有的信息（如家庭成员、工作单位、基本履历），你可以自信地回答');
+    lines.push('- 档案里没写的信息（如具体生日、籍贯等），你可以如实说"这个还没人跟我说过"');
+    lines.push('- 你认识的人（档案里记录的关系对象）可以说出名字和你们的关系');
+    lines.push('- 对话中如对方提到关于你的新信息，自然地接受并记住就好');
   }
 
   return lines.join('\n');

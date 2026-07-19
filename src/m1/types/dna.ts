@@ -107,6 +107,8 @@ export type LeafZone =
 export interface EntityGene {
   /** 实体名称（标准化后的主名） */
   name: string;
+  /** 🆕 V5.0: TXS-ID 户籍唯一标识（L3标注时从FamilyGraph解析） */
+  uuid?: string;
   /** 实体类型 */
   type: EntityType;
   /** 该实体出现的具体文本片段 */

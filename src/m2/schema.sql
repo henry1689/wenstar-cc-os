@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     type TEXT NOT NULL CHECK(type IN ('person','place','event','emotion','object','self')),
+    uuid TEXT,  -- 🆕 V5.0: 对应 FamilyGraph.nodes.uuid (TXS-ID)
     UNIQUE(name, type)
 );
 

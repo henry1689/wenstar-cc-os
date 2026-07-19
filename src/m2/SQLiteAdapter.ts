@@ -287,6 +287,9 @@ export class SQLiteAdapter {
       try { this.db.run("ALTER TABLE conversations ADD COLUMN is_promoted INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN summary_of_range TEXT"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN roleplay_char TEXT"); } catch { /* 列已存在 */ }
+    // 🆕 V5.0: 户籍管理体系 — entities 表加 uuid 列关联 FamilyGraph.nodes.uuid
+    try { this.db.run("ALTER TABLE entities ADD COLUMN uuid TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_entities_uuid ON entities(uuid)"); } catch { /* 索引已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch { /* 列已存在 */ }
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)");
@@ -486,7 +489,7 @@ export class SQLiteAdapter {
 
     // 写入实体关联
     for (const gene of record.entity_genes) {
-      this.ensureEntity(gene.name, gene.type);
+      this.ensureEntity(gene.name, gene.type, (gene as any).uuid);
       this.runSql(
         `INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, allele, phenotype, knowledge_type)
         VALUES (?, (SELECT id FROM entities WHERE name=? AND type=?), ?, ?, ?)`,
@@ -553,11 +556,20 @@ export class SQLiteAdapter {
     }
   }
 
-  private ensureEntity(name: string, type: string): void {
+  private ensureEntity(name: string, type: string, uuid?: string): void {
     this.runSql(
       `INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)`,
       [name, type],
     );
+    // 🆕 V5.0: 若基因携带 TXS-ID，回填到 entities 表
+    if (uuid) {
+      try {
+        this.runSql(
+          `UPDATE entities SET uuid = ? WHERE name = ? AND type = ? AND uuid IS NULL`,
+          [uuid, name, type],
+        );
+      } catch { /* uuid 更新非关键 */ }
+    }
   }
 
   // ─── 读取 ───
@@ -1282,6 +1294,25 @@ export class SQLiteAdapter {
        ORDER BY m.calcium_score DESC
        LIMIT ?`,
       [...entityNames, limit],
+    );
+
+    return this.rowsToRecords(results);
+  }
+
+  /** 🆕 V5.0: 按实体 UUID 检索记忆（户籍管理体系 TXS-ID 贯穿） */
+  findMemoriesByEntityUUIDs(entityUUIDs: string[], limit = 10): EmotionalMemoryRecord[] {
+    this.ensureReady();
+    if (entityUUIDs.length === 0) return [];
+
+    const placeholders = entityUUIDs.map(() => '?').join(',');
+    const results = this.execSql(
+      `SELECT DISTINCT m.* FROM memories m
+       JOIN memory_entities me ON me.memory_id = m.id
+       JOIN entities e ON e.id = me.entity_id
+       WHERE e.uuid IN (${placeholders})
+       ORDER BY m.calcium_score DESC
+       LIMIT ?`,
+      [...entityUUIDs, limit],
     );
 
     return this.rowsToRecords(results);

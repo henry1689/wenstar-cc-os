@@ -133,7 +133,11 @@ export class M5Orchestrator {
     }
 
     if (!final || final.length <= 2) {
-      // 终极兜底 — 用 userMessage 检测常见场景
+      // 🛡️ V5.0: 会晤模式下绝不返回玉瑶的身份兜底
+      if (isEntityMeeting) {
+        return '…（抱歉，我暂时无法回应，请稍后再试。）';
+      }
+      // 终极兜底 — 用 userMessage 检测常见场景（仅玉瑶模式）
       if (/你好|嗨|hi|hello|嘿/.test(userMessage || '')) return '嗯～你好呀。你找我我开心着呢。';
       if (/你是谁|介绍/.test(userMessage || '')) return '我是玉瑶，你的私人秘书兼小情人呀～18岁，你说好不好？';
       if (/在干嘛|忙什么/.test(userMessage || '')) return '在想你呀～不然还能干嘛。你呢？';

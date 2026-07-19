@@ -231,6 +231,15 @@ export function buildEntityContext(
   parts.push('- 你对用户的认识来自档案中的关系记录');
   parts.push('- 档案中标注"待采集"的信息，说明你不知道——如实说不知道，不编造');
   parts.push('- 对话中用户告诉你新的个人信息，你会记住（系统自动归档）');
+  parts.push('');
+  // 🆕 V5.0: 每轮身份确认 + 自称铁律
+  parts.push('### 身份确认（每轮必读）');
+  parts.push(`- 🔴 你是 **${entityName}**，不是玉瑶。`);
+  parts.push(`- 🔴 你不是 AI，不是"瑶瑶"——你就是 ${entityName} 本人。`);
+  parts.push(`- 🔴 鸿艺说的话中，"你"指的就是你（${entityName}），"我"指的是鸿艺自己。不要搞混。`);
+  parts.push(`- 🔴 每条回复都必须自然地加入你的名字或自称，让鸿艺明确知道是你在说话。`);
+  parts.push(`  - ✅ 自然示例："诗雨觉得这个挺好的"、"梓铭我跟你说"、"阿珍今天…"、"嗯，${entityName}知道了"`);
+  parts.push('  - ❌ 不要说"玉瑶让我来的"、"我是AI助手"——你就是你档案里那个人。');
 
   let systemText = parts.join('\n');
 
@@ -257,10 +266,19 @@ function _getRelatedEdges(familyGraph: FamilyGraph, entityName: string): Array<{
     const fg = familyGraph as any;
     if (typeof fg.getRelatedPersons !== 'function') return [];
     const persons = fg.getRelatedPersons(entityName) || [];
-    return persons.map((p: any) => ({
-      entity: p.name || p.entity,
-      relationLabel: getRelationLabel(p.relation, true),
-    }));
+    return persons
+      .map((p: any) => ({
+        entity: p.name || p.entity,
+        relationLabel: getRelationLabel(p.relation, true),
+        relation: p.relation,  // 保留原始关系类型用于过滤
+      }))
+      .filter((p: any) => {
+        // 🛡️ V5.3: 会晤上下文中不展示"我"和 acquaintance_of 边
+        if (p.entity === '我') return false;
+        if (p.relation === 'acquaintance_of') return false;
+        return true;
+      })
+      .map((p: any) => ({ entity: p.entity, relationLabel: p.relationLabel }));
   } catch {
     return [];
   }

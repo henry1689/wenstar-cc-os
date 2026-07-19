@@ -49,10 +49,10 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
     presencePenalty: 0.2,
   },
 
-  /** 角色扮演：低温度、高推理、中等输出 */
+  /** 角色扮演/会晤：低温度、高推理、长输出 */
   roleplay: {
     temperature: 0.4,
-    maxTokens: 1500,
+    maxTokens: 3000,   // V5.0: 1500 → 3000，会晤回复需要足够长度
     timeoutMs: 15_000,
     frequencyPenalty: 0.1,
     presencePenalty: 0.5,

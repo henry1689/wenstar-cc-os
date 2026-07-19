@@ -28,6 +28,8 @@ export interface MeetingState {
   turnCount: number;
   /** 是否多人模式 */
   isMulti: boolean;
+  /** 🆕 V5.0: 会晤开始时 conversationHistory 的索引，用于过滤历史 */
+  meetingStartHistoryIndex: number;
 }
 
 /** 实体简要信息 */
@@ -78,7 +80,7 @@ export class EntityMeeting {
   /**
    * 开启与指定实体的单人会晤。
    */
-  enter(entityName: string): MeetingState | null {
+  enter(entityName: string, startHistoryIndex: number = 0): MeetingState | null {
     const entity = this._resolveEntity(entityName);
     if (!entity) return null;
 
@@ -89,6 +91,7 @@ export class EntityMeeting {
       startedAt: new Date().toISOString(),
       turnCount: 0,
       isMulti: false,
+      meetingStartHistoryIndex: startHistoryIndex,
     };
 
     if (this.gatekeeper) {
@@ -97,6 +100,18 @@ export class EntityMeeting {
 
     this._isFirstTurn = true;
     return this._meeting;
+  }
+
+  /** 🆕 V5.0: 设置会晤开始时的对话历史索引 */
+  setMeetingStartHistoryIndex(index: number): void {
+    if (this._meeting) {
+      this._meeting.meetingStartHistoryIndex = index;
+    }
+  }
+
+  /** 🆕 V5.0: 获取会晤开始时的对话历史索引 */
+  getMeetingStartHistoryIndex(): number {
+    return this._meeting?.meetingStartHistoryIndex ?? 0;
   }
 
   /**
@@ -127,6 +142,7 @@ export class EntityMeeting {
       startedAt: new Date().toISOString(),
       turnCount: 0,
       isMulti,
+      meetingStartHistoryIndex: 0,  // V5.0: 多人模式由外部设置
     };
 
     if (this.gatekeeper) {
@@ -191,13 +207,15 @@ export class EntityMeeting {
    * 先退出当前会晤，再进入新实体。如果是多人会议则先存档纪要。
    */
   async switchTo(entityName: string): Promise<MeetingState | null> {
+    // 🆕 V5.0: 保留原始会晤开始索引（切换人物不重置历史窗口）
+    const _origStartIndex = this._meeting?.meetingStartHistoryIndex ?? 0;
     // 先退出当前会晤（多人会议自动存档）
     if (this._meeting) {
       await this.exit();
     }
 
-    // 再进入新会晤
-    return this.enter(entityName);
+    // 再进入新会晤，沿用原始历史窗口
+    return this.enter(entityName, _origStartIndex);
   }
 
   /**
@@ -287,6 +305,24 @@ export class EntityMeeting {
    *
    * @returns 检测到的实体名列表（多人模式返回多个），若无意图返回 null
    */
+  /**
+   * 🆕 V5.2: 模糊名称匹配 — 支持短名/昵称
+   * "诗雨" → 匹配 "徐诗雨"
+   */
+  private static _fuzzyFindName(input: string, knownNames: string[]): string | null {
+    if (!input || input.length < 2) return null;
+    // 1. 精确匹配
+    const exact = knownNames.find(n => n === input);
+    if (exact) return exact;
+    // 2. 包含匹配 (短名 ⊂ 全名, e.g. "诗雨" ⊂ "徐诗雨")
+    const sup = knownNames.find(n => n.includes(input));
+    if (sup) return sup;
+    // 3. 全名 ⊂ 输入 (e.g. input="找徐诗雨聊聊" ⊃ name)
+    const sub = knownNames.find(n => input.includes(n));
+    if (sub) return sub;
+    return null;
+  }
+
   static detectUserIntent(message: string, knownPersonNames: string[]): string[] | null {
     if (!message || knownPersonNames.length === 0) return null;
 
@@ -323,7 +359,7 @@ export class EntityMeeting {
       let m: RegExpExecArray | null;
       const msgStart = andMatch[0];
       while ((m = namePattern.exec(msgStart)) !== null) {
-        const name = sorted.find(n => n === m![0]);
+        const name = EntityMeeting._fuzzyFindName(m![0], sorted);
         if (name) allNames.add(name);
       }
       if (allNames.size >= 2 && /一起|都|开会|聊|讨论|聚/.test(msg)) {
@@ -337,14 +373,14 @@ export class EntityMeeting {
     // @name（最明确的意图）
     const atMatch = msg.match(/^@([一-龥\w]{1,8})(?:\s|$)/);
     if (atMatch) {
-      const name = sorted.find(n => n === atMatch[1]);
+      const name = EntityMeeting._fuzzyFindName(atMatch[1], sorted);
       if (name) return [name];
     }
 
     // name：格式（如 "徐诗雨：" "阿珍，"）
     const prefixMatch = msg.match(/^([一-龥]{2,8})[：:，,]/);
     if (prefixMatch) {
-      const name = sorted.find(n => n === prefixMatch[1]);
+      const name = EntityMeeting._fuzzyFindName(prefixMatch[1], sorted);
       if (name) return [name];
     }
 
@@ -354,7 +390,7 @@ export class EntityMeeting {
     if (indirectMatch) {
       const target = indirectMatch[1].trim();
       // 尝试精确匹配
-      const exactName = sorted.find(n => n === target);
+      const exactName = EntityMeeting._fuzzyFindName(target, sorted);
       if (exactName) return [exactName];
       // 模糊匹配（名字可能带后缀如"徐诗雨过来"）
       for (const name of sorted) {
@@ -372,8 +408,16 @@ export class EntityMeeting {
       }
     }
 
+    // 🆕 V5.2: 构建模糊名列表（全名 + 短名）用于 regex 匹配
+    const _fuzzyNameList: Array<{ full: string; short: string | null }> = sorted.map(name => ({
+      full: name,
+      short: name.length >= 3 ? name.slice(-2) : null,  // "徐诗雨" → short="诗雨"
+    }));
+
     // 🆕 自然口语: "我想找XX聊聊" / "我想和XX说说话" / "让XX来跟我说" / "我有事找XX"
-    for (const name of sorted) {
+    for (const nt of _fuzzyNameList) {
+      const name = nt.full;
+      const _nameRe = nt.short ? `(?:${name}|${nt.short})` : name;
       // "我想找XX聊聊" / "我想和XX说说话" / "想跟XX聊" / "我要找XX"
       // 用 .*? 替代 \s* 解决"想找"/"想和"中间多一个动词的问题
       if (new RegExp(`(?:想|想要|要)${name}\\s*(?:聊聊|谈谈|说说话|说几句|说点事|聊一下|说话|聊聊天)`).test(msg)) {
