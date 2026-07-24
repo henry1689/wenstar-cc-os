@@ -782,12 +782,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     biosGatedMemories = _preM4.biosGatedMemories;
     clueReply = _preM4.clueReply;
 
-    // 🛡️ V5.1: 会晤信息隔离墙 — 清零所有记忆碎片
-    if (_meetingEntityName) {
-      memoryFragments.length = 0;
-      biosGatedMemories = [];
-      emotionalMemories.length = 0;
-    }
+
 
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
 
@@ -1502,7 +1497,17 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
       }
     } catch (_ve) { /* 校验失败不阻塞主线 */ }
 
-
+    // 🆕 V10.5: 会晤模式自称检测
+    if (_meetingEntityName && reply && reply.length > 20) {
+      try {
+        const bodyText = reply.replace(/（[^）]*）/g, "").replace(/\([^)]*\)/g, "");
+        const short = _meetingEntityName.length >= 2 ? _meetingEntityName.slice(-2) : _meetingEntityName;
+        const hasSelfIdent = bodyText.includes(_meetingEntityName) || bodyText.includes(short);
+        if (!hasSelfIdent && bodyText.length > 30) {
+          console.warn("[SelfIdent] " + _meetingEntityName + " 回复未自报姓名");
+        }
+      } catch {} // 非关键
+    }
 
         // 候选回复生成（不阻塞主回复 — 默认不活跃，待前端请求时使用）
 

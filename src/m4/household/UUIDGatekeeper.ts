@@ -251,8 +251,6 @@ export class UUIDGatekeeper {
       || this.tempGrants.has(uuid);
   }
 
-  private _checkSecurityLevel(memory: any): boolean { const sl = (memory as any).security_level || 1; return sl <= 1; }
-
   getSessionStats(): SessionStats {
     return { ...this.sessionStats };
   }

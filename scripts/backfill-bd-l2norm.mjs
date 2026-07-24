@@ -1,59 +1,30 @@
-/**
- * 回填黑钻库 l2_norm 字段
- *
- * 为所有有 emotion_vector 但无 l2_norm 的黑钻条目计算并更新
- */
-import initSqlJs from 'sql.js';
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, '..', 'data', 'webui', 'fusion_memory.db');
-
-async function main() {
-  if (!existsSync(DB_PATH)) {
-    console.log(`数据库不存在: ${DB_PATH}`);
-    return;
-  }
-
-  const SQL = await initSqlJs();
-  const buffer = readFileSync(DB_PATH);
-  const db = new SQL.Database(buffer);
-
-  // 确保列存在
-  try { db.run("ALTER TABLE black_diamond ADD COLUMN l2_norm REAL DEFAULT NULL"); } catch {}
-
-  const rows = db.exec("SELECT id, emotion_vector FROM black_diamond WHERE emotion_vector IS NOT NULL AND l2_norm IS NULL");
-  if (!rows.length || !rows[0].values) {
-    console.log('没有需要回填的条目');
-    db.close();
-    return;
-  }
-
-  let count = 0;
-  for (const row of rows[0].values) {
-    const id = row[0];
-    const vecStr = row[1];
-    if (!vecStr) continue;
+import Database from 'better-sqlite3';
+import { join } from 'path';
+const DB_PATH = join(process.cwd(), 'data/webui/fusion_memory.db');
+console.log('🔧 黑钻 l2_norm 回填');
+const db = new Database(DB_PATH);
+const nullCount = db.prepare('SELECT COUNT(*) as c FROM black_diamond WHERE l2_norm IS NULL').get().c;
+const total = db.prepare('SELECT COUNT(*) as c FROM black_diamond').get().c;
+console.log(`总数:${total} NULL:${nullCount}`);
+if (nullCount === 0) { console.log('无需回填'); db.close(); process.exit(0); }
+const rows = db.prepare('SELECT id, emotion_vector FROM black_diamond WHERE l2_norm IS NULL AND emotion_vector IS NOT NULL').all();
+console.log(`待处理: ${rows.length}`);
+let updated=0, skipped=0;
+const stmt = db.prepare('UPDATE black_diamond SET l2_norm = ? WHERE id = ?');
+db.transaction(() => {
+  for (const row of rows) {
     try {
-      const vec = JSON.parse(vecStr as string);
-      if (!Array.isArray(vec) || vec.length < 24) continue;
-      let l2 = 0;
-      for (const v of vec) l2 += v * v;
-      l2 = Math.sqrt(l2);
-      db.run("UPDATE black_diamond SET l2_norm = ? WHERE id = ?", [l2, id]);
-      count++;
-    } catch {}
+      const vec = JSON.parse(row.emotion_vector);
+      if (!Array.isArray(vec) || vec.length===0) { skipped++; continue; }
+      let sumSq=0;
+      for (let i=0;i<vec.length;i++) { const v=Number(vec[i])||0; sumSq+=v*v; }
+      const norm = Math.round(Math.sqrt(sumSq)*10000)/10000;
+      stmt.run(norm, row.id);
+      updated++;
+    } catch { skipped++; }
   }
-
-  // 写回文件
-  const outBuf = db.export();
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(DB_PATH, Buffer.from(outBuf));
-
-  console.log(`回填完成: ${count} 条`);
-  db.close();
-}
-
-main().catch(console.error);
+})();
+console.log(`完成: ${updated}更新 ${skipped}跳过`);
+const stillNull = db.prepare('SELECT COUNT(*) as c FROM black_diamond WHERE l2_norm IS NULL').get().c;
+console.log(`剩余NULL: ${stillNull}`);
+db.close();

@@ -91,11 +91,12 @@ export function logVaultOperation(
   sourceId?: string,
   targetId?: string,
   detail?: string,
+  contentMd?: string,
 ): void {
   const id = 'vl_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
   sqlite.writeRaw(
-    'INSERT INTO vault_log (id, operation, source_type, source_id, target_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    id, operation, sourceType || null, sourceId || null, targetId || null, detail || null, new Date().toISOString(),
+    'INSERT INTO vault_log (id, operation, source_type, source_id, target_id, detail, content_md, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    id, operation, sourceType || null, sourceId || null, targetId || null, detail || null, contentMd || null, new Date().toISOString(),
   );
 }
 
@@ -171,9 +172,21 @@ export function addBlackDiamond(
       params.promotion_reason || 'black_diamond_promotion', now, params.source_id,
     );
   }
+  // 🔧 V10.1: 从 emotion_vector JSON 实时计算 l2_norm
+  let _l2norm: number | null = null;
+  if (params.emotion_vector) {
+    try {
+      const _vec = JSON.parse(params.emotion_vector as string);
+      if (Array.isArray(_vec) && _vec.length >= 24) {
+        let _sq = 0;
+        for (let _i = 0; _i < 24; _i++) { const _v = Number(_vec[_i]) || 0; _sq += _v * _v; }
+        _l2norm = Math.round(Math.sqrt(_sq) * 10000) / 10000;
+      }
+    } catch { /* 解析失败则 l2_norm=NULL */ }
+  }
   sqlite.writeRaw(
-    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, namespace)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, l2_norm, namespace)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     params.summary,
     params.emotion_tag || null,
@@ -184,6 +197,7 @@ export function addBlackDiamond(
     now,
     now,
     params.emotion_vector || null,
+    _l2norm,
     params.namespace || 'default',
   );
   return getBlackDiamond(sqlite, id)!;
@@ -406,7 +420,9 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
     promotion_reason: decision.reason || undefined,
     namespace: mem.namespace ? String(mem.namespace) : 'default',
   });
-  logVaultOperation(sqlite, 'promote', 'gold', memoryId, entry.id, `提炼至黑钻: ${rawInput.substring(0, 30)} (${decision.reason})`);
+  logVaultOperation(sqlite, 'promote', 'gold', memoryId, entry.id,
+    `提炼至黑钻: ${rawInput.substring(0, 30)} (${decision.reason})`,
+    entry.summary || rawInput.substring(0, 200));
   return entry;
 }
 
@@ -684,6 +700,8 @@ function mergeIntoExistingDiamond(
   const now = new Date().toISOString();
   const mergedReason = `merged-into:${duplicate.id}`;
   const mergedTags = new Set<string>(duplicate.tags);
+  // 🆕 V10.0 P0-7: 逐个添加标签，而非将数组作为单元素加入 Set
+  for (const _t of duplicate.tags) mergedTags.add(_t);
   mergedTags.add('merged_gold');
   if (memory.narrative_tag) mergedTags.add(`tag:${String(memory.narrative_tag).substring(0, 24)}`);
   if (memory.primary_emotion) mergedTags.add(`emotion:${String(memory.primary_emotion).substring(0, 24)}`);

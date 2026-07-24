@@ -306,6 +306,11 @@ export class ProfileAcquisitionEngine {
           );
           results = rawResults;
           this.extractionCache.set(cacheKey, { result: results, timestamp: Date.now() });
+          // 🆕 V10.0 P0-2: 确认 PAE 提取到数据
+          const _totalFields = results.reduce((s, r) => s + r.fields.length, 0);
+          if (_totalFields > 0) {
+            console.log(`[PAE V10.0] 提取成功: ${batch.join('、')} → ${results.length}人 ${_totalFields}字段`);
+          }
         }
 
         // 处理每个提取结果
@@ -446,10 +451,11 @@ export class ProfileAcquisitionEngine {
     for (const p of parsed.persons) {
       if (!p.personName) continue;
 
+      // 🆕 V10.0 P0-2: LLM prompt 输出 fieldKey，同时兼容 fieldPath
       const fields: ExtractionField[] = (p.fields || [])
-        .filter((f: any) => f.fieldPath && f.value !== undefined && f.value !== null)
+        .filter((f: any) => (f.fieldPath || f.fieldKey) && f.value !== undefined && f.value !== null)
         .map((f: any) => ({
-          fieldPath: String(f.fieldPath),
+          fieldPath: String(f.fieldPath || f.fieldKey),
           value: f.value,
           confidence: typeof f.confidence === 'number' ? Math.min(1, Math.max(0, f.confidence)) : 0.5,
           evidence: String(f.evidence || '').substring(0, 200),

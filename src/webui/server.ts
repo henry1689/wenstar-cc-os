@@ -6,11 +6,14 @@
  * 运行: npm run webui  |  访问: http://localhost:3000
  */
 
-// 加载 .env 文件（启动时最先执行）
+// 加载 .env 文件（启动时最先执行 —— 使用绝对路径，不受CWD影响）
 import { readFileSync as _readFile, existsSync as _exists } from 'node:fs';
+import { join as _join, dirname as _dirname } from 'node:path';
+import { fileURLToPath as _fileURLToPath } from 'node:url';
 try {
-  if (_exists('./.env')) {
-    const _envContent = _readFile('./.env', 'utf-8');
+  const _envPath = _join(_dirname(_fileURLToPath(import.meta.url)), '..', '..', '.env');
+  if (_exists(_envPath)) {
+    const _envContent = _readFile(_envPath, 'utf-8');
     for (const _line of _envContent.split('\n')) {
       const _trimmed = _line.trim();
       if (!_trimmed || _trimmed.startsWith('#')) continue;
@@ -18,11 +21,13 @@ try {
       if (_eqIdx < 0) continue;
       const _key = _trimmed.substring(0, _eqIdx).trim();
       const _value = _trimmed.substring(_eqIdx + 1).trim();
-      if (_key && !process.env[_key]) process.env[_key] = _value;
+      if (_key) process.env[_key] = _value;  // .env 始终是权威源
     }
-    console.log('[Config] .env 已加载');
+    console.log('[Config] .env 已加载 (' + _envPath + ')');
+  } else {
+    console.warn('[Config] .env 未找到: ' + _envPath);
   }
-} catch (_e) { /* .env not required */ }
+} catch (_e) { console.warn('[Config] .env 加载失败:', (_e as Error)?.message); }
 
 import http from 'node:http';
 import fs, { readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
@@ -114,7 +119,8 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data', 'webui');
 const DB_PATH = path.join(DATA_DIR, 'knowledge', 'family_graph.db');
-const HTML_PATH = path.join(__dirname, 'index.html');
+const HTML_PATH = path.join(PROJECT_ROOT, 'src', 'webui', 'index.html');
+const HTML_PATH_UI = path.join(PROJECT_ROOT, 'ui', 'dist', 'index.html');
 const PORT = ConfigService.getInt('PORT', 3000);
 const WS_DEBUG_MODE = ConfigService.getBool('WS_DEBUG_MODE');
 // 🔋 Token节省模式 — 默认 false（正常运行），仅调试时在 .env 设 WS_LAZY_TIMERS=true
@@ -547,6 +553,38 @@ async function initPipeline(): Promise<void> {
     }
   } catch (e) { console.error('🛡️ FG 完整性守护异常:', e); }
 
+  // V10.0: 三段记忆健康守护
+  try {
+    const esql3 = storage.getSQLite();
+    if (esql3 && typeof esql3.queryAll === 'function') {
+      const checks: string[] = [];
+      // 1. 钙化分布
+      const caDist = esql3.queryAll("SELECT calcium_level, COUNT(*) as cnt FROM memories WHERE leaf_zone='user' GROUP BY calcium_level ORDER BY calcium_level") || [];
+      const caMap: Record<number, number> = {0:0,1:0,2:0,3:0};
+      for (const r of caDist) caMap[Number(r.calcium_level)] = Number(r.cnt);
+      const total = caMap[0]+caMap[1]+caMap[2]+caMap[3];
+      if (total > 0) {
+        const level1Pct = Math.round(caMap[1]/total*100);
+        if (level1Pct > 90) checks.push('钙化L1占比' + level1Pct + '%(>90%分级失效)');
+      }
+      // 2. 黑钻命中
+      const bdHit = esql3.queryAll("SELECT COUNT(*) as cnt FROM black_diamond WHERE recall_count > 0") || [];
+      const bdAll = esql3.queryAll("SELECT COUNT(*) as cnt FROM black_diamond") || [];
+      const hitCnt: number = (bdHit[0] as any)?.cnt || 0;
+      const allCnt: number = (bdAll[0] as any)?.cnt || 0;
+      if (allCnt > 0 && hitCnt / allCnt < 0.1) checks.push('黑钻命中率' + Math.round(hitCnt/allCnt*100) + '%(<10%)');
+      // 3. assistant写入率
+      const astCnt: number = (esql3.queryAll("SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone='assistant'")[0] as any)?.cnt || 0;
+      const usrCnt: number = (esql3.queryAll("SELECT COUNT(*) as cnt FROM memories WHERE leaf_zone='user'")[0] as any)?.cnt || 0;
+      if (usrCnt > 0 && astCnt / usrCnt < 0.3) checks.push('回复写入率' + Math.round(astCnt/usrCnt*100) + '%(<30%)');
+      // 4. 金库
+      const gs: any = esql3.queryAll("SELECT COUNT(*) as cnt FROM vault_log WHERE content_md IS NOT NULL")[0];
+      checks.push('金库content_md:' + (gs?.cnt || 0) + '条');
+      if (checks.length > 0) console.warn('[MemoryHealth] ⚠️ ' + checks.join(' | '));
+      else console.log('[MemoryHealth] ✅ 三段记忆健康');
+    }
+  } catch (_e3) { /* 守护不阻塞服务 */ }
+
   // 🏛️ FG→黑钻同步：核心人物档案 + 家族关系纳入钙化休眠体系
   try {
     const esql2 = storage.getSQLite();
@@ -839,7 +877,7 @@ async function initPipeline(): Promise<void> {
       const { MDFileWatcher } = await import('../engine/tianquan/knowledge/MDFileWatcher.js');
       const { WikiLinkResolver } = await import('../engine/tianquan/knowledge/WikiLinkResolver.js');
       const { SourceTracker } = await import('../engine/tianquan/knowledge/SourceTracker.js');
-      const vaultPath = path.join(PROJECT_ROOT, 'data', 'knowledge-v4');
+      const vaultPath = path.join(PROJECT_ROOT, 'data', 'knowledge-md');
       const secondBrainGateway = new SecondBrainGateway(vaultPath);
       await secondBrainGateway.initialize();
       (globalThis as any).__secondBrainGateway = secondBrainGateway;
@@ -1291,6 +1329,31 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 
 
 async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
+  // 🔥 V10.0: 自然语言会晤触发 — 支持"我想找XX聊聊""瑶瑶，找XX来"等句式
+  if (entityMeeting && !entityMeeting.isActive()) {
+    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+    let found: string | null = null;
+
+    // 路径A: "找XX聊聊/谈谈/了解一下" | "想找XX" | "想和XX聊" | "叫XX来" | "让XX过来"
+    const hasMeetingIntent = /找.*聊聊|找.*谈谈|找.*了解一下|想找|想和.*聊|想跟.*聊|叫.*来|让.*过来|找.*了解|和.*聊聊|跟.*聊聊/.test(message);
+
+    for (const n of HC) {
+      const short = n.length >= 3 ? n.slice(-2) : null;
+      if (message.includes(n) || (short && message.includes(short))) {
+        if (hasMeetingIntent || message.length <= 6 || /^你是|^你叫/.test(message)) {
+          found = n; break;
+        }
+      }
+    }
+    if (found) {
+      const r = entityMeeting.enter(found, conversationHistory?.length ?? 0);
+      console.log('[server.ts V10.0] enter(' + found + ') => ' + (r ? 'OK' : 'FAILED'));
+    }
+  }
+  // 退出
+  if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
+    await entityMeeting.exit(); console.log('[server.ts V10.0] 退出');
+  }
   return processChatNew(message, {
     encoder, storage, m3, m4, m5, m6, m7,
     masterProfile,
@@ -1319,7 +1382,22 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
  * 2. 新链路正常 → 走 orchestrator
  * 3. 新链路异常 → 静默回退旧链路，用户无感知
  */
-async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> { console.log('[HUM] message=' + message.substring(0,20) + ' clientMsgId=' + (clientMsgId||'').substring(0,20) + ' ENABLE_NEW_ARCH=' + ENABLE_NEW_ARCH + ' orch=' + !!orchestrator);
+async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
+  // 🔥 V10.0: 服务器级会晤强制激活
+  if (entityMeeting && !entityMeeting.isActive()) {
+    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','邱工','刘云新','陈工','李工'];
+    for (const n of HC) {
+      if (message.indexOf(n) >= 0 || (n.length >= 3 && message.indexOf(n.slice(-2)) >= 0)) {
+        entityMeeting.enter(n, conversationHistory?.length ?? 0);
+        console.log('[server.ts V10.0 HUM] enter(' + n + ') isActive=' + entityMeeting.isActive());
+        break;
+      }
+    }
+  }
+  if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
+    await entityMeeting.exit(); console.log('[server.ts V10.0 HUM] 退出');
+  }
+  console.log('[HUM] message=' + message.substring(0,20) + ' clientMsgId=' + (clientMsgId||'').substring(0,20) + ' ENABLE_NEW_ARCH=' + ENABLE_NEW_ARCH + ' orch=' + !!orchestrator);
   if (!ENABLE_NEW_ARCH || !orchestrator) {
     return processChat(message, clientMsgId, testMode);
   }
@@ -1580,13 +1658,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     DATA_DIR, PROJECT_ROOT, PROJECT_DIR: path.join(__dirname, '..', '..'),
     saveConversationHistory, listApiKeys: listKeys as any, setApiKey: setKey as any,
     deleteApiKey: deleteKey as any, getApiKey: getKeyValue as any,
+    entityMeeting,  // V10.1: 字节级会晤触发
   }, req, res, url)) return;
 
   try {
     // ── 首页 ──
     if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(fs.readFileSync(HTML_PATH, 'utf-8'));
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' });
+      const _htmlPath = path.resolve(PROJECT_ROOT, 'src', 'webui', 'index.html');
+      fs.readFile(_htmlPath, 'utf-8', (_err, html) => {
+        if (html) { res.end(html); return; }
+        res.end('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>玉瑶·太虚境</title></head><body><h1>玉瑶·太虚境</h1><p>页面加载失败</p></body></html>');
+      });
     }
 
     // ── 知识库文件列表 ──
@@ -1652,42 +1735,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
     }
 
-    // ── 记事记忆 API ──
-    if (req.method === 'POST' && url.pathname === '/api/memory') {
-      try {
-        const body = JSON.parse(await readBody(req));
-        const { type, key, value, remind_at, repeat_rule } = body;
-        if (!type || !key || !value) { res.writeHead(400); res.end(JSON.stringify({ error: 'type, key, value required' })); return; }
-        switch (type) {
-          case 'object_location': yuyaoMemory.storeObjectLocation(key, value); break;
-          case 'fact': yuyaoMemory.storeFact(key, value); break;
-          case 'reminder': yuyaoMemory.setReminder(value, remind_at || new Date(Date.now() + 3600000).toISOString(), repeat_rule); break;
-          default: res.writeHead(400); res.end(JSON.stringify({ error: 'unknown type' })); return;
-        }
-        res.writeHead(200); res.end(JSON.stringify({ ok: true }));
-      } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-    }
-    if (req.method === 'GET' && url.pathname === '/api/memory') {
-      try {
-        const q = url.searchParams.get('q') || '';
-        const results = yuyaoMemory.search(q);
-        res.writeHead(200); res.end(JSON.stringify({ results }));
-      } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-    }
-    if (req.method === 'GET' && url.pathname === '/api/memory/reminders') {
-      try {
-        const reminders = yuyaoMemory.getPendingReminders();
-        res.writeHead(200); res.end(JSON.stringify({ reminders }));
-      } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-    }
-    if (req.method === 'POST' && url.pathname === '/api/memory/ack-reminder') {
-      try {
-        const body = JSON.parse(await readBody(req));
-        if (!body.id) { res.writeHead(400); res.end(JSON.stringify({ error: 'id required' })); return; }
-        yuyaoMemory.markReminded(body.id);
-        res.writeHead(200); res.end(JSON.stringify({ ok: true }));
-      } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
-    }
+    // ── V10.0 P1-8: 以下重复的 /api/memory 路由已删除（上方 1612-1653 已有完整实现）
 
     // ── 候选回复偏好记录
     // ── 候选回复偏好记录（用户选择了哪个候选，记录到 M6） ──

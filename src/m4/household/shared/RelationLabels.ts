@@ -31,6 +31,7 @@ const DIRECTED_FAMILY_LABEL: Record<string, DirectedPair> = {
   'uncle_of':              ['叔叔/舅',   '侄甥辈'],
   'niece_of':              ['侄甥辈',     '姑姑/姨'],
   'nephew_of':             ['侄甥辈',     '叔叔/舅'],
+  'cousin_of':             ['表亲',       '表亲'],
 };
 
 const SOCIAL_LABEL: Record<string, string> = {
@@ -57,6 +58,7 @@ const SOCIAL_LABEL: Record<string, string> = {
   'investor_of':      '投资人',
   'supplier_of':      '供应商',
   'stranger_of':      '陌生人',
+  'acquaintance_of':  '认识的人',
 };
 
 /**
@@ -72,4 +74,29 @@ export function getRelationLabel(relation: string, isOutgoing: boolean): string 
   const social = SOCIAL_LABEL[relation];
   if (social) return social;
   return relation; // fallback: 直接返回原始边类型名
+}
+
+/**
+ * V10.4: 获取修正后的 relation_to_user
+ * ======================================
+ * FG 启动迁移脚本有 bug——反复覆盖 nodes.properties.relation_to_user。
+ * 此函数是全局唯一定义点：EntityContextBuilder / MeetingContextPipeline /
+ * EntityGreetingProtocol / M4Orchestrator 均从此处读取。
+ *
+ * 新增/修正实体时，只改此处的 FIXES 映射即可，全局生效。
+ */
+const RELATION_FIXES: Record<string, string> = {
+  '徐诗雨': '同事——高峰电业营业部跟单员',
+  '徐诗韵': '密友——通过姐姐诗雨认识',
+  '徐诗涵': '密友——通过姐姐诗雨认识',
+  '熊梓铭': '熊勇的女儿（心理学专业学生）',
+  '熊梓玥': '熊勇的小女儿（学生）',
+  '熊勇': '同事——高峰电业营销总监',
+  '王全芬': '熊勇的妻子（全职太太）',
+  '阿苏': '徐家姐妹的母亲（全职太太）',
+  '徐东伟': '徐家姐妹的父亲（在贵港务工）',
+};
+
+export function getCorrectedRelation(entityName: string, profileRel: string | undefined | null): string {
+  return RELATION_FIXES[entityName] || profileRel || '';
 }

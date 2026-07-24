@@ -62,6 +62,27 @@ function buildPerceptionJson(p: Perception24D): string {
   return JSON.stringify(vec);
 }
 
+/** 🔧 V10.5: 从 assistant 回复中检测说话者 UUID（自称匹配） */
+function _detectSpeakerUUID(reply: string, ctx: any): string | null {
+  try {
+    const sqlite = ctx.storage?.getSQLite?.();
+    if (!sqlite) return null;
+    const head = reply.substring(0, 60);
+    const selfMatch = head.match(/我是([一-龥]{2,4})|([一-龥]{2,4})来了|([一-龥]{2,4})在这/);
+    if (selfMatch) {
+      const name = selfMatch[1] || selfMatch[2] || selfMatch[3];
+      if (name && name.length >= 2) {
+        const ent = sqlite.queryAll("SELECT uuid FROM entities WHERE name=? AND type='person' LIMIT 1", [name]);
+        if (ent?.length && (ent[0] as any).uuid) {
+          console.log('[Persist] 自称检测: "' + name + '" → ' + (ent[0] as any).uuid);
+          return (ent[0] as any).uuid;
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
 /**
  * 三写持久化（每轮对话调用 1 次）
  *
@@ -114,7 +135,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       dnaRootId: (input.dna as any).dna_root_id,
       globalUid: input.dna.global_uid || (input.dna as any).dna_root_id,
       locationFingerprint: input.dna.location_fingerprint || '',
-      belongEntityUuid: belongUUID || undefined,
+      belongEntityUuid: belongUUID || _detectSpeakerUUID(input.reply, input.ctx) || undefined,
     });
   } catch (e: any) {
     console.error('[Persist] ❌ conversations.db 写入失败:', e?.message);
@@ -146,6 +167,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       sourceConversationIds: [input.seqPos],
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
+      belongEntityUuid: belongUUID || undefined,  // V10.4: 实体归属标注
     })) {
       hadError = true;
     }
@@ -169,6 +191,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       sourceConversationIds: [input.seqPos + 1],
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
+      belongEntityUuid: belongUUID || _detectSpeakerUUID(input.reply, input.ctx) || undefined,  // V10.5: 自称检测
     })) {
       hadError = true;
     }
@@ -242,4 +265,40 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   if (hadError) {
     console.warn(`[Persist] ⚠️ 本轮写入有错误 seq=${input.seqPos} msg="${input.message.substring(0, 20)}"`);
   }
+
+  // 🔧 V10.1 P1-2: 对话→知识归纳 —— 用户消息含事实陈述时自动提取到知识库
+  try {
+    const _msg = input.message;
+    const _patterns = [
+      { re: /我(?:在|住在|家[住在])[^\s，。？！]{2,20}(?:[^\s，。？！]{0,5})?/, cat: '地址' },
+      { re: /我(?:公?司|在)[^\s，。？！]{2,30}(?:公司|上班|工作|科技|工厂|企业)/, cat: '工作' },
+      { re: /我(?:儿子|女儿|孩子|小孩|宝宝)[^\s，。？！叫]{0,10}(?:叫|是|名字)[^\s，。？！]{2,10}/, cat: '家人' },
+      { re: /我(?:老婆|老公|妻子|丈夫|对象|男朋友|女朋友)[^\s，。？！叫]{0,10}(?:叫|是|在)[^\s，。？！]{2,20}/, cat: '家人' },
+      { re: /我(?:爸|妈|父亲|母亲|爸爸|妈妈)[^\s，。？！叫]{0,10}(?:叫|是|名字)[^\s，。？！]{2,10}/, cat: '家人' },
+    ];
+    for (const { re, cat } of _patterns) {
+      const _match = _msg.match(re);
+      if (_match) {
+        const _fact = _match[0].trim();
+        if (_fact.length >= 4) {
+          // 异步添加到知识库，不阻塞对话
+          const _kb = (input.ctx as any).knowledgeBase;
+          if (_kb && typeof _kb.add === 'function') {
+            _kb.add({
+              title: `[对话归纳] ${_fact}`,
+              content: `鸿艺曾说过：${_msg}`,
+              source_type: 'research',
+              tags: ['auto_inducted', 'conversation', cat],
+              interaction_type: 'other',
+            }).then(function() {
+              console.log('[KB·Induct] ' + cat + ' → "' + _fact.substring(0, 30) + '"');
+            }).catch(function(e: any) {
+              // 隐私守卫拦截或source_type不合法 → 静默跳过
+            });
+          }
+          break; // 一条消息只提取最优先的
+        }
+      }
+    }
+  } catch (_indErr) { /* 归纳失败不阻塞 */ }
 }

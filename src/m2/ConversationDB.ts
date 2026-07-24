@@ -105,6 +105,8 @@ export class ConversationDB {
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id)`);
+    // 🆕 V10.0 P0-3: 独立模式也确保新字段存在（global_uid, location_fingerprint 等）
+    this.ensureFields();
     this.initialized = true;
     console.log('[ConversationDB] 初始化完成: ' + this.dbPath);
   }
@@ -124,6 +126,8 @@ export class ConversationDB {
     try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN global_uid TEXT"); } catch {} /* V10.0 P0-3 */
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN location_fingerprint TEXT"); } catch {} /* V10.0 P0-3 */
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
   }
 

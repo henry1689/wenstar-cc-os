@@ -171,7 +171,7 @@ export class MasterProfileService {
           if (existing.length === 0) {
             const id = 'net_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
             this.sqlite.writeRaw(
-              'INSERT INTO master_network (id, person_name, relation_type, context, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+              'INSERT INTO master_network (id, person_name, relation_type, context, importance, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)',
               id, foundName, String(item.category), String(item.content), now, now
             );
           }
@@ -206,7 +206,7 @@ export class MasterProfileService {
     );
     // 重要人脉
     const network = this.sqlite.queryAll(
-      'SELECT person_name, relation_type, organization FROM master_network WHERE importance >= 3 ORDER BY last_contact DESC LIMIT 3'
+      'SELECT person_name, relation_type, organization FROM master_network WHERE importance >= 1 OR importance IS NULL ORDER BY last_contact DESC LIMIT 3'
     );
 
     const lines: string[] = [];

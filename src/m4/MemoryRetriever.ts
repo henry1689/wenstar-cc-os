@@ -479,8 +479,8 @@ export class MemoryRetriever {
 
     const timeline = dnas.map((dna) => ({
       time: dna.created_at,
-      summary: dna.raw_input.length > 60
-        ? dna.raw_input.substring(0, 60) + '...'
+      summary: dna.raw_input.length > 80
+        ? dna.raw_input.substring(0, 80) + '...'
         : dna.raw_input,
       calcium_level: dna.calcium_level ?? 1,
       // P0-1: 透传根码

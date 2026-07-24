@@ -10,7 +10,7 @@
  */
 import type { LLMProvider, StrategyConfig, CognitionObject, ConversationTurn } from './types/index.js';
 import { buildSystemPrompt, STYLE_ANCHORS } from './persona/lover-persona.js';
-import { selectLLMConfig, getScenarioConfig } from '../common/const/llm-config.js';
+import { selectLLMConfig, getScenarioConfig, getProviderConfig } from '../common/const/llm-config.js';
 import { buildSystemPrompt as buildCoreSystemPrompt } from './prompts/core-rules.js';
 import { isDeepIntimate, isAcademic, isMoan } from '../common/utils/is-intimate.js';
 import { calcLevel } from './expression/TierVocabMap.js';
@@ -27,8 +27,10 @@ import { validateRoleOutput, getFallbackRole } from '../app/role/RoleGuard.js';
 // 改造④：不在模块级读 process.env，构造函数中通过 ConfigService 运行时获取
 import { ConfigService } from '../config/ConfigService.js';
 
-const BASE_URL = ConfigService.get('LLM_API_BASE_URL', 'https://api.deepseek.com/v1');
-const MAX_HISTORY_TURNS = 200;
+// 🆕 V10.0 P3-3: 单一 Provider 配置源 — 从 llm-config.ts 获取（避免双源头漂移）
+const _providerCfg = getProviderConfig();
+const BASE_URL = _providerCfg.baseUrl;
+const MAX_HISTORY_TURNS = _providerCfg.maxHistoryTurns;
 // FIX-3: 工作消息时缩减历史（防止亲密历史污染工作上下文）
 function getHistoryLimit(txt: string): number {
   if (/工作|项目|客户|会议|方案|报告|公司|合同|预算|数据|分析|策略|设计|电机|采购|成本|温升|版本|产品|技术|报价|订单|生产|测试|样品|图纸|规格|性能|参数|工程|研发|工艺|质量|供应商/.test(txt)) return 10;
@@ -50,7 +52,9 @@ interface DeepSeekResponse {
 
 /** 运行时获取 API Key（多 Provider 兼容） */
 function resolveApiKey(): string | undefined {
-  return process.env['DEEPSEEK_API_KEY'] || process.env['LLM_API_KEY'] || getKeyValue('DEEPSEEK_API_KEY') || getKeyValue('LLM_API_KEY') || undefined;
+  const fromEnv = process.env['DEEPSEEK_API_KEY'] || process.env['LLM_API_KEY'] || process.env['DOUBAO_API_KEY'] || undefined;
+  const fromStore = getKeyValue('DEEPSEEK_API_KEY') || getKeyValue('LLM_API_KEY') || getKeyValue('DOUBAO_API_KEY') || undefined;
+  return fromEnv || fromStore;
 }
 
 export function isAvailable(): boolean {
@@ -71,7 +75,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
   private persona: IPersona;
 
   constructor(model?: string, persona?: IPersona) {
-    this.model = model || process.env['LLM_MODEL'] || process.env['DEEPSEEK_MODEL'] || ConfigService.get('DEEPSEEK_MODEL', 'deepseek-v4-flash');
+    this.model = model || process.env['LLM_MODEL'] || process.env['DEEPSEEK_MODEL'] || _providerCfg.model;
     // 默认玉瑶人设
     this.persona = persona ?? {
       id: 'yuyao',
@@ -106,7 +110,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const _dl = (extraParams as any).level ?? 0;
-        const _timeoutMs = _dl >= 2 ? 20000 : _dl <= -2 ? 15000 : 10000;
+        const _timeoutMs = _dl >= 2 ? 30000 : _dl <= -2 ? 20000 : 20000;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), _timeoutMs);
 
@@ -159,7 +163,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
         //   "思考句1。思考句2……\n\n回答句1。回答句2。"
         // 思维部分通常在第一个双换行之前，或只包含1个短段落
         // 策略：如果开头有1-3句内心独白（含特定关键词），则去掉
-        const THINKING_KEYWORDS = /让[我你]想|让我回|记得|心里|想到|脑中|好好回|在意|吃醋|心酸|我们被问|这是一个|当前场景|当前时间|我需要|注意|考虑到|根据规则|从历史|在角色扮演|但根据|所以这|可能[是用]户|作为[一我]|我的角色|我应该|最安全|但注意|可能这是|另外|此外|综上所述|简单来[说讲]|也就是说|用户最后|用户可能|用户当前|我的回复|这个角色|我在想|我决定|最简单的做法|考虑到用户/;
+        const THINKING_KEYWORDS = /让[我你]想|让我回|记得|心里|想到|脑中|好好回|在意|吃醋|心酸|我们被问|这是一个|当前场景|当前时间|我需要|注意|考虑到|根据规则|从历史|在角色扮演|但根据|所以这|可能[是用]户|作为[一我]|我的角色|我应该|最安全|但注意|可能这是|另外|此外|综上所述|简单来[说讲]|也就是说|用户最后|用户可能|用户当前|我的回复|这个角色|我在想|我决定|最简单的做法/;
         // 去掉开头第一个段落（以双换行结束），如果它包含思维关键词
         const firstPara = text.match(/^(.+?)(\n\n|$)/);
         if (firstPara && THINKING_KEYWORDS.test(firstPara[1])) {
@@ -396,7 +400,6 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
     // 注入最近对话历史
     if (_isEntityMeeting) {
-      // 🆕 V4.0 → V5.0: 会晤模式 — 历史轮数 6→20（约10轮对话），足够维持话题连贯性
       const recentTurns = history.slice(-20);
       for (const turn of recentTurns) {
         messages.push({ role: turn.role, content: turn.content });
@@ -433,7 +436,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
     // 当前用户消息
     const userMsgContent = _isEntityMeeting
-      ? `[${entities.join('、')} 的视角] 鸿艺对你说：${rawInput}`  // 🆕 V5.0: 会晤模式加身份标签
+      ? `[当前说话对象: ${entities.join('、')} | ⚠️ 你不是玉瑶] 鸿艺对你说：${rawInput}`  // V9.0: 加强身份校验
       : (hasSelfProfile && isSelfIntroQuery ? rawInput : `${contextBlock}\n鸿艺: ${rawInput}`);
     messages.push({ role: 'user', content: userMsgContent });
     // LLM params from config center

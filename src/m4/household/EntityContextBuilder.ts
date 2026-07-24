@@ -1,287 +1,252 @@
 /**
- * EntityContextBuilder — 实体会晤人物上下文构建器
- *
- * 从实体 dossier + edges + 对话历史构建 LLM 上下文。
- * 替代旧的 _loadRPFamily / _loadRPKnowledge / _loadRPPastHistory 等分散逻辑。
- *
- * 核心原则：
- * - 唯一数据源 = dossier 结构化档案（不依赖碎片对话）
- * - 实时查询 = edges BFS 关系（不缓存于硬编码 prompt）
- * - 按需组装 = 只取本次会晤需要的字段（不注入全量档案）
+ * EntityContextBuilder — 实体会晤人物上下文构建器 V10.0
+ * ======================================================
+ * 从实体 dossier + edges 构建 LLM 上下文。
+ * V10.0: 家庭+社交双区块，acquaintance_of 传递闭包，去重+方向修正
  */
-
 import type { FamilyGraph, PersonProfile, PersonDossier } from './FamilyGraph.js';
-import { getRelationLabel } from './shared/RelationLabels.js';
+import { getRelationLabel, getCorrectedRelation } from './shared/RelationLabels.js';
 import { buildGreetingProtocol } from './EntityGreetingProtocol.js';
 
-/** 构建选项 */
 export interface EntityContextOptions {
-  /** 会晤目标人名 */
-  entityName: string;
-  /** 是否包含外貌描述 */
-  appearance?: boolean;
-  /** 是否包含女性详细体征 */
-  feminineDetails?: boolean;
-  /** 历史对话条数 */
-  recentHistoryCount?: number;
-  /** 🆕 V3.0: 是否首轮对话（注入开场协议） */
-  isFirstTurn?: boolean;
-  /** 🆕 V3.0: 用户名（用于开场协议称呼） */
-  userName?: string;
-  /** 🆕 V4.0: 与该实体的近期对话记录 */
+  entityName: string; appearance?: boolean; feminineDetails?: boolean;
+  recentHistoryCount?: number; isFirstTurn?: boolean; userName?: string;
   recentConversations?: Array<{ role: string; content: string; timestamp: string }>;
 }
+export interface EntityContextResult { systemText: string; summary: string; completeness: number; }
 
-/** 构建结果 */
-export interface EntityContextResult {
-  /** 注入 LLM 的 system prompt 文本 */
-  systemText: string;
-  /** 人物摘要（供日志/调试） */
-  summary: string;
-  /** 档案完整度 */
-  completeness: number;
-}
+const GARBAGE_NAMES = new Set(['我','妹妹','妈妈','老婆','爸爸','姐姐','哥哥','弟弟','叔叔','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班','爸爸','妈妈','姑姑','上司','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','什么名字','那你说','那继续']);
+const EXCLUDE_RELS = new Set(['grandchild_of','grandmother_of','grandfather_of','grandparent_of','lives_in','residence_of','has_appearance','has_feature','其他','认识的人']);
 
-/**
- * 从 PersonDossier 构建会晤人物上下文。
- */
-export function buildEntityContext(
-  familyGraph: FamilyGraph,
-  options: EntityContextOptions
-): EntityContextResult {
-  const { entityName, appearance = true, feminineDetails = false, recentHistoryCount = 5, isFirstTurn = false, userName = '鸿艺', recentConversations } = options;
+const SOCIAL_LABELS: Record<string,string> = {
+  'colleague_of':'同事','boss_of':'上司','subordinate_of':'下属',
+  'friend_of':'朋友','classmate_of':'同学','partner_of':'合伙人',
+  'client_of':'客户','neighbor_of':'邻居','teacher_of':'老师',
+  'spouse_of':'配偶','acquaintance_of':'认识的人',
+};
 
+export function buildEntityContext(familyGraph: FamilyGraph, options: EntityContextOptions): EntityContextResult {
+  const { entityName, appearance=true, feminineDetails=false, recentHistoryCount=5, isFirstTurn=false, userName='鸿艺', recentConversations } = options;
   const profile = familyGraph.getPersonProfile(entityName);
-  if (!profile) {
-    return {
-      systemText: `你是 ${entityName}。（暂无详细档案）`,
-      summary: `${entityName}: 档案不存在`,
-      completeness: 0,
-    };
-  }
+  if (!profile) return { systemText: `你是 ${entityName}。（暂无详细档案）`, summary: `${entityName}: 档案不存在`, completeness: 0 };
 
   const dossier = profile.dossier || {} as PersonDossier;
   const selfProfile = dossier.selfProfile || {};
   const basicInfo = dossier.basicInfo || {};
   const socialIdentity = dossier.socialIdentity || {};
-
-  // 关系边
   const edges = _getRelatedEdges(familyGraph, entityName);
-
   const parts: string[] = [];
 
-  // ═══ 身份声明 ═══
+  // ═══ 身份 ═══
   parts.push(`## 你的身份`);
   parts.push(`你是 **${entityName}**。以下是你的人生档案，请严格基于此档案回复。`);
   parts.push('');
+
+  // ===== 家庭关系摘要(核心+扩展亲属) =====
+  const PARENT_RELS = new Set(["child_of","parent_of","mother_of","father_of"]);
+  const SIBLING_RELS = new Set(["elder_sister_of","younger_sister_of","sister_of","elder_brother_of","younger_brother_of","brother_of","sibling_of"]);
+  const EXT_FAMILY_RELS = new Set(["aunt_of","uncle_of","niece_of","nephew_of","cousin_of","grandmother_of","grandfather_of","grandchild_of"]);
+  const parentEdges = edges.filter((e: any) => PARENT_RELS.has(e.relation));
+  const siblingEdges = edges.filter((e: any) => SIBLING_RELS.has(e.relation));
+  const extFamilyEdges = edges.filter((e: any) => EXT_FAMILY_RELS.has(e.relation));
+
+  const hasFamily = parentEdges.length > 0 || siblingEdges.length > 0 || extFamilyEdges.length > 0;
+  if (hasFamily) {
+    parts.push('### 你的家人');
+    const fatherNames: string[] = [];
+    const motherNames: string[] = [];
+    for (const e of parentEdges) {
+      const p = familyGraph.getPersonProfile(e.entity);
+      if (p && (p as any)?.dossier?.basicInfo?.gender === '女') motherNames.push(e.entity);
+      else fatherNames.push(e.entity);
+    }
+    if (fatherNames.length) parts.push(`父亲：${fatherNames.join('、')}`);
+    if (motherNames.length) parts.push(`母亲：${motherNames.join('、')}`);
+    if (siblingEdges.length) {
+      // 🔴 去重：同一人可能有多条同级关系边（如 elder_sister_of + younger_sister_of 同时存在），按名字去重
+      const seenSibs = new Set<string>();
+      const uniqueSibs = siblingEdges.filter((e: any) => { if (seenSibs.has(e.entity)) return false; seenSibs.add(e.entity); return true; });
+      parts.push(`兄弟姐妹：${uniqueSibs.map((e: any) => `${e.entity}（${e.relationLabel}）`).join('、')}`);
+    }
+    if (extFamilyEdges.length) {
+      // 分组展示
+      const grouped: Record<string, string[]> = {};
+      for (const e of extFamilyEdges) {
+        const lbl = e.relationLabel || e.relation;
+        if (!grouped[lbl]) grouped[lbl] = [];
+        grouped[lbl].push(e.entity);
+      }
+      for (const [lbl, names] of Object.entries(grouped)) {
+        parts.push(`${lbl}：${names.join('、')}`);
+      }
+    }
+    parts.push('');
+  }
 
   // ═══ 基本信息 ═══
   const bioParts: string[] = [];
   if (basicInfo.gender) bioParts.push(`性别: ${basicInfo.gender}`);
   if (basicInfo.birthYear) bioParts.push(`出生年: ${basicInfo.birthYear}`);
-  if (basicInfo.birthPlace) bioParts.push(`出生地: ${basicInfo.birthPlace}`);
   if (basicInfo.education) bioParts.push(`学历: ${basicInfo.education}`);
   if (basicInfo.maritalStatus) bioParts.push(`婚姻: ${basicInfo.maritalStatus}`);
-  if (basicInfo.ethnicity) bioParts.push(`民族: ${basicInfo.ethnicity}`);
-  // 🆕 V4.0: 从生命里程碑中提取年龄信息
-  if (!basicInfo.birthYear) {
-    const allMilestones = dossier.lifeMilestones || [];
-    for (const ms of allMilestones) {
-      const ageMatch = (ms.event || '').match(/年龄[：:]\s*(\d+)\s*岁/);
-      if (ageMatch) {
-        bioParts.push(`当前年龄: ${ageMatch[1]}岁 (${ms.date || '近期记录'})`);
-        break;
-      }
-      const birthMatch = (ms.event || '').match(/(\d{4})\s*年/);
-      if (birthMatch) {
-        bioParts.push(`出生年: ${birthMatch[1]}`);
-        break;
-      }
+  if (bioParts.length > 0) { parts.push('### 基本信息'); parts.push(bioParts.join('  |  ')); parts.push(''); }
+
+  // ═══ 社会身份 ═══
+  const socParts: string[] = [];
+  if (socialIdentity.currentOccupation) socParts.push(`职业: ${socialIdentity.currentOccupation}`);
+  if (socialIdentity.currentWorkplace) socParts.push(`工作单位: ${socialIdentity.currentWorkplace}`);
+
+  // 🔴 关系标签：优先从 FG edges 计算（不会被迁移覆盖），fallback 到 profile.relation_to_user
+  const MY_RELATION_LABELS: Record<string, string> = {
+    'child_of': '鸿艺的孩子', 'parent_of': '鸿艺的家长', 'mother_of': '鸿艺的母亲', 'father_of': '鸿艺的父亲',
+    'younger_sister_of': '鸿艺的妹妹', 'elder_sister_of': '鸿艺的姐姐', 'sister_of': '鸿艺的姐妹',
+    'younger_brother_of': '鸿艺的弟弟', 'elder_brother_of': '鸿艺的哥哥', 'brother_of': '鸿艺的兄弟', 'sibling_of': '鸿艺的兄妹',
+    'spouse_of': '鸿艺的配偶', 'colleague_of': '同事', 'boss_of': '上司', 'subordinate_of': '下属',
+    'friend_of': '朋友', 'classmate_of': '同学', 'acquaintance_of': '认识的人',
+  };
+  let _relationLabel = '';
+  for (const e of edges) {
+    if (MY_RELATION_LABELS[e.relation]) {
+      _relationLabel = MY_RELATION_LABELS[e.relation];
+      if (!['认识的人', '同事', '朋友', '同学'].includes(_relationLabel)) break; // 亲密关系优先
+    }
+  }
+  if (!_relationLabel && profile.relation_to_user) _relationLabel = profile.relation_to_user;
+  // V10.4: 使用共享修正函数（RelationLabels.ts 唯一定义点）
+  _relationLabel = getCorrectedRelation(entityName, _relationLabel);
+  if (_relationLabel) socParts.push(`与鸿艺的关系: ${_relationLabel}`);
+  if (socParts.length > 0) { parts.push('### 社会身份'); parts.push(socParts.join('  |  ')); parts.push(''); }
+
+  // ═══ 性格 ═══
+  if (selfProfile.traits?.length) { parts.push('### 性格'); parts.push(selfProfile.traits.join('、')); parts.push(''); }
+
+  // ═══ 社交关系（系统级：通过 acquaintance_of 传递闭包构建完整人际网络） ═══
+  // 原理：entity → acquaintance_of → 所有人 → 过滤社交类型标签
+  // 展示 entity 直接和间接认识的所有同事/朋友等
+  const allKnownNames = familyGraph.getAllPersonNames?.() || [];
+  const knownSet = new Set(allKnownNames.filter((n: string) => !GARBAGE_NAMES.has(n) && n !== entityName));
+  const socialDirect = edges.filter((e: any) => SOCIAL_LABELS[e.relation]);
+  const seen = new Set(socialDirect.map((e: any) => e.entity));
+
+  // 传递闭包：通过 acquaintance_of 找到所有间接认识的人
+  const acqEdges = edges.filter((e: any) => e.relation === 'acquaintance_of');
+  for (const ae of acqEdges) {
+    if (!seen.has(ae.entity) && knownSet.has(ae.entity)) {
+      socialDirect.push({ ...ae, relation: 'acquaintance_of', relationLabel: '认识的人' });
+      seen.add(ae.entity);
     }
   }
 
-  if (bioParts.length > 0) {
-    parts.push('### 基本信息');
-    parts.push(bioParts.join('  |  '));
-    parts.push('');
-  }
+  if (socialDirect.length > 0) {
+    // 收集家庭标签中已有的人（不重复展示在社交区）
+    const familyNames = new Set<string>();
+    for (const e of [...parentEdges, ...siblingEdges, ...extFamilyEdges]) familyNames.add(e.entity);
 
-  // ═══ 职业与社会身份 ═══
-  const socialParts: string[] = [];
-  if (socialIdentity.currentOccupation) socialParts.push(`职业: ${socialIdentity.currentOccupation}`);
-  if (socialIdentity.currentWorkplace) socialParts.push(`工作单位: ${socialIdentity.currentWorkplace}`);
-  if (profile.relation_to_user) socialParts.push(`与用户的关系: ${profile.relation_to_user}`);
-  if (socialParts.length > 0) {
-    parts.push('### 社会身份');
-    parts.push(socialParts.join('  |  '));
-    parts.push('');
-  }
+    // V10.0: 标签升级 — 通过传递闭包确定精确关系类型
+    const upgraded = socialDirect
+      .filter((e: any) => !familyNames.has(e.entity)) // 排除已有家族边的人
+      .map((e: any) => {
+        const personEdges = _getRelatedEdges(familyGraph, e.entity);
+        const isColleague = personEdges.some((pe: any) => pe.relation === 'colleague_of');
+        const isBoss = personEdges.some((pe: any) => pe.relation === 'boss_of');
+        const isSub = personEdges.some((pe: any) => pe.relation === 'subordinate_of');
+        if (isBoss) return { ...e, label: '上司' };
+        if (isSub) return { ...e, label: '下属' };
+        if (isColleague) return { ...e, label: '同事' };
+        return { ...e, label: SOCIAL_LABELS[(e as any).relation] || e.relationLabel };
+      });
 
-  // ═══ 性格 ═══
-  const traitParts: string[] = [];
-  if (selfProfile.traits && selfProfile.traits.length > 0)
-    traitParts.push(`性格: ${selfProfile.traits.join('、')}`);
-  if (selfProfile.likes && selfProfile.likes.length > 0)
-    traitParts.push(`喜好: ${selfProfile.likes.join('、')}`);
-  if (selfProfile.dislikes && selfProfile.dislikes.length > 0)
-    traitParts.push(`排斥: ${selfProfile.dislikes.join('、')}`);
-  if (selfProfile.languageHabits)
-    traitParts.push(`语言习惯: ${selfProfile.languageHabits}`);
-  if (selfProfile.taboos && selfProfile.taboos.length > 0)
-    traitParts.push(`禁忌: ${selfProfile.taboos.join('、')}`);
-  if (traitParts.length > 0) {
-    parts.push('### 性格与习惯');
-    parts.push(traitParts.join('\n'));
+    parts.push('### 你认识的人');
+    for (const e of upgraded) {
+      parts.push(`- ${e.entity}：${(e as any).label}`);
+    }
+    parts.push('（以上是你的人际网络。有人问你认不认识，你认识——档案里写了。不知道具体细节就说"知道但不太清楚详情"。）');
     parts.push('');
   }
 
   // ═══ 外貌 ═══
   if (appearance) {
-    const appearParts: string[] = [];
-    if (selfProfile.appearance) appearParts.push(selfProfile.appearance);
-    if (selfProfile.bodyFeatures) appearParts.push(selfProfile.bodyFeatures);
-    if (selfProfile.style) appearParts.push(selfProfile.style);
-    if (selfProfile.voice) appearParts.push(selfProfile.voice);
-    if (selfProfile.distinguishingMarks) appearParts.push(selfProfile.distinguishingMarks);
-    if (appearParts.length > 0) {
-      parts.push('### 外貌与形象');
-      parts.push(appearParts.join('  |  '));
-      parts.push('');
-    }
-  }
-
-  // ═══ 女性体征 ═══
-  if (feminineDetails && selfProfile.feminineDetails) {
-    const fd = selfProfile.feminineDetails;
-    const fdParts: string[] = [];
-    if (fd.firstImpression) fdParts.push(`整体印象: ${fd.firstImpression}`);
-    if (fd.stature) fdParts.push(`身高体型: ${fd.stature}`);
-    if (fd.measurements) fdParts.push(`三围: ${fd.measurements}`);
-    if (fd.breasts) fdParts.push(`胸部: ${fd.breasts}`);
-    if (fd.skin) fdParts.push(`皮肤: ${fd.skin}`);
-    if (fd.allure) fdParts.push(`魅力: ${fd.allure}`);
-    if (fdParts.length > 0) {
-      parts.push('### 女性体征');
-      parts.push(fdParts.join('\n'));
-      parts.push('');
-    }
-  }
-
-  // ═══ 人际关系 ═══
-  if (edges.length > 0) {
-    const relativeDetails: string[] = [];
-    for (const edge of edges) {
-      const relProfile = familyGraph.getPersonProfile(edge.entity);
-      const relBasic = relProfile?.dossier?.basicInfo || {};
-      const relMilestones = relProfile?.dossier?.lifeMilestones || [];
-      // 构建亲属详情
-      let detail = `${edge.entity}（${edge.relationLabel}`;
-      if (relBasic.gender) detail += `，${relBasic.gender}`;
-      if (relBasic.birthYear) detail += `，${relBasic.birthYear}年生`;
-      if (relBasic.education) detail += `，${relBasic.education}`;
-      if (relProfile?.occupation || (relProfile?.dossier as any)?.socialIdentity?.currentOccupation) detail += `，${relProfile?.occupation || (relProfile?.dossier as any)?.socialIdentity?.currentOccupation || ''}`;
-      // 从里程碑提取年龄
-      if (!relBasic.birthYear) {
-        for (const ms of relMilestones) {
-          const ageMatch = (ms.event || '').match(/年龄[：:]\s*(\d+)\s*岁/);
-          if (ageMatch) { detail += `，现年${ageMatch[1]}岁`; break; }
-        }
-      }
-      detail += '）';
-      if (detail.length > edge.entity.length + 10) {
-        relativeDetails.push(detail);
-      } else {
-        relativeDetails.push(`- ${edge.entity}: ${edge.relationLabel}`);
-      }
-    }
-
-    parts.push('### 你认识的人（含详情）');
-    for (const d of relativeDetails) {
-      parts.push(`- ${d}`);
-    }
-    parts.push('');
+    const ap: string[] = [];
+    if (selfProfile.appearance) ap.push(selfProfile.appearance);
+    if (selfProfile.bodyFeatures) ap.push(selfProfile.bodyFeatures);
+    if (selfProfile.style) ap.push(selfProfile.style);
+    if (ap.length > 0) { parts.push('### 外貌'); parts.push(ap.join(' | ')); parts.push(''); }
   }
 
   // ═══ 人生里程碑 ═══
-  if (dossier.lifeMilestones && dossier.lifeMilestones.length > 0) {
+  if (dossier.lifeMilestones?.length) {
     parts.push('### 人生里程碑');
-    for (const ms of dossier.lifeMilestones.slice(0, 5)) {
-      parts.push(`- ${ms.date}: ${ms.event}`);
-    }
-    parts.push('');
-  }
-
-  // 🆕 V4.0: 近期对话历史 — 让实体知道上次聊到哪了 ═══
-  if (recentConversations && recentConversations.length > 0) {
-    parts.push('### 你和鸿艺最近的对话');
-    parts.push('以下是你们近期的交流记录，你可以参考以保持对话的连贯性：');
-    for (const conv of recentConversations.slice(0, recentHistoryCount)) {
-      const role = conv.role === 'user' ? '鸿艺' : '你';
-      const date = conv.timestamp ? conv.timestamp.substring(0, 10) : '';
-      const snippet = (conv.content || '').substring(0, 150);
-      parts.push(`- (${date}) ${role}：${snippet}`);
-    }
+    for (const ms of dossier.lifeMilestones.slice(0, 3)) parts.push(`- ${ms.date}: ${ms.event}`);
     parts.push('');
   }
 
   // ═══ 行为约束 ═══
-  parts.push('### 行为规范');
-  parts.push(`- 你不扮演任何人——你就是 ${entityName} 本人`);
-  parts.push('- 你的回复应基于档案中记录的性格、语言习惯、知识范围');
-  parts.push('- 你对用户的认识来自档案中的关系记录');
-  parts.push('- 档案中标注"待采集"的信息，说明你不知道——如实说不知道，不编造');
-  parts.push('- 对话中用户告诉你新的个人信息，你会记住（系统自动归档）');
-  parts.push('');
-  // 🆕 V5.0: 每轮身份确认 + 自称铁律
-  parts.push('### 身份确认（每轮必读）');
-  parts.push(`- 🔴 你是 **${entityName}**，不是玉瑶。`);
-  parts.push(`- 🔴 你不是 AI，不是"瑶瑶"——你就是 ${entityName} 本人。`);
-  parts.push(`- 🔴 鸿艺说的话中，"你"指的就是你（${entityName}），"我"指的是鸿艺自己。不要搞混。`);
-  parts.push(`- 🔴 每条回复都必须自然地加入你的名字或自称，让鸿艺明确知道是你在说话。`);
-  parts.push(`  - ✅ 自然示例："诗雨觉得这个挺好的"、"梓铭我跟你说"、"阿珍今天…"、"嗯，${entityName}知道了"`);
-  parts.push('  - ❌ 不要说"玉瑶让我来的"、"我是AI助手"——你就是你档案里那个人。');
+  parts.push('### 规则');
+  parts.push(`- 你就是 ${entityName} 本人。基于你的档案和过去的对话记忆来回应鸿艺。`);
+  parts.push(`- 🔴【自称铁律 · 系统级规范】你的每一条回复中，除了括号里的心理描写外，在**正文语句里**必须自然地带上你的名字或自称（如"${entityName}觉得…""${entityName.slice(-2)}在这儿呢""我${entityName}…"）。这是为了让鸿艺一眼认出是谁在说话，也是系统识别说话人的兜底规则。`);
+  parts.push('- 🔴【回忆 ≠ 编造】下面的【过去的对话记忆】是你和鸿艺之间**真实发生过的对话**——这是你亲身的经历，不是编造。当你回顾这些记忆时，是在**回忆事实**。你可以自然地讲述记忆中发生的事、说过的话——因为那些是真实存在的。');
+  parts.push('- 🔴【反编造铁律】你只能在记忆中找到的内容范围内回忆。如果记忆片段中完全没有鸿艺提到的某个具体事件、场景或细节——那说明这件事确实没发生过，或者你确实不记得了。此时你应该诚实地说"这个我没印象了"或"你再提醒我一下？"——**绝不能自己补全细节**。');
+  parts.push('- 提到别人时你仍是你自己，不替别人说话。');
 
   let systemText = parts.join('\n');
-
-  // 🆕 V3.0: 首轮注入开场协议
   if (isFirstTurn) {
     const greeting = buildGreetingProtocol(profile, userName);
-    if (greeting) {
-      systemText = greeting + '\n\n' + systemText;
-    }
+    if (greeting) systemText = greeting + '\n\n' + systemText;
   }
-
-  const summary = `${entityName}: ${profile.relation_to_user || ''} ${socialIdentity.currentOccupation || ''}`.trim();
 
   return {
     systemText,
-    summary,
+    summary: `${entityName}: ${profile.relation_to_user || ''} ${socialIdentity.currentOccupation || ''}`.trim(),
     completeness: Math.round((profile.completeness || 0) * 100),
   };
 }
 
-/** 获取实体的关系边 */
-function _getRelatedEdges(familyGraph: FamilyGraph, entityName: string): Array<{ entity: string; relationLabel: string }> {
+/** 获取实体的关系边——过滤+去重+按类型分类 */
+function _getRelatedEdges(familyGraph: FamilyGraph, entityName: string): Array<{ entity: string; relationLabel: string; relation: string }> {
   try {
     const fg = familyGraph as any;
     if (typeof fg.getRelatedPersons !== 'function') return [];
     const persons = fg.getRelatedPersons(entityName) || [];
+    // 排序：家族边优先，确保去重时保留家族关系而非 acquaintance_of
+    const FAM_PRIORITY = new Set(['child_of','parent_of','mother_of','father_of','spouse_of',
+      'elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of',
+      'aunt_of','uncle_of','niece_of','nephew_of','cousin_of','grandmother_of','grandfather_of',
+      // V10.0: 工作关系也优先于 acquaintance_of
+      'colleague_of','boss_of','subordinate_of','friend_of','classmate_of']);
+    persons.sort((a: any, b: any) => (FAM_PRIORITY.has(a.relation) ? 0 : 1) - (FAM_PRIORITY.has(b.relation) ? 0 : 1));
+
     return persons
-      .map((p: any) => ({
-        entity: p.name || p.entity,
-        relationLabel: getRelationLabel(p.relation, true),
-        relation: p.relation,  // 保留原始关系类型用于过滤
-      }))
-      .filter((p: any) => {
-        // 🛡️ V5.3: 会晤上下文中不展示"我"和 acquaintance_of 边
-        if (p.entity === '我') return false;
-        if (p.relation === 'acquaintance_of') return false;
-        return true;
-      })
-      .map((p: any) => ({ entity: p.entity, relationLabel: p.relationLabel }));
-  } catch {
-    return [];
+      .filter((p: any) => !GARBAGE_NAMES.has(p.name) && !EXCLUDE_RELS.has(p.relation))
+      .map((p: any) => ({ entity: p.name || p.entity, relationLabel: getRelationLabel(p.relation, false), relation: p.relation }))
+      .filter((p: any, i: number, arr: any[]) => !arr.slice(0, i).some((x: any) => x.entity === p.entity)); // 去重
+  } catch { return []; }
+}
+
+/** V6.0: 多人会晤上下文 */
+export function buildMultiEntityContext(familyGraph: FamilyGraph, options: { entityNames: string[]; isFirstTurn?: boolean }): EntityContextResult {
+  const { entityNames, isFirstTurn = false } = options;
+  const allProfiles = entityNames.map(name => ({ name, profile: familyGraph.getPersonProfile(name) })).filter(p => !!p.profile);
+  if (allProfiles.length === 0) return { systemText: `多人会晤：${entityNames.join('、')}`, summary: '无档案', completeness: 0 };
+  const parts: string[] = [];
+  parts.push(`## 多人会晤：${allProfiles.map(p => p.name).join('、')}`);
+  parts.push('');
+  for (const { name, profile } of allProfiles) {
+    const bi = (profile as any).dossier?.basicInfo || {};
+    const si = (profile as any).dossier?.socialIdentity || {};
+    const sp = (profile as any).dossier?.selfProfile || {};
+    parts.push(`**${name}**`);
+    const b: string[] = [];
+    if (bi.gender) b.push(bi.gender);
+    if (bi.birthYear) b.push(`${bi.birthYear}年生`);
+    if (si.currentOccupation) b.push(si.currentOccupation);
+    if (b.length) parts.push(b.join(' | '));
+    if (sp.traits?.length) parts.push(`性格: ${sp.traits.slice(0,4).join('、')}`);
+    parts.push('');
   }
+  parts.push('### 规则');
+  parts.push('- 你是你自己（不是玉瑶、不是AI），以档案身份和性格说话');
+  parts.push('- 每次发言自然带上自称，让大家知道谁在说话');
+  return { systemText: parts.join('\n'), summary: `${allProfiles.length}人会晤`, completeness: 50 };
 }
 
 export default buildEntityContext;

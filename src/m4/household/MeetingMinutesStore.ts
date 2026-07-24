@@ -55,12 +55,13 @@ export class MeetingMinutesStore {
    * @param turns - 对话轮次
    * @param summary - 摘要文本（可由 LLM 生成，也可由系统自动生成）
    */
-  generateAndStore(
+  async generateAndStore(
     name: string,
     participants: string[],
     turns: MeetingTurn[],
     summary?: string,
-  ): MeetingMinutes {
+    generateSummary?: (turns: MeetingTurn[], participants: string[]) => Promise<string>,
+  ): Promise<MeetingMinutes> {
     // 确保目录存在
     if (!existsSync(MEETINGS_DIR)) mkdirSync(MEETINGS_DIR, { recursive: true });
 
@@ -74,8 +75,13 @@ export class MeetingMinutesStore {
       .map(uuid => this._resolveName(uuid))
       .filter(Boolean);
 
-    // 系统自动生成摘要（如果 LLM 未提供）
-    const autoSummary = summary || this._generateAutoSummary(name, participantNames, turns);
+    // 🆕 V6.0: LLM 摘要优先，失败降级
+    let autoSummary = summary || '';
+    if (!autoSummary && generateSummary) {
+      try { autoSummary = await generateSummary(turns, participantNames); }
+      catch { autoSummary = ''; }
+    }
+    if (!autoSummary) autoSummary = this._generateAutoSummary(name, participantNames, turns);
 
     // 构建 MD 内容
     const md = this._buildMarkdown({

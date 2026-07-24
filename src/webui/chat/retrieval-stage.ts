@@ -95,20 +95,23 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
   let memoryGate: import('../../app/conversation/MemoryGate.js').MemoryGateOutput = { mode: 'casual', needsMemorySearch: false, needsKnowledgeSearch: false, fillerPhrase: '', hallucinationGuard: '', strictMode: false };
   let memoryGateFillerUsed = false;
 
-  // 🔴 P0-2: 跟进追问有实体时开启定向检索（跳过知识库全量搜索）
+  // 🔴 V7.0: 记忆每轮检索 — isTopicShift 控制深度而非开关
   const isTopicShift = hasNewEntity || isFollowUp || (!isFollowUp && !hasContinuationMarkers && !isCasualChat);
   const isLimitedRetrieval = isFollowUp && !hasNewEntity;
+  // V10.4: 话题切换深度检索(10-15条)，日常闲聊常用检索(5-8条)
+  const _memLimit = isTopicShift ? 15 : 8;
+  const _memFinalLimit = isTopicShift ? 8 : 5;
 
   try {
-    if (isTopicShift) {
-      const currentEntityNames = dna.entity_genes.map(g => g.name).filter(Boolean);
+    // V7.0: 始终检索记忆，不再用 isTopicShift 做总开关
+    const currentEntityNames = dna.entity_genes.map(g => g.name).filter(Boolean);
 
       // P0-2: 定向检索模式（isLimitedRetrieval）— 跳过分解和实体扩展，只查当前实体
       if (isLimitedRetrieval) {
         const limMode: SimilarityMode = p.intimacy > 0.4 ? 'intimacy_search' : 'balanced';
         let limMemories = ctx.storage.findByEmotionalSimilarity({
           current_perception: p, similarity_mode: limMode,
-          entities: currentEntityNames, limit: 5,
+          entities: currentEntityNames, limit: _memLimit + 3,
         });
         limMemories = rerank(limMemories, message);
         // P0-2: 情感阈值过滤
@@ -117,11 +120,27 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           && m.record.id !== dna.branch_id
           && (m.record.effective_strength || 0) >= 0.15
           && (m.record.calcium_level || 0) >= 1
-        ).slice(0, 3);
+        ).slice(0, _memFinalLimit + 2);
         if (emotionalMemories.length > 0) {
           memoryFragments.push('【用户曾提到】"' + emotionalMemories[0].record.raw_input?.substring(0, 60) + '"');
         }
       } else {
+        // 🆕 V8.0: 空实体快速路径 — entity_genes=[] 时跳过复杂多跳，直接用钙化分扫描
+        if (currentEntityNames.length === 0) {
+          const _scanMode: SimilarityMode = 'by_calcium';
+          const _scan = ctx.storage.findByEmotionalSimilarity({
+            current_perception: p, similarity_mode: _scanMode,
+            entities: [], limit: 8,
+          });
+          const _reranked = rerank(_scan, message);
+          emotionalMemories = _reranked
+            .filter((m: any) => m.record.id !== dna.branch_id && (m.record.calcium_score || 0) > 0.05)
+            .slice(0, _memFinalLimit);
+          if (emotionalMemories.length > 0) {
+            const _top = emotionalMemories[0];
+            memoryFragments.push('【回忆】' + (_top.record.raw_input || '').substring(0, 80));
+          }
+        } else {
         // P1-3: 多跳检索（1度→不足3条升2度）
         let relatedEntities: Array<{ name: string; relation: string; strength: number }> = [];
         if (currentEntityNames.length > 0) {
@@ -167,23 +186,24 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         for (const q of allQueryTexts) {
           let memories = ctx.storage.findByEmotionalSimilarity({
             current_perception: p, similarity_mode: mode,
-            entities: uniqueExpanded, limit: 8,
+            entities: uniqueExpanded, limit: _memLimit + 3,
           });
           memories = rerank(memories, q);
 
           const _hasPerson = dna.entity_genes.some((g: any) => g.type === 'person' && g.name !== '我');
-          const _emoThreshold = _hasPerson ? 0.25 : 0.5;
-          const _compThreshold = _hasPerson ? 0.15 : 0.25;
+          // V7.0: 日常闲聊降低阈值，确保轻量检索也能命中
+          const _emoThreshold = isTopicShift ? (_hasPerson ? 0.25 : 0.5) : 0.15;
+          const _compThreshold = isTopicShift ? (_hasPerson ? 0.15 : 0.25) : 0.10;
           const valid = memories.filter((m: any) =>
             (m.scores.emotional > _emoThreshold || m.composite > _compThreshold) && m.record.id !== dna.branch_id
           );
           if (valid.length > 0) allResultSets.push(valid);
         }
 
-        emotionalMemories = mergeDecomposedResults(allResultSets, 5);
+        emotionalMemories = mergeDecomposedResults(allResultSets, _memLimit);
 
         if (relatedEntities.length > 0) {
-          const relationMemories = ctx.storage.findMemoriesByEntityNames(relatedEntities.map((r: any) => r.name), 2);
+          const relationMemories = ctx.storage.findMemoriesByEntityNames(relatedEntities.map((r: any) => r.name), _memLimit);
           for (const rm of relationMemories) {
             if (!emotionalMemories.some((e: any) => e.record.id === rm.id) && rm.id !== dna.branch_id) {
               emotionalMemories.push({
@@ -193,6 +213,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             }
           }
         }
+      } // ← V8.0 多跳分支闭合
       } // ← else闭合
 
       const recentHistoryRaw = enrichedHistory.slice(-4).map((t: any) => t.content).join('');
@@ -203,46 +224,75 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           (m.scores.emotional > 0.3 || m.scores.calcium > 0.3) && m.record.id !== dna.branch_id && !recentHistoryRaw.includes(m.record.id)
         );
       }
-      const finalMemories = freshMemories.length > 0 ? freshMemories : emotionalMemories.slice(0, 1);
-      if (finalMemories.length > 0 && !hasContinuationMarkers) {
+      const finalMemories = freshMemories.length > 0 ? freshMemories : emotionalMemories.slice(0, _memFinalLimit);
+      if (finalMemories.length > 0) {
         const top = finalMemories[0];
         const userSaid = top.record.raw_input.substring(0, 60);
         memoryFragments.push('【用户曾提到】"' + userSaid + '"——这是用户以前说的，不记得就说"不太记得了"');
       }
-    }
   } catch (err) { console.warn('[EmotionContagion] 检索失败:', err); }
 
-  // ── 黑钻库检索：提炼过的珍藏记忆优先注入 ──
+  // ── 黑钻库检索：V10.1 多级检索（FTS5不可用→LIKE→短词拆分→钙化兜底）──
   try {
-    if (isTopicShift && message.trim().length > 1) {
+    if (message.trim().length > 1) {
+      const _bdLimit = isTopicShift ? 6 : 3;
       const _sqlite = ctx.storage.getSQLite();
       if (_sqlite && typeof _sqlite.queryAll === 'function') {
-        const _kw = message.replace(/[？！！。、，：；s]/g, '').trim();
+        const _kw = message.replace(/[？?！!。，、：；\s"''""【】《》\(\)（）]/g, '').trim();
         if (_kw.length > 1) {
-          let _rows: Array<{ id: string; summary: string; emotion_tag: string; tags: string }> = [];
-          const _ftsEnabled = typeof _sqlite.isBlackDiamondFTSReady === 'function'
-            ? _sqlite.isBlackDiamondFTSReady()
-            : false;
-          if (_ftsEnabled) {
-            try {
-              const _ftsR = _sqlite.queryAll('SELECT rowid FROM black_diamond_fts WHERE black_diamond_fts MATCH ? LIMIT 2', [_kw.replace(/[^\w一-鿿]/g, '')]);
-              if (_ftsR.length > 0) {
-                const _ids = _ftsR.map((r: any) => r.rowid).join(',');
-                _rows = _sqlite.queryAll('SELECT id, summary, emotion_tag, tags FROM black_diamond WHERE rowid IN (' + _ids + ') ORDER BY created_at DESC LIMIT 2');
+          let _rows: any[] = [];
+          // 🔧 V10.1: FTS5 永远不可用(sql.js无fts5模块)，直接用 LIKE + 多词拆分
+          // ① 全关键词 LIKE 搜索
+          _rows = _sqlite.queryAll(
+            "SELECT id, summary, emotion_tag, tags FROM black_diamond WHERE summary LIKE ? OR tags LIKE ? ORDER BY calcium_level DESC, created_at DESC LIMIT 15",
+            ['%' + _kw + '%', '%' + _kw + '%']
+          );
+          // ② 短词拆分：中文按2-3字窗口拆分，逐个搜索
+          if (_rows.length < _bdLimit && _kw.length >= 4) {
+            const _seenIds = new Set(_rows.map((r: any) => r.id));
+            for (let _ci = 0; _ci < _kw.length - 1 && _rows.length < _bdLimit + 3; _ci++) {
+              const _chunk = _kw.substring(_ci, Math.min(_ci + 3, _kw.length));
+              if (_chunk.length < 2) continue;
+              const _more = _sqlite.queryAll(
+                "SELECT id, summary, emotion_tag, tags FROM black_diamond WHERE (summary LIKE ? OR tags LIKE ?) AND id NOT IN (" + [..._seenIds].map(function(id: string) { return "'" + id + "'"; }).join(',') + ") ORDER BY calcium_level DESC, created_at DESC LIMIT 3",
+                ['%' + _chunk + '%', '%' + _chunk + '%']
+              );
+              for (const _r of _more || []) {
+                if (!_seenIds.has(_r.id)) { _rows.push(_r); _seenIds.add(_r.id); }
               }
-            } catch (e: any) {
-              console.warn('[Retrieval] black_diamond_fts 查询失败，回退 LIKE:', e?.message);
             }
           }
-          if (_rows.length === 0) {
-            _rows = _sqlite.queryAll(
-              'SELECT id, summary, emotion_tag, tags FROM black_diamond WHERE summary LIKE ? OR tags LIKE ? ORDER BY created_at DESC LIMIT 2',
-              ['%' + _kw + '%', '%' + _kw + '%']
+          // ③ 宽泛兜底：钙化分最高的黑钻
+          if (_rows.length < _bdLimit) {
+            const _seenIds = new Set(_rows.map((r: any) => r.id));
+            const _fallback = _sqlite.queryAll(
+              "SELECT id, summary, emotion_tag, tags FROM black_diamond ORDER BY calcium_level DESC, created_at DESC LIMIT 20"
             );
+            for (const _r of _fallback || []) {
+              if (_seenIds.has(_r.id)) continue;
+              _rows.push(_r);
+              _seenIds.add(_r.id);
+              if (_rows.length >= _bdLimit + 3) break;
+            }
+            if (_seenIds.size > _rows.length - _fallback.length) console.log('[BlackDiamond] 钙化兜底 ' + (_seenIds.size - _rows.length + _fallback.length) + ' 条');
           }
+          _rows = _rows.slice(0, _bdLimit);
           for (const _r of _rows) {
             const _tag = _r.emotion_tag ? '【' + _r.emotion_tag + '】' : '';
-            memoryFragments.push('【珍藏记忆】' + _tag + (_r.summary || '').substring(0, 120));
+            // 🔧 V10.1: 扩展上下文——从 source_id 关联 memories 获取原始对话
+            let _context = (_r.summary || '').substring(0, 200);
+            try {
+              if (_r.source_id) {
+                const _mem = _sqlite.queryAll('SELECT raw_input FROM memories WHERE id = ? LIMIT 1', [_r.source_id]);
+                if (_mem?.length && _mem[0].raw_input) {
+                  const _raw = _mem[0].raw_input.substring(0, 200);
+                  if (_raw !== _context.substring(0, Math.min(_raw.length, _context.length))) {
+                    _context = _raw + '（珍藏记忆：' + _context.substring(0, 80) + '）';
+                  }
+                }
+              }
+            } catch { /* 关联失败不阻塞 */ }
+            memoryFragments.push('【珍藏记忆】' + _tag + _context);
             try {
               _sqlite.writeRaw('UPDATE black_diamond SET recall_count = recall_count + 1, updated_at = ? WHERE id = ?',
                 [new Date().toISOString(), _r.id]);
@@ -258,24 +308,35 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
               if (_bdVecCache.has(_cacheKey)) {
                 scored = _bdVecCache.get(_cacheKey)!;
               } else {
-                const allDiamonds = _sqlite.queryAll("SELECT id, summary, emotion_tag, emotion_vector, l2_norm FROM black_diamond");
+                const allDiamonds = _sqlite.queryAll("SELECT id, summary, emotion_tag, emotion_vector, l2_norm, calcium_level FROM black_diamond");
                 const queryVec = [p.pleasure, p.arousal, p.dominance, p.aggression, p.sincerity, p.humor, p.factual, p.logical, p.certainty, p.abstract, p.temporal_focus, p.self_ref, p.intimacy, p.power_diff, p.dependency, p.moral_judgment, p.etiquette, p.belonging, p.sexual_attraction, p.sensory_craving, p.energy_merge, p.possessiveness, p.ecstasy, p.safety];
                 let qL2 = 0;
                 for (let _di = 0; _di < 24; _di++) qL2 += queryVec[_di] ** 2;
                 qL2 = Math.sqrt(qL2);
+                let _skipped = 0, _scanned = 0;
                 for (const _d of allDiamonds as any[]) {
                   if (!_d.emotion_vector) continue;
                   try {
                     const dv = JSON.parse(_d.emotion_vector as string);
-                    if (!dv || dv.length !== 24) continue;
+                    if (!dv || !Array.isArray(dv) || dv.length !== 24) continue;
+                    // 🔧 V10.1: 实时计算 l2_norm + 检测全零向量（数据损坏）
+                    let _sumSq = 0, _nonZero = 0;
+                    for (let _di = 0; _di < 24; _di++) { const v = Number(dv[_di]) || 0; if (v !== 0) _nonZero++; _sumSq += v * v; }
+                    // 只跳过全零向量（数据损坏），其他都参与计算
+                    if (_nonZero === 0) { _skipped++; continue; }
+                    const _dL2 = Math.sqrt(_sumSq);
+                    _scanned++;
                     let dot = 0;
-                    const dL2 = (_d.l2_norm as number) || Math.sqrt(dv.reduce((s: number, v: number) => s + v * v, 0));
                     for (let _di = 0; _di < 24; _di++) dot += queryVec[_di] * dv[_di];
-                    const sim = dot / (qL2 * dL2 || 0.0001);
-                    if (sim > 0.3) scored.push({ row: _d, score: sim });
+                    const sim = dot / (qL2 * _dL2 || 0.0001);
+                    // V8.0: 阈值从 0.3 降到 0.15，加钙化分补偿让低情感场景也能命中
+                    const _bdCal = (_d.calcium_level || 1) as number;
+                    const _bdThreshold = 0.15 + (_bdCal >= 3 ? 0 : _bdCal >= 2 ? 0.03 : 0.06);
+                    if (sim > _bdThreshold) scored.push({ row: _d, score: sim + _bdCal * 0.05 });
                   } catch { /* 跳过解析失败 */ }
                 }
                 scored.sort((a, b) => b.score - a.score);
+                if (_skipped > 0) console.log(`[BlackDiamond] l2剪枝: ${_skipped}条跳过, ${_scanned}条计算`);
                 _bdVecCache.set(_cacheKey, scored);
                 if (_bdVecCache.size > 500) {
                   const firstKey = _bdVecCache.keys().next().value;
@@ -291,12 +352,79 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
                 }
               }
               if (vecResults.length > 0) console.log("[BlackDiamond] 向量补充 " + vecResults.length + " 条");
+              // 🔧 V10.1: 向量检索 + FTS5 都不足时，钙化分兜底
+              if (_rows.length + vecResults.length < _bdLimit) {
+                try {
+                  const _needMore = _bdLimit - _rows.length - vecResults.length;
+                  const _seenIds = new Set(_rows.map((r: any) => r.id));
+                  vecResults.forEach((v: any) => _seenIds.add(v.row.id));
+                  const _allBD = _sqlite.queryAll(
+                    "SELECT id, summary, emotion_tag FROM black_diamond WHERE calcium_level >= 2 ORDER BY calcium_level DESC, created_at DESC LIMIT 50"
+                  );
+                  let _added = 0;
+                  for (const _bd of _allBD || []) {
+                    if (_seenIds.has(_bd.id)) continue;
+                    const _tag = _bd.emotion_tag ? "【" + _bd.emotion_tag + "】" : "";
+                    memoryFragments.push("【珍藏记忆】" + _tag + (_bd.summary || "").substring(0, 120));
+                    _seenIds.add(_bd.id);
+                    _added++;
+                    if (_added >= _needMore) break;
+                  }
+                  if (_added > 0) console.log("[BlackDiamond] 钙化兜底 " + _added + " 条");
+                } catch { /* 非关键 */ }
+              }
             } catch (_ve) { console.warn('[RetrievalErr] 黑钻向量补充失败:', (_ve as Error).message); }
           }
         }
       }
     }
   } catch (err) { console.warn('[BlackDiamond] 检索失败:', err); }
+
+  // V10.0: 金库检索 — vault_log 中 content_md 不为空的金库记忆
+  try {
+    const _hasPerson = dna.entity_genes.some((g: any) => g.type === 'person' && g.name !== '我');
+    const _glLimit = isTopicShift ? 3 : (_hasPerson ? 2 : 1);
+    const _sqlite = ctx.storage.getSQLite();
+    if (_sqlite && typeof _sqlite.queryAll === 'function') {
+      // priority: hasPerson → query by entity names; else → recent gold vault
+      let _goldRows: any[] = [];
+      if (_hasPerson) {
+        const _names = dna.entity_genes.filter((g: any) => g.name && g.name.length > 1).map((g: any) => g.name);
+        for (const _n of _names.slice(0, 3)) {
+          const _r = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE (detail LIKE ? OR content_md LIKE ?) AND operation='promote' ORDER BY created_at DESC LIMIT 2", ['%' + _n + '%', '%' + _n + '%']);
+          _goldRows.push(..._r);
+        }
+      }
+      if (_goldRows.length === 0) {
+        _goldRows = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE content_md IS NOT NULL OR detail IS NOT NULL ORDER BY created_at DESC LIMIT 5") || [];
+      }
+      for (const _gr of _goldRows.slice(0, _glLimit)) {
+        const _t = (_gr.content_md || _gr.detail || '').substring(0, 100);
+        if (_t.length > 4 && !memoryFragments.some(f => f.includes(_t.substring(0, 20)))) {
+          memoryFragments.push('【金库记忆】' + _t);
+        }
+      }
+      if (_goldRows.length > 0) console.log(`[GoldVault] 金库命中 ${Math.min(_goldRows.length, _glLimit)} 条`);
+    }
+  } catch (_gvErr) { /* 金库检索不阻塞 */ }
+
+  // V10.0: 砂金库高钙化检索 — memories 中 calcium_level>=2 的经过加权检索
+  try {
+    const _sLimit = isTopicShift ? 3 : 1;
+    const _sqlite = ctx.storage.getSQLite();
+    if (_sqlite && typeof _sqlite.queryAll === 'function') {
+      const _sandRows = _sqlite.queryAll(
+        "SELECT raw_input, calcium_level FROM memories WHERE leaf_zone='user' AND calcium_level >= 2 ORDER BY calcium_score DESC LIMIT 10"
+      ) || [];
+      for (const _sr of _sandRows.slice(0, _sLimit)) {
+        const _t = (_sr.raw_input || '').substring(0, 80);
+        if (_t.length > 4 && !memoryFragments.some(f => f.includes(_t.substring(0, 20)))) {
+          const _tag = _sr.calcium_level >= 3 ? '💎' : '📌';
+          memoryFragments.push(`【${_tag}重要记忆】${_t}`);
+        }
+      }
+    }
+  } catch {} // 砂金检索不阻塞
 
   return {
     isTopicShift,

@@ -169,8 +169,9 @@ export function buildRoleSystemPrompt(role: RoleType, level: -2|-1|0|1|2, knowle
   if (knowledge) {
     // 🛡️ V4.0: 检测实体上下文（会晤模式）— 用 includes 代替 startsWith，因为 PFC 可能在前面加了内容
     if (knowledge.startsWith('## 你是') || knowledge.includes('\n## 你的身份') || knowledge.startsWith('## 你的身份') || knowledge.startsWith('## 🚪 会晤开场协议')) {
-      // 实体上下文/角色扮演四层装配 → 替代整个 role prompt
-      return knowledge + '\n';
+      // 🆕 V10.0 P0-5: 实体上下文前置，但保留 role prompt 中的行为约束
+      // 不再丢弃整个 role prompt——安全护栏需要保留
+      return knowledge + '\n\n' + prompt + '\n';
     }
     prompt += `\n\n${knowledge}\n`;
   }

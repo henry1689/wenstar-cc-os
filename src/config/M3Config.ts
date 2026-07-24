@@ -8,13 +8,13 @@ export const M3_CONFIG = {
   // ── 钙化等级阈值 ──
   calcium: {
     /** 粉末级上限（低于此值忽略） */
-    level0Threshold: 0.3,
+    level0Threshold: 0.25,
     /** 液体级上限 */
-    level1Threshold: 0.6,
+    level1Threshold: 0.45,
     /** 固体级上限 */
-    level2Threshold: 0.8,
+    level2Threshold: 0.65,
     /** 晶体级起始（≥此值触发 act 行动） */
-    level3Threshold: 0.8,
+    level3Threshold: 0.65,
   },
 
   // ── 场景调整系数 ──

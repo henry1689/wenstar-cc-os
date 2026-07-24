@@ -14,6 +14,7 @@ import type { M4Context, MemorySummary } from './types/index.js';
 import type { DNA } from "../m1/types/dna.js";
 import type { ScoredMemory } from '../m2/types/index.js';
 import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
+import { getCorrectedRelation } from './household/shared/RelationLabels.js';
 import { MemoryRetriever } from './MemoryRetriever.js';
 import { FamilyGraph } from './household/FamilyGraph.js';
 import { rerank } from './Reranker.js';
@@ -198,7 +199,39 @@ export class M4Orchestrator {
       }
     }
 
-    try { const fg = this.familyGraph; if (fg && memories.length > 1) { for (const mem of memories) { const names = ((mem as any).fg_entity_names || "").split(",").map(function(s: string) { return s.trim(); }).filter(Boolean); let maxHeat = 0; for (var i = 0; i < names.length; i++) { try { var rows = (fg as any).query("SELECT properties FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE name = ?) OR target_id IN (SELECT id FROM nodes WHERE name = ?) LIMIT 1", [names[i], names[i]]); if (rows && rows[0]) { var ep = JSON.parse(rows[0].properties || "{}"); if ((ep._heat_score || 0) > maxHeat) maxHeat = ep._heat_score; } } catch(e) {} } if (maxHeat > 0) (mem as any)._heat_boost = Math.min(0.3, maxHeat * 0.3); } } } catch(e) {}
+    // 🆕 V10.0 P0-10: FG 热力加成 — 从单行拆分为可读代码块
+    try {
+      const fg = this.familyGraph;
+      if (fg && memories.length > 1) {
+        for (const mem of memories) {
+          const names = ((mem as any).fg_entity_names || '')
+            .split(',')
+            .map((s: string) => s.trim())
+            .filter(Boolean);
+          let maxHeat = 0;
+          for (let i = 0; i < names.length; i++) {
+            try {
+              const rows = (fg as any).query(
+                "SELECT properties FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE name = ?) OR target_id IN (SELECT id FROM nodes WHERE name = ?) LIMIT 1",
+                [names[i], names[i]]
+              );
+              if (rows && rows[0]) {
+                const ep = JSON.parse(rows[0].properties || '{}');
+                const heat = ep._heat_score || 0;
+                if (heat > maxHeat) maxHeat = heat;
+              }
+            } catch (e) {
+              // 单条边查询失败不阻塞其他
+            }
+          }
+          if (maxHeat > 0) {
+            (mem as any)._heat_boost = Math.min(0.3, maxHeat * 0.3);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[M4·FG热力] 加成计算失败:', (e as Error)?.message || e);
+    }
 
     const memorySummary = this.memoryRetriever.compressMemories(memories);
 
@@ -270,13 +303,13 @@ export class M4Orchestrator {
 
     let familyContext = familySummary.members.map((m: any) => ({
       entity: m.name,
-      relation: m.relation_to_user,
+      relation: getCorrectedRelation(m.name, m.relation_to_user),
       related_entity: '我',
       ...enrichProfile(m.name),
     }));
     let socialContext = socialSummary.connections.map((c: any) => ({
       entity: c.name,
-      relation: c.relation_to_user,
+      relation: getCorrectedRelation(c.name, c.relation_to_user),
       related_entity: '我',
       ...enrichProfile(c.name),
     }));

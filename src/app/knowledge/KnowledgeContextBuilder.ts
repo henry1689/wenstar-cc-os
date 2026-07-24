@@ -91,31 +91,39 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   // Level 2: 会晤模式 → 搜实体名 + 消息关键词
   // Level 3: 日常聊天含人名 → 轻量匹配，仅注入高置信度命中
   // Level 4: 纯闲聊 → 跳过，节省 token
+  // 🔧 V10.1: 按搜索等级控制 KB 片段长度和总预算
   const _meetingEntity = (input as any).ctx?._meetingEntityName;
-  // 🛡️ V5.1: 会晤信息隔离墙 — 会晤模式只搜本实体知识，不搜任何其他内容
   const _isEntityMeeting = !!_meetingEntity;
   const _entitySearchMsg = _meetingEntity ? _meetingEntity : '';
   const _explicitQuery = /知识库|看过|知道.*吗|有没有|是否|曾经|查一下|搜一下|帮我查|告诉我.*关于/.test(message);
   const _hasPersonName = (dna.entity_genes || []).some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1);
-  const _searchLevel = _explicitQuery ? 1 : (_meetingEntity ? 2 : (_hasPersonName ? 3 : 4));
-  const _kbf = _searchLevel <= 2; // Level 1-2 走完整 KB 检索，Level 3 走轻量
+  const _searchLevel = _explicitQuery ? 1 : (_meetingEntity ? 2 : (_hasPersonName ? 3 : 3));
+  const _kbf = _searchLevel <= 2;
+  // 🔧 V10.1: KB 预算按等级分级 — 日常闲聊严格限制，知识查询才放开
+  const _kbBudgetByLevel: Record<number, { maxSnippetChars: number; maxTotalKBChars: number }> = {
+    1: { maxSnippetChars: 3000, maxTotalKBChars: 6000 },  // 明确知识查询 → 充分
+    2: { maxSnippetChars: 800,  maxTotalKBChars: 3000 },  // 会晤模式 → 中等
+    3: { maxSnippetChars: 400,  maxTotalKBChars: 1200 },  // 日常闲聊 → 严格限制
+    4: { maxSnippetChars: 200,  maxTotalKBChars: 500  },  // 纯闲聊 → 几乎不给
+  };
+  const _kbBudget = _kbBudgetByLevel[_searchLevel] || _kbBudgetByLevel[3];
 
   try {
     const searchMsg = _kbf
       ? message.replace(/你|在|知识库|看过|知道|吗|有没有|是否|曾经/g, '').replace(/[？?！!。，、：；]/g, '').trim()
       : message;
 
-    // 🆕 V4.0: 额外用实体名搜一次知识库
-    if (_entitySearchMsg && ctx.knowledgeBase) {
+    // 🛡️ V10.0: 会晤模式下绝对不注入通用知识库——实体上下文由 EntityContextBuilder 提供
+    // 之前的代码用实体名全库搜索会导致熊梓铭文档泄漏给徐诗雨等人物
+    if (_entitySearchMsg && ctx.knowledgeBase && !_isEntityMeeting) {
       try {
         const _entityResults = await ctx.knowledgeBase.weightedSearch(
           _entitySearchMsg, dna.scene_tags || [],
           { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, 3,
-          _meetingEntity ? undefined : undefined,  // 🆕 V5.1: 会晤实体知识限定
         );
         if (_entityResults && _entityResults.length > 0) {
           const _entityContent = _entityResults.map((k: any) =>
-            `📄 ${k.title}\n${stripFrontmatter(k.content || '').substring(0, 800)}`
+            `📄 ${k.title}\n${stripFrontmatter(k.content || '').substring(0, _kbBudget.maxSnippetChars)}`
           ).join('\n\n');
           const _existingKB = knowledgeBaseText || '';
           if (!_existingKB.includes(_entityContent.substring(0, 50))) {
@@ -165,7 +173,10 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       if (_topHits.length > 0) {
         const kbContent = _topHits.map((k: any) => {
           const cleanContent = stripFrontmatter(k.content || '');
-          return `📄 ${k.title}\n${cleanContent.length > 5000 ? cleanContent.substring(0, 5000) + '\n…(剩余内容已截断)' : cleanContent}`;
+          const maxLen = _kbBudget.maxSnippetChars;
+          return cleanContent.length > maxLen
+            ? `📄 ${k.title}\n${cleanContent.substring(0, maxLen)}\n…(已截断)`
+            : `📄 ${k.title}\n${cleanContent}`;
         }).join('\n\n');
 
         const _sensitiveRe = /高潮|做爱|性交|插入|射精|阴道|阴茎|阴蒂|龟头|鸡巴|骚货|母狗|婊子|操我|干我|舔我|湿了|硬了|赤裸|那一夜|要死了|受不了/;
@@ -177,22 +188,22 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
           knowledgeBaseText = '【本地回复】' + firstTitle + '：\n' + firstContent
             + (knowledgeBaseText ? '\n\n' + knowledgeBaseText : '');
         } else if (_kbf) {
-          knowledgeBaseText = '【知识库条目，我看过】\n' + kbContent + '\n\n（鸿艺问我有没有看过这些内容。我看过，应该告诉他我记得。）'
+          knowledgeBaseText = '【你的知识库·第二大脑】以下是你的知识——你已经学过这些内容。用你自己的理解来回答，不要照搬原文。像老师讲课一样，把复杂的说简单，把零散的串起来。如果你不确定某一点是否准确，就说"我印象中是这样的…"。\n\n' + kbContent + '\n\n（你不是在"查阅资料"——这些知识已经内化为你的认知。用第一人称表达，不要提"知识库""根据资料"等词。你把学到的内容消化后，用自己的话告诉鸿艺。）'
             + (knowledgeBaseText ? '\n\n' + knowledgeBaseText : '');
         } else if (_searchLevel >= 3) {
           // 🆕 Level 3: 轻量注入 — 只在明显相关时才给
           const isExactMatch = _topScore > 0.25;
           if (isExactMatch) {
             const prefix = knowledgeBaseText ? knowledgeBaseText + '\n\n' : '';
-            knowledgeBaseText = prefix + '【可能相关的信息】\n' + kbContent + '\n\n（以下信息可能与当前话题有关，自然地在回答中使用，不要生硬地背诵。）';
+            knowledgeBaseText = prefix + '【你学过的知识】\n' + kbContent + '\n\n（这些是你之前学过的内容。如果和当前话题相关，用你自己的话自然地带出来。）';
             console.log('[KB·Light] ' + _searchLevel + '级轻量命中: ' + _topHits.length + '条 top=' + _topScore.toFixed(3));
           }
         } else {
           const isExactMatch = _topScore > 0.15;
           const instruction = isExactMatch
-            ? '（以下是有人教给你的或你了解的信息。自然地用在回答中，不要列清单，像你本来就知道一样说出来。）'
+            ? '（以下是你的知识——你学过这些内容。用你自己的理解自然地表达，像你本来就知道一样，不要生硬地背诵或引用。）'
             : '（以下是可能和当前话题相关的信息。如果对得上就用，对不上就忽略。）';
-          const kbHeader = isExactMatch ? '【你被教导的知识】\n' : '【可能相关的信息】\n';
+          const kbHeader = isExactMatch ? '【你学过的知识】\n' : '【可能相关的信息】\n';
           knowledgeBaseText = (knowledgeBaseText ? knowledgeBaseText + '\n\n' : '') + kbHeader + kbContent + '\n\n' + instruction;
         }
       }
@@ -259,6 +270,40 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     } // 🛡️ V5.1: 会晤隔离墙 — 关闭 if(!_isEntityMeeting)
   } catch (err: any) { console.warn('[KnowledgeSearch] 检索失败:', err); }
 
+  // 🔧 V10.1 P0-2: SecondBrain → KB 桥接 —— 同时检索 MD 文件系统
+  // 知识库(SQLite)为空或无结果时，从 SecondBrain Gateway 的内存索引中补充
+  if (!_isEntityMeeting && (!knowledgeBaseText || knowledgeBaseText.length < 200)) {
+    try {
+      const _sbg = (globalThis as any).__secondBrainGateway;
+      if (_sbg && typeof _sbg.scanWikiMDFiles === 'function') {
+        const _allMD = _sbg.scanWikiMDFiles() || [];
+        if (_allMD.length > 0) {
+          // 用消息关键词匹配 MD 文件标题/标签
+          const _keywords = message.match(/[一-龥]{2,6}/g) || [];
+          const _matched = _allMD.filter(function(md: any) {
+            const _title = (md.title || '').toLowerCase();
+            const _tags = (md.tags || []).join(' ').toLowerCase();
+            return _keywords.some(function(kw: string) { return _title.includes(kw) || _tags.includes(kw); });
+          }).slice(0, 3);
+          if (_matched.length > 0) {
+            const _mdTexts: string[] = [];
+            for (const _m of _matched) {
+              const _summary = _sbg.getMDSummary?.(_m.path) || '';
+              if (_summary && _summary.length > 10) {
+                _mdTexts.push('📝 ' + _m.title + '\n' + _summary.substring(0, 300));
+              }
+            }
+            if (_mdTexts.length > 0) {
+              knowledgeBaseText = (knowledgeBaseText ? knowledgeBaseText + '\n\n' : '') +
+                '【你的第二大脑·补充知识】以下是你之前学过的相关文件摘要：\n' + _mdTexts.join('\n\n');
+              console.log('[2ndBrain·KB] 桥接命中 ' + _matched.length + ' 篇 MD');
+            }
+          }
+        }
+      }
+    } catch (_sbErr) { /* SecondBrain 不可用不阻塞 */ }
+  }
+
   // ── 亲密模式两性知识 ──
   // 🛡️ V5.1: 会晤模式下不加载两性知识
   if (!_isEntityMeeting) {
@@ -293,7 +338,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     try {
       const _ctrl = new AbortController();
       const _to = setTimeout(() => _ctrl.abort(), 2000);
-      scoreResp = await fetch('http://localhost:8100/api/v1/emotion/knowledge/export?min_intensity=0.85', { signal: _ctrl.signal });
+      scoreResp = await fetch(ConfigService.get('VAD_EMOTION_URL', 'http://localhost:8100/api/v1/emotion/knowledge/export') + '?min_intensity=0.85', { signal: _ctrl.signal });
       clearTimeout(_to);
     } catch { scoreResp = null; }
     if (!scoreResp) { _vadAvailable = false; console.warn('[VADTone] 8100不可用，置为离线，后续跳过'); }
@@ -370,7 +415,7 @@ async function _getVadToneHint(message: string): Promise<string | null> {
   try {
     const _ctrl = new AbortController();
     const _to = setTimeout(() => _ctrl.abort(), 2000);
-    const resp = await fetch('http://localhost:8100/api/v1/emotion/tone/analyze', {
+    const resp = await fetch(ConfigService.get('VAD_TONE_URL', 'http://localhost:8100/api/v1/emotion/tone/analyze'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: message }), signal: _ctrl.signal,
     });
@@ -432,8 +477,8 @@ export async function refinePostM4Context(input: PostM4Input): Promise<PostM4Out
         const _pr = await ctx.knowledgeBase.search(_pushKeywords, 1);
         if (_pr.length > 0 && !knowledgeBaseText.includes(_pr[0].content.substring(0, 30))) {
           let _pc = _pr[0].content;
-          if (_pc.length > 300) _pc = _pc.substring(0, 300) + '...';
-          knowledgeBaseText = '【玉瑶想起】' + _pc + '\n\n' + knowledgeBaseText;
+          if (_pc.length > 500) _pc = _pc.substring(0, 500) + '...';
+          knowledgeBaseText = '【我学过的知识·主动回忆】我学过这个——让我用我的理解告诉你：\n' + _pc + '\n\n' + knowledgeBaseText;
           console.log('[ActivePush] ' + _pushSource + ' -> ' + _pushKeywords.substring(0, 20));
         }
       }

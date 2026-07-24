@@ -37,7 +37,7 @@ export class CognitionAssembler {
       const levelLabel = ['粉末', '液体', '固体', '晶体'];
       historySummary = recentItems
         .map((item) => {
-          const text = item.summary.replace(/\.\.\.$/, '').substring(0, 40);
+          const text = item.summary.replace(/\.\.\.$/, '');
           const level = item.calcium_level ?? 1;
           const label = levelLabel[level] ?? '液体';
           return `「${text}」[${label}]`;
@@ -104,9 +104,4 @@ export class CognitionAssembler {
       strategy_hint: { tone, depth, urgency },
     };
   }
-}
-
-// 保持原有方法
-function clamp(val: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, val));
 }

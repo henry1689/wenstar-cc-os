@@ -120,20 +120,6 @@ export class DNAEncoder {
     GlobalSequenceCounter.getInstance().init();
   }
 
-  injectDeps(deps: {
-    sequencer?: L1Sequencer;
-    extractor?: L2ContentExtractor;
-    annotator?: L3EntityAnnotator;
-    detector?: SemanticBoundaryDetector;
-    taxonomy?: TaxonomyTree;
-  }): void {
-    if (deps.sequencer) this.sequencer = deps.sequencer;
-    if (deps.extractor) this.extractor = deps.extractor;
-    if (deps.annotator) this.annotator = deps.annotator;
-    if (deps.detector) this.detector = deps.detector;
-    if (deps.taxonomy) this.taxonomy = deps.taxonomy;
-  }
-
   // ═══════════════════════════════════════════
   // push / flush 流式模式
   // ═══════════════════════════════════════════
@@ -319,11 +305,6 @@ export class DNAEncoder {
       location_fingerprint: '0'.repeat(32),
       warnings: ['empty_input'],
     };
-  }
-
-  /** 编码阶段告警（慢编码检测） */
-  private _warnSlow(stage: string, ms: number): void {
-    if (ms > 50) console.warn('[M1] SLOW [' + stage + ']: ' + ms.toFixed(0) + 'ms');
   }
 
   /**

@@ -156,6 +156,14 @@ export class SQLiteAdapter {
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN classification TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN classification_pending INTEGER DEFAULT 1"); } catch { /* 列已存在 */ }
 
+    // 🔧 V10.1: 知识库印象分+召回计数（ImpressionModel 运行时更新）
+    try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN impression_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN recall_count INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN last_recalled_at TEXT"); } catch { /* 列已存在 */ }
+
+    // 🔧 V10.4: memories 实体归属标注
+    try { this.db.run("ALTER TABLE memories ADD COLUMN belong_entity_uuid TEXT"); } catch { /* 列已存在 */ }
+
     // vault_log / black_diamond / source_tracking 等新增表已通过 L~130 的 schema.sql DDL 初始化
     // 此处不再重复执行完整 DDL，避免已有列上的 ALTER TABLE 重复报错
 
@@ -184,7 +192,8 @@ export class SQLiteAdapter {
     try { this.db.run("ALTER TABLE memories ADD COLUMN suppression_reason TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN archived_at TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN healed_at TEXT"); } catch { /* 列已存在 */ }
-    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_dialog_group ON memories(dialog_group_id)");
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_dialog_group ON memories(dialog_group_id)"); } catch { /* 索引已存在 */ }
+    // 🆕 V10.0 P0-9: 以下独立 try/catch（从嵌套中拆分）
 
     // Schema 版本迁移（v2: 编码链路 + 基建标准化）
     try {
@@ -199,12 +208,19 @@ export class SQLiteAdapter {
       this.db.run("CREATE TABLE IF NOT EXISTS person_aliases (name TEXT, alias TEXT, PRIMARY KEY(name, alias))");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_person_aliases_alias ON person_aliases(alias)");
     } catch (e) { console.warn('[SQLite] person_aliases 表创建失败:', e); }
- } catch { /* 索引已存在 */ }
     // M7 梦境日志独立表（替代写入黑钻，避免摘要混入永久回忆）
     try {
       this.db.run("CREATE TABLE IF NOT EXISTS dream_logs (id TEXT PRIMARY KEY, summary TEXT, emotion_tag TEXT, source TEXT, tags TEXT, created_at TEXT NOT NULL)")
       this.db.run("CREATE INDEX IF NOT EXISTS idx_dream_logs_created ON dream_logs(created_at)")
     } catch (e) { console.warn("[SQLite] dream_logs 表创建失败:", e); }
+
+    // 🆕 V10.0 P1-1: 核心表索引（已有数据库运行时补建）
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_me_memory ON memory_entities(memory_id)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_me_entity ON memory_entities(entity_id)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_er_a ON entity_relations(entity_a_id)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_er_b ON entity_relations(entity_b_id)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversations(is_compacted)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_kb_class ON knowledge_base(classification)"); } catch {}
 
     // S2-6: 知识库印象值 + 最近召回时间
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN impression_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
@@ -292,6 +308,7 @@ export class SQLiteAdapter {
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_entities_uuid ON entities(uuid)"); } catch { /* 索引已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch { /* 列已存在 */ }
       try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch { /* 列已存在 */ }
+      try { this.db.run("ALTER TABLE vault_log ADD COLUMN content_md TEXT"); } catch { /* 列已存在 */ }
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_seq ON conversations(seq_pos)");
       this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id)");
@@ -317,6 +334,39 @@ export class SQLiteAdapter {
 
     this.ready = true;
     console.log(`[SQLiteAdapter] 初始化完成: ${this.dbPath}`);
+
+    // 🔴 V10.5: 启动时自动回填 belong_entity_uuid —— 在同一个进程中执行，数据永不再丢失
+    if (typeof process !== 'undefined' && process.env?.SKIP_BACKFILL !== 'true') {
+      try {
+        const _memBefore = (this.queryAll('SELECT COUNT(*) as cnt FROM memories WHERE belong_entity_uuid IS NOT NULL')[0] as any)?.cnt || 0;
+
+        // conversations 回填：按 entity 名称匹配 + 自称检测
+        const _ents = this.queryAll("SELECT DISTINCT name,uuid FROM entities WHERE type='person' AND LENGTH(name)>=2 AND uuid IS NOT NULL");
+        for (const _e of _ents) {
+          const _n = (_e as any).name, _u = (_e as any).uuid;
+
+          // 全文匹配
+          const _sql1 = `UPDATE conversations SET belong_entity_uuid='${_u}' WHERE belong_entity_uuid IS NULL AND content LIKE '%${_n}%'`;
+          try { (this.db as any).run(_sql1); } catch {}
+
+          // 自称检测：扩展6种模式（"我是XX"/"我就是XX"/"XX来了"/"我叫XX"/"XX在呢"/"是XX呀"）
+          const _sql2 = `UPDATE conversations SET belong_entity_uuid='${_u}' WHERE belong_entity_uuid IS NULL AND role='assistant' AND (content LIKE '%我是${_n}%' OR content LIKE '%我就是${_n}%' OR content LIKE '%我叫${_n}%' OR content LIKE '%${_n}来了%' OR content LIKE '%${_n}在呢%' OR content LIKE '%是${_n}呀%')`;
+          try { (this.db as any).run(_sql2); } catch {}
+        }
+
+        // memories 从 conversations 传导
+        this.runSql("UPDATE memories SET belong_entity_uuid = (SELECT DISTINCT c.belong_entity_uuid FROM conversations c WHERE c.belong_entity_uuid IS NOT NULL AND c.content LIKE '%' || substr(memories.raw_input,1,30) || '%' LIMIT 1) WHERE belong_entity_uuid IS NULL");
+
+        // black_diamond 从 source_id → memories 传导
+        this.runSql("UPDATE black_diamond SET belong_entity_uuid = (SELECT m.belong_entity_uuid FROM memories m WHERE m.id = black_diamond.source_id AND m.belong_entity_uuid IS NOT NULL) WHERE belong_entity_uuid IS NULL AND source_id IS NOT NULL");
+
+        const _memAfter = (this.queryAll('SELECT COUNT(*) as cnt FROM memories WHERE belong_entity_uuid IS NOT NULL')[0] as any)?.cnt || 0;
+        console.log('[Backfill] memories标注: ' + _memBefore + '→' + _memAfter);
+
+        // 🔴 持久化：回填必须立即 flush（save 只计数不落盘）
+        this.flush();
+      } catch (_bfErr) { console.warn('[Backfill] 自动回填失败:', (_bfErr as Error)?.message); }
+    }
   }
 
   /** 获取原始 sql.js 实例（供 ConversationDB 共享） */
@@ -519,6 +569,7 @@ export class SQLiteAdapter {
     threadId?: string | null; sessionId?: string | null;
     sourceConversationIds?: number[] | null;
     dialogGroupId?: string | null; topicLabel?: string | null;
+    belongEntityUuid?: string | null;  // V10.4: 实体归属标注
   }): boolean {
     this.ensureReady();
     try {
@@ -529,7 +580,7 @@ export class SQLiteAdapter {
          confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
-         global_uid, location_fingerprint)
+	         global_uid, location_fingerprint, belong_entity_uuid)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
@@ -546,6 +597,7 @@ export class SQLiteAdapter {
           opts.primaryEmotion, opts.memoryType || 'dialog',
           opts.dialogGroupId ?? null, opts.topicLabel ?? null,
           opts.globalUid ?? null, opts.locationFingerprint ?? null,
+	          opts.belongEntityUuid ?? null,
         ],
       );
       this.save();

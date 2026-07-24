@@ -12,6 +12,7 @@ import type { Perception24D } from '../../m3/types/perception.js';
 import { parseFile } from './FileUploadService.js';
 import { FileChunker } from '../tools/FileChunker.js';
 import { ConfigService } from '../../config/ConfigService.js';
+import { createHash } from 'node:crypto';
 
 // 文件切片器实例（段落策略，每块 500 字符，50 重叠）
 const fileChunker = new FileChunker({ strategy: 'paragraph', chunkSize: 500, overlap: 50, minChunkLen: 20 });
@@ -115,6 +116,7 @@ import { AutoEnhancer } from './AutoEnhancer.js';
 import { DedupService } from './DedupService.js';
 import { ImpressionModel } from '../learning/ImpressionModel.js';
 import { RetrieverCircuitBreaker } from './RetrieverCircuitBreaker.js';
+import { FILE_SOURCE_TYPES, ANALYSIS_SOURCE_TYPES, RETRIEVABLE_SQL_IN, isAllowedForAdd } from './SourceTypePolicy.js';
 let _zvecAdapter: IZvecAdapter | null = null;
 async function ensureZvecReady(): Promise<IZvecAdapter> {
   if (!_zvecAdapter) {
@@ -269,22 +271,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       throw new Error('隐私内容不可存入知识库：用户个人信息应存于 MasterProfileService 或 FamilyGraph');
     }
 
-    // 🛡️ V4.0: 文件来源守卫 — 只有以文件形式上传的知识允许入库
-    // 合法的 source_type（对应真实文件格式），其他自动生成的内容一律拦截
-    const FILE_SOURCE_WHITELIST = new Set([
-      // 文档
-      'txt', 'md', 'pdf', 'docx', 'xlsx', 'csv', 'json',
-      // 图片
-      'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg',
-      // 视频
-      'mp4', 'avi', 'mov', 'mkv', 'webm',
-      // 设计/架构文档（以文件形式提交）
-      'architecture', 'protocol',
-    ]);
+    // 🛡️ V10.1: 来源守卫 — 使用共享 SourceTypePolicy (FILE + ANALYSIS)
     const srcType = (params.source_type || '').toLowerCase();
-    if (srcType && !FILE_SOURCE_WHITELIST.has(srcType)) {
-      console.warn(`[KE] 🛡️ 非文件来源拦截: source_type="${srcType}" title="${(params.title||'').substring(0,50)}" — 仅允许以文件形式上传的知识入库`);
-      throw new Error(`非文件来源的知识不可入库 (source_type=${srcType})`);
+    if (srcType && !isAllowedForAdd(srcType)) {
+      console.warn('[KE] 🛡️ 拦截: source_type="' + srcType + '" title="' + (params.title||'').substring(0,50) + '"');
+      throw new Error('非文件来源的知识不可入库 (source_type=' + srcType + ')');
     }
 
     // 修复双重UTF-8编码（浏览器上传时可能出现的文件名编码问题）
@@ -377,7 +368,7 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       sqlite.writeRaw(
         `INSERT OR REPLACE INTO atom_address_timeline (global_uid, global_time_seq, absolute_timestamp, time_slice_tag, entity_belong_id, route_stamp_list, hot_cold_level, crc_checksum, state_flag, created_at) VALUES (?, ?, ?, ?, ?, ?, 'W', ?, 'N', unixepoch())`,
         id, _kbSeq, _ts, now.substring(0, 7), params.dna_id || null, _stampBlob,
-        require('node:crypto').createHash('sha256').update(`${id}:${_kbSeq}`).digest('hex').substring(0, 16),
+        createHash('sha256').update(`${id}:${_kbSeq}`).digest('hex').substring(0, 16),
       );
     } catch (_e) { /* 寻址链写入失败不阻塞 */ }
 
@@ -586,10 +577,10 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     return rows.length > 0 ? (rows[0].cnt as number) : 0;
   }
 
-  /** 🛡️ V4.0: 过滤非文件来源知识 */
+  /** 🛡️ V10.1: 使用共享 SourceTypePolicy — FILE + ANALYSIS */
   const _fileSourceWhitelist = new Set([
-    'md','txt','pdf','docx','xlsx','csv','json','jpg','png','gif','webp',
-    'mp4','mov','webm','mkv','architecture','protocol','research','person',
+    ...FILE_SOURCE_TYPES,
+    ...ANALYSIS_SOURCE_TYPES,
   ]);
   function isFileSource(srcType: string | null | undefined): boolean {
     if (!srcType) return true;  // null/empty → 放行旧数据
@@ -791,14 +782,13 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     if (enWords) { for (const w of enWords) ngramSet.add(w); }
 
     // ── 全表扫描 + ngram 文本评分 + 情感/场景/印象排序 ──
-    // 🛡️ V4.0: 过滤非文件来源的知识（landmark/milestone/spec/dream等自动生成内容）
-    const FILE_SOURCE_FILTER = ['md','txt','pdf','docx','xlsx','csv','json','jpg','png','gif','webp','mp4','mov','webm','mkv','architecture','protocol','research','person'];
-    const srcFilter = FILE_SOURCE_FILTER.map(s => `'${s}'`).join(',');
+    // 🛡️ V10.1: 使用共享 SourceTypePolicy (FILE + ANALYSIS)
+    const srcFilter = RETRIEVABLE_SQL_IN();
     // 🆕 V4.0: 去掉了 LIMIT 50，改为全表扫描（459行全扫约50ms，SQLite 无压力）
-    const uuidFilter = belongEntityUuid ? `AND belong_entity_uuid = '${belongEntityUuid.replace(/'/g, "''")}'` : '';
-    const allRows: any[] = sqlite.queryAll(
-      `SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ${uuidFilter} ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`
-    );
+    const uuidFilter = belongEntityUuid ? `AND belong_entity_uuid = ?` : '';
+    const allRows: any[] = belongEntityUuid
+      ? sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') AND belong_entity_uuid = ? ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`, [belongEntityUuid])
+      : sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`);
     if (!allRows.length) {
       console.log('[KBw] 空库');
       return [];

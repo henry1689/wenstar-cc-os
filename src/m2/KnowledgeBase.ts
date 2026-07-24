@@ -79,4 +79,8 @@ export class KnowledgeBase {
   deleteExpiredUnclassified(maxAgeDays: number): number {
     return this.engine.deleteExpiredUnclassified(maxAgeDays);
   }
+
+  async reindexAll(): Promise<number> {
+    return this.engine.reindexAll();
+  }
 }

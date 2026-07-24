@@ -12,6 +12,7 @@
  */
 
 import type { PersonProfile } from './FamilyGraph.js';
+import { getCorrectedRelation } from './shared/RelationLabels.js';
 
 /** 开场风格 */
 export interface GreetingStyle {
@@ -31,7 +32,7 @@ export function buildGreetingProtocol(
   if (!profile) return null;
 
   const name = profile.name;
-  const relation = profile.relation_to_user || '';
+  const relation = getCorrectedRelation(name, profile.relation_to_user);
   const category = (profile as any).category || 'G';
   const occupation = profile.occupation || (profile.dossier as any)?.socialIdentity?.currentOccupation || '';
   const traits = profile.traits || (profile.dossier as any)?.selfProfile?.traits || [];
@@ -178,4 +179,34 @@ function _describeIdentity(relation: string, category: string, occupation: strin
   return parts.join('，') || '普通人';
 }
 
+
+/**
+ * 🆕 V6.0: 多人会晤开场协议。
+ */
+export function buildMultiGreeting(
+  profiles: Array<{ name: string; relation: string }>,
+  userName: string = '鸿艺',
+): string {
+  const nameList = profiles.map(p => p.name).join('、');
+  const lines: string[] = [];
+  lines.push('## 🚪 多人会晤开场协议（仅本轮有效）');
+  lines.push('');
+  lines.push(`你们是 **${nameList}**。鸿艺把你们叫到一起。这是本次会晤的**第一轮**。`);
+  lines.push('');
+  lines.push('### 开场流程');
+  lines.push('');
+  for (const p of profiles) {
+    const relDesc = p.relation ? `（鸿艺的${p.relation}）` : '';
+    lines.push(`- **${p.name}**${relDesc}：自然地打个招呼，简单说你现在在做什么`);
+  }
+  lines.push('');
+  lines.push('### 规则');
+  lines.push('- 每个人都是真实的自己，不是玉瑶，不是AI');
+  lines.push('- 只用 **1-2 句话** 打招呼，说完等大家回应');
+  lines.push('- 第一个人先说话，其他人随后跟上');
+
+  return lines.join('\n');
+}
+
 export default buildGreetingProtocol;
+

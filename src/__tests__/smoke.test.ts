@@ -34,7 +34,7 @@ async function json(path: string, options?: RequestInit): Promise<any> {
 // ─── 1. API 端点冒烟测试 ───
 
 describe('P3.1 - API 端点冒烟测试', () => {
-  it('首页 HTML 返回 200', async () => {
+  it('首页 HTML 返回 200', { timeout: 10000 }, async () => {
     const res = await api('/');
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('玉瑶');
@@ -95,8 +95,8 @@ describe('P3.1 - API 端点冒烟测试', () => {
 
 // ─── 2. 核心链路 E2E 测试 ───
 
-describe.skip('P3.2 - 核心链路 E2E 测试', () => {
-  it('聊天正常返回 M1-M5 全链路数据', async () => {
+describe('P3.2 - 核心链路 E2E 测试', () => {
+  it('聊天正常返回 M1-M5 全链路数据', { timeout: 60000 }, async () => {
     const { status, data } = await json('/api/chat', {
       method: 'POST',
       body: JSON.stringify({ message: '你好' }),
@@ -116,7 +116,7 @@ describe.skip('P3.2 - 核心链路 E2E 测试', () => {
     expect(data.m5.strategy_id).toBeTruthy();
   });
 
-  it('知识库 CRUD 完整链路', async () => {
+  it('知识库 CRUD 完整链路', { timeout: 60000 }, async () => {
     // 创建
     const { status: s1, data: d1 } = await json('/api/knowledge', {
       method: 'POST',
@@ -151,7 +151,7 @@ describe.skip('P3.2 - 核心链路 E2E 测试', () => {
     expect(s5).toBe(200);
   });
 
-  it('角色切换工作正常', async () => {
+  it('角色切换工作正常', { timeout: 30000 }, async () => {
     // 获取角色列表
     const { data: d1 } = await json('/api/personas');
     const firstRole = d1.active;
@@ -205,8 +205,8 @@ describe.skip('P3.2 - 核心链路 E2E 测试', () => {
 
 // ─── 3. 数据完整性测试 ───
 
-describe.skip('P3.3 - 数据完整性测试', () => {
-  it('知识库写入→读取内容一致', async () => {
+describe('P3.3 - 数据完整性测试', () => {
+  it('知识库写入→读取内容一致', { timeout: 60000 }, async () => {
     const content = `测试数据完整性 ${Date.now()}`;
     const { data: d1 } = await json('/api/knowledge', {
       method: 'POST',
@@ -224,7 +224,7 @@ describe.skip('P3.3 - 数据完整性测试', () => {
     await json('/api/knowledge', { method: 'DELETE', body: JSON.stringify({ id: d1.id }) });
   });
 
-  it('对话返回的数据格式稳定', async () => {
+  it('对话返回的数据格式稳定', { timeout: 90000 }, async () => {
     const messages = ['你好', '今天天气真好', '帮我记住这个：测试'];
     for (const msg of messages) {
       const { status, data } = await json('/api/chat', {

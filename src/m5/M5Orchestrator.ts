@@ -11,7 +11,6 @@ import { HumanisticCalibrator } from './HumanisticCalibrator.js';
 import { buildContextPrompt, updateAfterReply, resetContext } from './ContextMemory.js';
 import { extractAnchor, buildAnchorConstraint, validateAgainstAnchor, resetAnchor } from './SceneAnchor.js';
 import { resetMockSession } from './MockLLMProvider.js';
-import { getBufferPhrase, type BufferContext } from './BufferPhrases.js';
 import { classify, type RoleType, type RoleDecision } from '../app/role/RoleClassifier.js';
 import { isIntimate } from '../common/utils/is-intimate.js';
 import { evaluateTransition, createInitialState, type TransitionState } from '../app/role/TransitionManager.js';
@@ -95,18 +94,11 @@ export class M5Orchestrator {
       draft = '';
     }
 
-    // 如果主 LLM 失败（空/过短），自动降级到 MockLLMProvider
+    // 如果主 LLM 失败，不伪装——直接返回明确错误
     if (!draft) {
-      try {
-        console.log('[M5] ⛑️ 启动 MockLLMProvider 降级');
-        const mockLlm = new MockLLMProvider();
-        const mockResult = await mockLlm.generate({ strategy, cognition, conversationHistory, knowledgeBase: combinedKnowledge, userMessage });
-        draft = mockResult.text;
-        usedMockFallback = true;
-      } catch (err2) {
-        console.error('[M5] MockLLM 降级也失败了:', err2);
-        draft = '';
-      }
+      console.error('[M5] LLM生成失败，返回降级提示（非MockLLM）');
+      if (isEntityMeeting) return '…（抱歉，我暂时无法回应，请稍后再试。）';
+      return '抱歉，网络好像不太稳定，请稍后再试。';
     }
 
     // Step 4: 场景锚点校验（替换冲突词）→ 人文校准 → 降级兜底
@@ -133,17 +125,8 @@ export class M5Orchestrator {
     }
 
     if (!final || final.length <= 2) {
-      // 🛡️ V5.0: 会晤模式下绝不返回玉瑶的身份兜底
-      if (isEntityMeeting) {
-        return '…（抱歉，我暂时无法回应，请稍后再试。）';
-      }
-      // 终极兜底 — 用 userMessage 检测常见场景（仅玉瑶模式）
-      if (/你好|嗨|hi|hello|嘿/.test(userMessage || '')) return '嗯～你好呀。你找我我开心着呢。';
-      if (/你是谁|介绍/.test(userMessage || '')) return '我是玉瑶，你的私人秘书兼小情人呀～18岁，你说好不好？';
-      if (/在干嘛|忙什么/.test(userMessage || '')) return '在想你呀～不然还能干嘛。你呢？';
-      if (/晚安|睡了/.test(userMessage || '')) return '晚安～梦里有我哦。';
-      if (/早安|早上好/.test(userMessage || '')) return '早呀～昨晚梦到我了吗？';
-      return '嗯～我在呢。你说，我听着。';
+      if (isEntityMeeting) return '…（抱歉，我暂时无法回应，请稍后再试。）';
+      return '抱歉，网络好像不太稳定，请稍后再试。';
     }
 
     return final;

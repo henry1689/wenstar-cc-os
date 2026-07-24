@@ -240,11 +240,10 @@ export class M8FusionAdapter implements M8Engine {
         const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
         if (mem?.[0]) {
           const r = mem[0] as any;
-          const ts = r.created_at || new Date().toISOString();
-          const id = 'kn_milestone_' + Date.now().toString(36);
+          // 🔧 V10.1: 不再写入 knowledge_base——疤痕记忆属于 vault_log 金库，不是文件知识
           sqlite.writeRaw(
-            `INSERT OR IGNORE INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, scene_tags) VALUES (?, ?, ?, 'milestone', ?, ?, ?, 1, '人生地标', 0, 'other', 'milestone')`,
-            [id, `人生地标: ${scarType}`, (r.raw_input || '').substring(0, 500), JSON.stringify(['milestone', 'life_event', scarType]), ts, ts],
+            "INSERT INTO vault_log (detail, content_md, operation, created_at) VALUES (?, ?, 'scar', datetime('now','localtime'))",
+            [`人生地标: ${scarType}`, (r.raw_input || '').substring(0, 500)],
           );
         }
       } catch { /* 不阻塞 */ }
@@ -260,11 +259,10 @@ export class M8FusionAdapter implements M8Engine {
         const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
         if (mem?.[0]) {
           const r = mem[0] as any;
-          const ts = r.created_at || new Date().toISOString();
-          const id = 'kn_landmark_' + Date.now().toString(36);
+          // 🔧 V10.1: 不再写入 knowledge_base——记忆地标属于 vault_log 金库，不是文件知识
           sqlite.writeRaw(
-            `INSERT OR IGNORE INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, scene_tags) VALUES (?, ?, ?, 'landmark', ?, ?, ?, 1, '人生地标', 0, 'other', 'milestone')`,
-            [id, `记忆地标: ${narrativeTag}`, (r.raw_input || '').substring(0, 500), JSON.stringify(['landmark', 'memory', narrativeTag]), ts, ts],
+            "INSERT INTO vault_log (detail, content_md, operation, created_at) VALUES (?, ?, 'landmark', datetime('now','localtime'))",
+            [`记忆地标: ${narrativeTag}`, (r.raw_input || '').substring(0, 500)],
           );
         }
       } catch { /* 不阻塞 */ }

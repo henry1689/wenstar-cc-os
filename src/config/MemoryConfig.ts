@@ -12,7 +12,7 @@ export const MEMORY_CONFIG = {
     /** 调度间隔（毫秒） */
     intervalMs: 30 * 60 * 1000,
     /** 最低钙化分门槛 */
-    minCalciumScore: 1.0,
+    minCalciumScore: 0.15,  // V10.0: 与 WorkingMemory shouldGraduate() 实际阈值对齐
     /** 最少内容长度 */
     minContentLength: 10,
     /** 每批最大处理数 */

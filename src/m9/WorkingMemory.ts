@@ -165,8 +165,9 @@ export class MemoryWriteBuffer {
       }
     }
 
-    this.buffer = [];
-
+    // 🆕 V10.0 P0-4: 只移除已快照的条目，避免清空 snapshot 之后新 push 的条目
+    const _snapIds = new Set(snapshot.map(e => e.seqPos));
+    this.buffer = this.buffer.filter(e => !_snapIds.has(e.seqPos));
     if (results.length > 0) {
       console.log(`[WM] 巩固: ${results.length} 条进入金库`);
     }
@@ -194,7 +195,9 @@ export class MemoryWriteBuffer {
   async flushAll(): Promise<WriteResult[]> {
     const results: WriteResult[] = [];
     const dropped: number[] = [];
-    for (const entry of this.buffer) {
+    // 🆕 V10.0 P0-4: 快照当前 buffer，避免迭代中新 push 的条目被误清
+    const _snapshot = [...this.buffer];
+    for (const entry of _snapshot) {
       try {
         const _tier = this.shouldGraduate(entry);
         if (!_tier) {
@@ -208,7 +211,9 @@ export class MemoryWriteBuffer {
         results.push({ success: false, real_ref: '', seq_pos: -1, error: 'flush failed' });
       }
     }
-    this.buffer = [];
+    // 🆕 V10.0 P0-4: 只移除已处理的条目
+    const _snapIds2 = new Set(_snapshot.map(e => e.seqPos));
+    this.buffer = this.buffer.filter(e => !_snapIds2.has(e.seqPos));
     if (results.length > 0) {
       console.log(`[WM] 刷出: ${results.length} 条进金库 (丢弃 ${dropped.length} 条)`);
     }

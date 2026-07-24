@@ -12,6 +12,18 @@ type KnowledgeRouteDeps = {
 export async function handleKnowledgeRoutes(deps: KnowledgeRouteDeps): Promise<boolean> {
   const { req, res, url, knowledgeBase, readBody } = deps;
 
+  if (req.method === 'POST' && url.pathname === '/api/knowledge/reindex') {
+    try {
+      const count = await knowledgeBase.reindexAll();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, count }));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+    return true;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/knowledge/vector-search') {
     const q = url.searchParams.get('q') || '';
     if (!q) {

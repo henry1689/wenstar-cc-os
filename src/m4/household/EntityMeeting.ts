@@ -84,6 +84,29 @@ export class EntityMeeting {
     const entity = this._resolveEntity(entityName);
     if (!entity) return null;
 
+    // 🆕 V6.0: 已有会晤但未标记多人 → 自动升级
+    if (this._meeting?.active && !this._meeting.isMulti) {
+      const existing = this._resolveEntity(this._meeting.entityName);
+      const entities: EntityInfo[] = existing ? [existing, entity] : [entity];
+      if (existing && entities.length >= 2) {
+        this._multiParticipants = entities;
+        this._multiTurns = [];
+        this._multiMeetingName = `多人会晤: ${entities.map(e => e.name).join('、')}`;
+        this._meeting = {
+          active: true, entityName: entity.name, entityUUID: entity.uuid,
+          startedAt: this._meeting.startedAt, turnCount: 0,
+          isMulti: entities.length >= 3,
+          meetingStartHistoryIndex: startHistoryIndex || this._meeting.meetingStartHistoryIndex,
+        };
+        if (this.gatekeeper) {
+          this.gatekeeper.startMeeting(this._multiMeetingName, entities.map(e => e.uuid));
+        }
+        console.log(`[EntityMeeting] 自动升级为多人: ${entities.length}人`);
+    this._isFirstTurn = true;
+    return this._meeting;
+      }
+    }
+
     this._meeting = {
       active: true,
       entityName: entity.name,
@@ -207,14 +230,26 @@ export class EntityMeeting {
    * 先退出当前会晤，再进入新实体。如果是多人会议则先存档纪要。
    */
   async switchTo(entityName: string): Promise<MeetingState | null> {
-    // 🆕 V5.0: 保留原始会晤开始索引（切换人物不重置历史窗口）
-    const _origStartIndex = this._meeting?.meetingStartHistoryIndex ?? 0;
-    // 先退出当前会晤（多人会议自动存档）
-    if (this._meeting) {
-      await this.exit();
+    const entity = this._resolveEntity(entityName);
+    if (!entity) return null;
+
+    // 🆕 V6.0: 多人模式下叠加参与者，不结束会议
+    if (this._meeting?.isMulti) {
+      const _already = this._multiParticipants.some(p => p.uuid === entity.uuid);
+      if (!_already) {
+        this._multiParticipants.push(entity);
+        this._multiMeetingName = `多人会晤: ${this._multiParticipants.map(p => p.name).join('、')}`;
+        if (this.gatekeeper) this.gatekeeper.addSessionEntity(entity.uuid);
+      }
+      this._meeting.entityName = entity.name;
+      this._meeting.entityUUID = entity.uuid;
+      this._isFirstTurn = true;
+      return this._meeting;
     }
 
-    // 再进入新会晤，沿用原始历史窗口
+    // 单人模式：先退出再进入
+    const _origStartIndex = this._meeting?.meetingStartHistoryIndex ?? 0;
+    if (this._meeting) await this.exit();
     return this.enter(entityName, _origStartIndex);
   }
 
@@ -225,16 +260,20 @@ export class EntityMeeting {
   recordTurn(role: 'user' | 'assistant', content: string, speakerName?: string): void {
     if (!this._meeting?.isMulti) return;
 
+    const speaker = speakerName ||
+      (role === 'user' ? '鸿艺' : this._meeting.entityName);
+
     this._multiTurns.push({
-      speaker: speakerName || (role === 'user' ? '我' : '玉瑶'),
+      speaker,
       role,
       content,
       timestamp: new Date().toISOString(),
     });
 
-    // 控制会议纪要中保存的轮次上限（最近 200 轮）
+    // 🆕 V6.0: 超过 150 轮时裁剪并告警
     if (this._multiTurns.length > 200) {
-      this._multiTurns = this._multiTurns.slice(-200);
+      console.warn(`[EntityMeeting] 会议轮次超 200，截断前 50 轮`);
+      this._multiTurns = this._multiTurns.slice(-150);
     }
   }
 
@@ -326,8 +365,27 @@ export class EntityMeeting {
   static detectUserIntent(message: string, knownPersonNames: string[]): string[] | null {
     if (!message || knownPersonNames.length === 0) return null;
 
-    const sorted = [...knownPersonNames].sort((a, b) => b.length - a.length);
+    // 🆕 V10.0 P1-5 补充: 所有路径排除高频泛称词
+    const GENERIC_NAMES = new Set(['妹妹', '老婆', '妈妈', '爸爸', '姐姐', '哥哥', '弟弟']);
+    const sorted = [...knownPersonNames]
+      .filter(n => !GENERIC_NAMES.has(n))
+      .sort((a, b) => b.length - a.length);
     const msg = message.trim();
+
+    // 🔍 V10.0 诊断: 运行时确认函数被调用
+    if (msg.includes('诗雨') || msg.includes('徐诗雨')) {
+      console.log(`[EntityMeeting DEBUG] detectUserIntent called: msg="${msg}" sorted=${sorted.length}人 first="${sorted[0]}"`);
+    }
+
+    // 🆕 V6.0: "A、B，都来" / "A B C 都过来一起"
+    const duMatch = msg.match(/^(.+?)[，,、\s]*(?:都来|都过来|都过来一下|都来一下|都聊聊|都一起)\s*$/);
+    if (duMatch) {
+      const found: string[] = [];
+      for (const name of sorted) {
+        if (duMatch[1].includes(name)) found.push(name);
+      }
+      if (found.length >= 2) return found;
+    }
 
     // ── 多人模式检测 ──
 
@@ -381,6 +439,13 @@ export class EntityMeeting {
     const prefixMatch = msg.match(/^([一-龥]{2,8})[：:，,]/);
     if (prefixMatch) {
       const name = EntityMeeting._fuzzyFindName(prefixMatch[1], sorted);
+      if (name) return [name];
+    }
+
+    // 🆕 V9.0: 纯名字（无标点）—— "诗雨" / "梓铭" 单独一句话
+    const bareMatch = msg.match(/^([一-龥]{2,8})\s*$/);
+    if (bareMatch) {
+      const name = EntityMeeting._fuzzyFindName(bareMatch[1], sorted);
       if (name) return [name];
     }
 
@@ -443,6 +508,20 @@ export class EntityMeeting {
       if (new RegExp(`(?:^|[ .,，。!！?？、])\\s*(?:跟|和|找|喊|叫)\\s*${name}\\s*(?:聊聊|聊一下|说说话|来一下|过来|出来|说几句)`).test(msg)) {
         return [name];
       }
+      // 🆕 V10.0: 身份确认 — "你是XX吗"/"你叫XX"等（直接用 includes 避免正则编码问题）
+      const _short = nt.short || '';
+      const _isIdCheck = /(?:你是|你叫|你就是|你是叫)/.test(msg);
+      if (_isIdCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
+        if (msg.length <= name.length + 8) {
+          console.log(`[EntityMeeting ID] 身份确认匹配: "${msg}" → name="${name}" short="${_short}"`);
+          return [name];
+        }
+      }
+      // 🆕 V10.0: "XX在吗"
+      const _isHereCheck = /(?:在吗|在不|在不在)/.test(msg);
+      if (_isHereCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
+        if (msg.length <= name.length + 6) return [name];
+      }
       // 最宽泛兜底：消息中包含XX且结尾有"聊聊/谈谈/说说话/聊一下"
       if (new RegExp(`${name}.*(?:聊聊|谈谈|说说话|聊一下|说几句)\\s*$`).test(msg)) {
         return [name];
@@ -453,7 +532,51 @@ export class EntityMeeting {
       }
     }
 
+    // 🆕 V10.0 P1-5: 终极兜底（泛称词已在 sorted 中排除）
+    for (const name of sorted) {
+      if (msg.includes(name) && msg.length <= name.length + 5) return [name];
+      // 🆕 V10.0 修复: 消息含短名且消息≤10字也触发（之前≤4字太严，漏掉"你是诗雨吗"等6字消息）
+      if (msg.length <= 10 && msg.length >= 2 && msg.length < name.length && name.includes(msg)) return [name];
+    }
+
     return null;
+  }
+
+  /**
+   * 🆕 V6.0: 检测集体呼唤意图（"你们"、"大家"、"都过来"）。
+   * 仅在会晤已激活（多人模式）时有效。
+   */
+  static detectCollectiveIntent(message: string, activeParticipants: string[]): string[] | null {
+    if (!message || activeParticipants.length < 2) return null;
+    const msg = message.trim();
+
+    // "你们一起回忆一下" / "大家都来聊聊" / "你们几个"
+    if (/^(?:你们|大家|诸位)\s*(?:一起|都|几个|各位)?\s*(?:回忆|聊聊|说说|谈谈|看看|讨论|过来|来)/.test(msg)) {
+      return [...activeParticipants];
+    }
+    // "都过来" / "都来" / "一起来"
+    if (/^(?:都过来|都来|一起来|一起聊聊|一起回忆)/.test(msg)) {
+      return [...activeParticipants];
+    }
+    // "你们几个回忆一下那天"
+    if (/你们(?:几个|俩|仨|几个人)/.test(msg) && /回忆|聊聊|说说|讨论/.test(msg)) {
+      return [...activeParticipants];
+    }
+    return null;
+  }
+
+  /** 🆕 V6.0: 向多人会议追加参与者 */
+  addParticipant(entityName: string): boolean {
+    const entity = this._resolveEntity(entityName);
+    if (!entity || !this._meeting?.isMulti) return false;
+    if (this._multiParticipants.some(p => p.uuid === entity.uuid)) return false;
+    this._multiParticipants.push(entity);
+    this._multiMeetingName = `多人会晤: ${this._multiParticipants.map(p => p.name).join('、')}`;
+    if (this.gatekeeper) this.gatekeeper.addSessionEntity(entity.uuid);
+    if (this._multiParticipants.length >= 3 && !this._meeting.isMulti) {
+      this._meeting.isMulti = true;
+    }
+    return true;
   }
 
   /**
@@ -471,22 +594,20 @@ export class EntityMeeting {
     const sorted = [...knownPersonNames].sort((a, b) => b.length - a.length);
     const msg = message.trim();
 
-    // 纯退出（不换人）：这些是明确的退出信号
-    if (/^(?:散会|结束.*会议|会议.*结束|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见|先这样吧)\s*$/.test(msg)) {
-      return null; // 不是换人，是退出
-    }
+    // 退出或无关信号
+    if (/^(?:散会|结束.*会议|瑶瑶|玉瑶|瑶儿|拜拜|再见|先这样|下了)\s*$/.test(msg)) return null;
 
+    // 🛡️ V10.0: 仅以下极端明确的情况才切换
     for (const name of sorted) {
-      // "换XX来" / "换XX吧"
-      if (new RegExp(`换\\s*${name}\\s*(?:来|吧|过来)?\\s*$`).test(msg)) return name;
-      // "让XX也来" / "让XX来吧"
-      if (new RegExp(`让\\s*${name}\\s*(?:也来|来吧|来|过来)`).test(msg)) return name;
-      // "不聊了/先这样/散会，叫/换XX"
-      if (new RegExp(`(?:不聊了|先这样|先这样吧|今天就到这|今天就到这里|散会)\\s*[,，]?\\s*(?:叫|换|找|让)\\s*${name}`).test(msg)) return name;
-      // "叫XX来替一下" / "叫XX过来替"
-      if (new RegExp(`叫\\s*${name}\\s*(?:来替|过来替|替一下|替)`).test(msg)) return name;
+      // ✅ "换XX来" / "换XX吧"
+      if (new RegExp(`^换\\s*${name}\\s*(?:来|吧|过来)?\\s*$`).test(msg)) return name;
+      // ✅ "换XX"（极短消息）
+      if (new RegExp(`^换\\s*${name}\\s*$`).test(msg)) return name;
+      // ✅ "不聊了/散会/今天就到这，叫/换XX"
+      if (new RegExp(`(?:不聊了|先这样吧|今天就到这|今天就到这里|散会)\\s*[,，]?\\s*(?:叫|换|找|让)\\s*${name}`).test(msg)) return name;
     }
 
+    // ❌ 删除：不再用 detectUserIntent 作为兜底——那会导致提及任何名字都切换
     return null;
   }
 

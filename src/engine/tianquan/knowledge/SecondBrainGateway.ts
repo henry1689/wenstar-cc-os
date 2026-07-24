@@ -153,12 +153,21 @@ export class SecondBrainGateway {
     }
   }
 
-  /** 全量扫描 wiki/ 构建内存索引 */
+  /** 全量扫描 knowledge-md/ 构建内存索引（wiki子目录 + 根目录双路径） */
   private async _buildIndex(): Promise<void> {
     this._index.clear();
+    // V10.1: 同时扫描 wiki/ 子目录（旧结构）和根目录（平铺模式）
     const wikiPath = path.join(this.vaultPath, 'wiki');
-    if (!fs.existsSync(wikiPath)) return;
-    await this._scanDir(wikiPath, '');
+    let scanned = false;
+    if (fs.existsSync(wikiPath) && fs.statSync(wikiPath).isDirectory()) {
+      await this._scanDir(wikiPath, 'wiki');
+      scanned = true;
+    }
+    // 根目录也扫描（knowledge-md/ 中有大量平铺MD文件）
+    await this._scanDir(this.vaultPath, '');
+    if (!scanned && this._index.size === 0) {
+      console.log('[2ndBrain] 无MD文件发现——请确认 knowledge-md/ 目录');
+    }
   }
 
   private async _scanDir(dir: string, relPrefix: string): Promise<void> {

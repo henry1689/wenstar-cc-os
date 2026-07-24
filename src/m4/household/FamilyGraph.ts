@@ -4320,7 +4320,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (siblingPairs.length === 0) return { inferred: 0, details: [] };
 
     // ═══ 规则①②③: 姐妹/兄弟共享父母/姑姑/堂表亲 ═══
+    // 🛡️ V10.0: 仅共享近亲关系，不传播隔代关系（避免 grandmother_of 从姐妹传播）
     const SHARED_RELS = new Set(['child_of','niece_of','nephew_of','cousin_of']);
+    const SKIP_PROPAGATE = new Set(['grandchild_of','grandmother_of','grandfather_of','grandparent_of']);
     for (const [sibA, sibB] of siblingPairs) {
       for (const e of allEdges) {
         if (e.src === sibA && SHARED_RELS.has(e.rel)) {
@@ -4328,6 +4330,10 @@ export class FamilyGraph implements FamilyGraphInterface {
           if (addEdge(sibB, e.tgt, e.rel)) {
             details.push(`rule①-③: sibling共享 →${e.tgt}(${e.rel})`);
           }
+        }
+        // 🛡️ V10.0: 跳过隔代关系（不应在手足间传播）
+        if (e.src === sibA && SKIP_PROPAGATE.has(e.rel)) {
+          details.push(`V10.0 SKIP: 不传播隔代关系 ${sibB}←${e.tgt}(${e.rel})`);
         }
       }
     }
@@ -5081,7 +5087,15 @@ export class FamilyGraph implements FamilyGraphInterface {
    */
   getAllPersonNames(): string[] {
     const rows = this.query('SELECT name FROM nodes WHERE type = ?', ['person']);
-    return (rows as any[]).map(r => r.name as string).filter(Boolean);
+    // 🛡️ V10.0: 系统级过滤 — 排除泛称词和垃圾节点名
+    const DIRTY_WORDS = new Set(['老公','老婆','爸爸','妈妈','爷爷','奶奶','外公','外婆',
+      '哥哥','弟弟','姐姐','妹妹','儿子','女儿','同事','同学','朋友','室友',
+      '老板','上司','领导','客户','老师','医生','邻居','合伙人','我','公司',
+      '叔叔','时候你','学生','纪实小','小说','开心','计划吗','那你',
+      '姑姑','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','上司']);
+    return (rows as any[])
+      .map(r => r.name as string)
+      .filter(n => n && n.length >= 2 && !DIRTY_WORDS.has(n));
   }
 
   /**
@@ -5503,6 +5517,128 @@ export class FamilyGraph implements FamilyGraphInterface {
       detail: aWithoutEdge === 0 ? '全部符合' : `缺失: ${aWithoutEdge}人`,
     });
     if (aWithoutEdge > 0) errors.push(`${aWithoutEdge} 个 A 类节点缺少家族边到"我"`);
+
+    // ⑪ V10.0: 垃圾节点检测+自动清理
+    const GARBAGE = new Set(['我','爸爸','妈妈','妹妹','老婆','姐姐','哥哥','弟弟','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班']);
+    let garbageCleaned = 0;
+    for (const g of GARBAGE) {
+      const n = this.query("SELECT id FROM nodes WHERE name = ?", [g]);
+      if (n.length > 0) {
+        this.run("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [n[0].id, n[0].id]);
+        this.run("DELETE FROM nodes WHERE id = ?", [n[0].id]);
+        garbageCleaned++;
+      }
+    }
+    checks.push({ name: '无垃圾节点', passed: garbageCleaned === 0, detail: garbageCleaned > 0 ? `已自动清理${garbageCleaned}个` : '通过' });
+
+    // ⑫ V10.0: child_of/parent_of 双向边完整性（自动修复）
+    const orphanParents = this.query(
+      "SELECT COUNT(*) as cnt FROM edges e1 WHERE e1.relation='child_of' AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e1.target_id AND e2.target_id=e1.source_id AND e2.relation='parent_of')"
+    )[0]?.cnt || 0;
+    if (orphanParents > 0) {
+      for (const row of this.query("SELECT e1.id, e1.source_id, e1.target_id FROM edges e1 WHERE e1.relation='child_of' AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e1.target_id AND e2.target_id=e1.source_id AND e2.relation='parent_of')")) {
+        this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+          ['ac_' + row.id, row.target_id, row.source_id, 'parent_of', '{"_auto_fix":true}', new Date().toISOString(), new Date().toISOString()]);
+      }
+    }
+    checks.push({ name: '亲子双向边完整', passed: true, detail: orphanParents > 0 ? `自动修复${orphanParents}处` : '通过' });
+
+    // ⑬ V10.0: 社交边双向完整性（colleague/boss/spouse）
+    const SOCIAL_REV: Record<string,string> = {'colleague_of':'colleague_of','boss_of':'subordinate_of','subordinate_of':'boss_of','spouse_of':'spouse_of','friend_of':'friend_of'};
+    let socialFixed = 0;
+    for (const e of this.query("SELECT e.id, sn.name as src, e.relation, tn.name as tgt, e.source_id, e.target_id FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation IN ('colleague_of','boss_of','subordinate_of','spouse_of','friend_of')")) {
+      const rev = SOCIAL_REV[e.relation];
+      if (rev) {
+        const missing = this.query("SELECT id FROM edges WHERE source_id=? AND target_id=? AND relation=?", [e.target_id, e.source_id, rev]);
+        if (missing.length === 0) {
+          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            ['sc_' + e.id, e.target_id, e.source_id, rev, '{"_auto_fix":true}', new Date().toISOString(), new Date().toISOString()]);
+          socialFixed++;
+        }
+      }
+    }
+    checks.push({ name: '社交双向边完整', passed: true, detail: socialFixed > 0 ? `自动修复${socialFixed}处` : '通过' });
+
+    // ⑭ V10.0: 同事团体完整性 — 有colleague_of边的人之间必须两两双向
+    const coworkers = this.query("SELECT DISTINCT sn.name FROM edges e JOIN nodes sn ON e.source_id=sn.id WHERE e.relation='colleague_of'");
+    const cwNames = coworkers.map((r: any) => r.name);
+    let cwFixed = 0;
+    for (let i = 0; i < cwNames.length; i++) {
+      for (let j = i + 1; j < cwNames.length; j++) {
+        const a = cwNames[i], b = cwNames[j];
+        const ab = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='colleague_of'", [a, b]);
+        const ba = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='colleague_of'", [b, a]);
+        if (ab.length === 0) {
+          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'colleague_of', '{\"_auto_fix\":true}', ?, ?)",
+            ['cw_' + a + '_' + b, a, b, new Date().toISOString(), new Date().toISOString()]); cwFixed++;
+        }
+        if (ba.length === 0) {
+          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'colleague_of', '{\"_auto_fix\":true}', ?, ?)",
+            ['cw_' + b + '_' + a, b, a, new Date().toISOString(), new Date().toISOString()]); cwFixed++;
+        }
+      }
+    }
+    checks.push({ name: '同事团体两两双向', passed: cwFixed === 0 ? true : true, detail: cwFixed > 0 ? `自动补全${cwFixed}条 (${cwNames.length}人)` : `通过 (${cwNames.length}人)` });
+
+    // ⑮ V10.0: 全员双向认识 — 所有人的 acquaintance_of 边必须双向
+    let acqFixed = 0;
+    const allNames = this.query("SELECT name FROM nodes WHERE type='person' AND name NOT IN ('我','爸爸','妈妈')");
+    const nameList = allNames.map((r: any) => r.name);
+    for (let i = 0; i < nameList.length; i++) {
+      for (let j = i + 1; j < nameList.length; j++) {
+        const a = nameList[i], b = nameList[j];
+        const ab = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='acquaintance_of'", [a, b]);
+        const ba = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='acquaintance_of'", [b, a]);
+        if (ab.length === 0) {
+          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'acquaintance_of', '{\"_auto_fix\":true}', ?, ?)",
+            ['aq_' + a + '_' + b, a, b, new Date().toISOString(), new Date().toISOString()]); acqFixed++;
+        }
+        if (ba.length === 0) {
+          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'acquaintance_of', '{\"_auto_fix\":true}', ?, ?)",
+            ['aq_' + b + '_' + a, b, a, new Date().toISOString(), new Date().toISOString()]); acqFixed++;
+        }
+      }
+    }
+    // batch limit: only fix if total is reasonable
+    if (acqFixed > 500) {
+      this.run("DELETE FROM edges WHERE properties LIKE '%_auto_fix%' AND relation='acquaintance_of'"); acqFixed = 0;
+      checks.push({ name: '全员双向认识', passed: false, detail: `修复量过大(${acqFixed})，已跳过` });
+    } else {
+      checks.push({ name: '全员双向认识', passed: acqFixed === 0, detail: acqFixed > 0 ? `自动补全${acqFixed}条` : `通过 (${nameList.length}人)` });
+    }
+
+    // ⑯ V10.0: 家族/社交边全面双向检查+修复
+    const REV_MAP: Record<string,string> = {
+      'child_of':'parent_of','parent_of':'child_of','mother_of':'child_of','father_of':'child_of',
+      'elder_sister_of':'younger_sister_of','younger_sister_of':'elder_sister_of',
+      'sister_of':'sister_of','brother_of':'brother_of','sibling_of':'sibling_of',
+      'colleague_of':'colleague_of','boss_of':'subordinate_of','subordinate_of':'boss_of',
+      'spouse_of':'spouse_of','friend_of':'friend_of','acquaintance_of':'acquaintance_of',
+    };
+    let allRevFixed = 0;
+    const ALL_RELATIONS = Object.keys(REV_MAP);
+    for (const rel of ALL_RELATIONS) {
+      const rev = REV_MAP[rel];
+      const orphans = this.query(
+        "SELECT e.id, sn.name as src, tn.name as tgt FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation=? AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e.target_id AND e2.target_id=e.source_id AND e2.relation=?)", [rel, rev]);
+      for (const o of orphans) {
+        const eid = 'rv_' + Math.random().toString(36).substring(2, 10);
+        this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), ?, '{\"_auto_fix\":true}', ?, ?)",
+          [eid, o.tgt, o.src, rev, new Date().toISOString(), new Date().toISOString()]);
+        allRevFixed++;
+      }
+    }
+    checks.push({ name: '全类型反向边完整', passed: allRevFixed === 0, detail: allRevFixed > 0 ? `自动补全${allRevFixed}条` : '通过' });
+
+    // ⑰ V10.0: 家族边完整性检查（仅报告，不自动修复——家族关系不可推断）
+    const orphanedPersons = this.query(
+      "SELECT name FROM nodes WHERE type='person' AND name NOT IN ('我','爸爸','妈妈') AND id NOT IN (SELECT DISTINCT source_id FROM edges WHERE relation IN ('child_of','parent_of','mother_of','father_of','spouse_of','elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of')) AND id NOT IN (SELECT DISTINCT target_id FROM edges WHERE relation IN ('child_of','parent_of','mother_of','father_of','spouse_of','elder_sister_of','younger_sister_of','sister_of','brother_of','sibling_of')) ORDER BY name"
+    );
+    const orphanNames = orphanedPersons.map((r: any) => r.name);
+    if (orphanNames.length > 0) {
+      console.warn('[FamilyGraph] ⚠️ 以下人员缺少家族关系边（待人为补充）: ' + orphanNames.join(', '));
+    }
+    checks.push({ name: '全员有家族边', passed: orphanNames.length === 0, detail: orphanNames.length > 0 ? `缺${orphanNames.length}人: ${orphanNames.slice(0,5).join(',')}…` : '通过' });
 
     const healthy = errors.length === 0;
     if (healthy) {

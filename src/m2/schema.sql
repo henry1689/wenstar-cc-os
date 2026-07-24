@@ -69,7 +69,10 @@ CREATE TABLE IF NOT EXISTS memories (
     namespace TEXT DEFAULT 'default',
 
     -- V4.0: 来源类型 (conversation | knowledge_vault | manual)
-    source_type TEXT DEFAULT 'conversation'
+    source_type TEXT DEFAULT 'conversation',
+
+    -- V10.4: 实体归属标注 (TXS-ID，关联 entities 表 UUID)
+    belong_entity_uuid TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_calcium ON memories(calcium_score DESC);
@@ -107,6 +110,9 @@ CREATE TABLE IF NOT EXISTS memory_entities (
     knowledge_type TEXT CHECK(knowledge_type IN ('private','family','world')),
     PRIMARY KEY (memory_id, entity_id)
 );
+-- 🆕 V10.0 P1-1: 记忆-实体关联索引（每条 JOIN 都要扫全表）
+CREATE INDEX IF NOT EXISTS idx_me_memory ON memory_entities(memory_id);
+CREATE INDEX IF NOT EXISTS idx_me_entity ON memory_entities(entity_id);
 
 -- 实体关系图
 CREATE TABLE IF NOT EXISTS entity_relations (
@@ -117,6 +123,9 @@ CREATE TABLE IF NOT EXISTS entity_relations (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (entity_a_id, entity_b_id, relation)
 );
+-- 🆕 V10.0 P1-1: 实体关系索引（多跳检索每跳都全表扫描）
+CREATE INDEX IF NOT EXISTS idx_er_a ON entity_relations(entity_a_id);
+CREATE INDEX IF NOT EXISTS idx_er_b ON entity_relations(entity_b_id);
 
 -- 高阶归纳
 CREATE TABLE IF NOT EXISTS inductions (
@@ -150,9 +159,15 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
     interaction_type TEXT DEFAULT 'other',
     emotion_vector TEXT,
     -- V3.2: 户籍卷宗归档 — 此知识条目属于哪个实体 UUID
-    belong_entity_uuid TEXT
+    belong_entity_uuid TEXT,
+    -- V10.1: 印象分+召回计数（ImpressionModel 写入）
+    impression_score REAL DEFAULT 0.5,
+    recall_count INTEGER DEFAULT 0,
+    last_recalled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_created ON knowledge_base(created_at DESC);
+-- 🆕 V10.0 P1-1: 知识库分类索引（getUnclassified 每轮都查，无索引则全表扫描）
+CREATE INDEX IF NOT EXISTS idx_kb_class ON knowledge_base(classification);
 
 -- 知识-记忆关联
 CREATE TABLE IF NOT EXISTS knowledge_memories (
@@ -243,6 +258,7 @@ CREATE TABLE IF NOT EXISTS vault_log (
     source_id TEXT,
     target_id TEXT,
     detail TEXT,
+    content_md TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vault_log_op ON vault_log(operation);
@@ -284,6 +300,8 @@ CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id);
 CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id);
 CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted);
 CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id);
+-- 🆕 V10.0 P1-1: 对话压缩标记索引（几乎所有查询都过滤 is_compacted=0）
+CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversations(is_compacted);
 
 -- 主人大脑镜像
 CREATE TABLE IF NOT EXISTS master_profile (

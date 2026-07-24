@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 
 import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
 import type { FamilyGraph } from '../m4/household/FamilyGraph.js';
+import type { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import type { ChatResponse, ChatContext } from './chat.js';
 
 export interface ChatRouteDeps {
@@ -31,6 +32,7 @@ export interface ChatRouteDeps {
   setApiKey: (name: string, value: string) => void;
   deleteApiKey: (name: string) => void;
   getApiKey: (name: string) => string | undefined;
+  entityMeeting?: EntityMeeting;  // V10.1: byte-level meeting trigger
 }
 
 export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -38,7 +40,12 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
 
   // ── 聊天 ──
   if (req.method === 'POST' && url.pathname === '/api/chat') {
-    const body = JSON.parse(await readBody(req));
+    const { rawBody, text: bodyText } = await readBodyWithBytes(req);
+    // 🔧 V10.1: 字节级会晤触发——在 JSON 解析前用原始字节匹配人名
+    if (deps.entityMeeting && !deps.entityMeeting.isActive()) {
+      _triggerMeetingFromBytes(rawBody, deps.entityMeeting);
+    }
+    const body = JSON.parse(bodyText);
     if (!body.message || typeof body.message !== 'string') { res.writeHead(400); res.end(JSON.stringify({ error: 'message required' })); return true; }
     // 🛡️ V4.0: 角色扮演已彻底废除，实体会晤替代。不再注入【角色扮演】标记。
     const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true);
@@ -191,11 +198,63 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
   return false;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) { req.destroy(); reject(new Error('Body too large')); return; }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
+}
+
+// ✅ V10.0: 确保 readBodyWithBytes 被导出并被外部引用 🔴
+// 此函数供 handleChatRoutes 调用，不要在最终编译产物中丢失
+
+/** 🔧 V10.1: 读取原始字节 + 解码字符串，供字节级会晤触发使用 */
+function readBodyWithBytes(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Promise<{ rawBody: Buffer; text: string }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) { req.destroy(); reject(new Error('Body too large')); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks);
+      resolve({ rawBody, text: rawBody.toString() });
+    });
+    req.on('error', reject);
+  });
+}
+
+/** 🔧 V10.4: 字节级会晤触发——仅在会晤未激活时触发，会中不自动切换 */
+function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
+  // 🔴 V10.4: 会晤已激活时不自动切换——只在未激活时触发进入
+  // 会中切换由 EntityMeeting.detectSwitchIntent 管控（仅"换XX来"等明确命令触发）
+  if (entityMeeting?.isActive?.()) return;
+
+  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','邱工','刘云新','陈工','李工'];
+  for (const n of HC) {
+    const nameBuf = Buffer.from(n, 'utf-8');
+    if (rawBody.indexOf(nameBuf) >= 0) {
+      entityMeeting.enter(n, 0);
+      console.log('[V10.1 BYTE] enter(' + n + ') from raw body bytes');
+      return;
+    }
+    // 末2字匹配
+    if (n.length >= 3) {
+      const shortBuf = Buffer.from(n.slice(-2), 'utf-8');
+      if (rawBody.indexOf(shortBuf) >= 0) {
+        entityMeeting.enter(n, 0);
+        console.log('[V10.1 BYTE] enter(' + n + ') from short-name bytes');
+        return;
+      }
+    }
+  }
 }
