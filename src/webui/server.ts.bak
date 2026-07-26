@@ -1016,10 +1016,8 @@ async function initPipeline(): Promise<void> {
     }
 
     // 留存清理: 保留最近7天每日 + 最近4周每周
-    let _bkTotalFiles = 0;
     try {
       const files = readdirSync(BACKUP_DIR).filter(f => f.endsWith('.db'));
-      _bkTotalFiles = files.length;
       // 按前缀分组
       const groups: Record<string, string[]> = {};
       for (const f of files) {
@@ -1056,8 +1054,7 @@ async function initPipeline(): Promise<void> {
           }
         }
       }
-    } catch (_e) { console.warn('[Backup] 清理失败:', (_e as Error)?.message); }
-    console.log(`[Backup] 清理指令已执行 (${_bkTotalFiles} 个备份文件)`);
+    } catch (_) { /* 留存清理不影响主流程 */ }
   }
 
   // 🔋 LAZY: 备份在用户问及时通过 __temporalOnDemand 触发
@@ -1388,7 +1385,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
 async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
   // 🔥 V10.0: 服务器级会晤强制激活
   if (entityMeeting && !entityMeeting.isActive()) {
-    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','邱工','刘云新','陈工','李工'];
     for (const n of HC) {
       if (message.indexOf(n) >= 0 || (n.length >= 3 && message.indexOf(n.slice(-2)) >= 0)) {
         entityMeeting.enter(n, conversationHistory?.length ?? 0);
@@ -2588,8 +2585,8 @@ async function main(): Promise<void> {
     await orchestrator.init();
     console.log(`  [S1] 新架构编排器已初始化 ✓ (mode=${orchestrator.getMode()})`);
 
-    // S3 混合检索引擎初始化 (轻量模式下跳过)
-    if (!ConfigService.getBool("TIANQUAN_LITE")) {
+    // S3 混合检索引擎初始化 (轻量模式下跳过，嵌入器独立标志可覆盖)
+    if (!ConfigService.getBool("TIANQUAN_LITE") || ConfigService.getBool("TIANQUAN_EMBEDDER_ENABLED")) {
       try {
         const { HybridSearchEngine } = await import('../engine/storage/HybridSearch.js');
         hybridSearch = new HybridSearchEngine();

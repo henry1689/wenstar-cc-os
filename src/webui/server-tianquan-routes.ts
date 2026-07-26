@@ -3,7 +3,7 @@
  * /api/tianquan/status | dispatch | lint | arch | sql-audit | snapshot | specs
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { MasterHarris, SpecLoadResult } from '../tianquan/index.js';
+import type { MasterHarris, SpecLoadResult } from '../tianquan-rpc/index.js';
 
 export interface TianquanRouteDeps {
   masterHarris: MasterHarris | null;

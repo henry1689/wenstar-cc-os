@@ -94,8 +94,15 @@ export class M4Orchestrator {
     const enhancedEntities = decomposed.subQueries.length > 0 && decomposed.intent !== 'simple'
       ? [...entities, ...decomposed.subQueries.map(sq => ({ name: sq, type: 'event' as const }))]
       : entities;
+    // 🆕 V10.7: 解析 person 实体的 FG UUID，供实体归属检索通道使用
+    const personUuids = entities
+      .filter(e => e.type === 'person' && e.name !== '我')
+      .map(e => this.familyGraph.getUUIDByName(e.name))
+      .filter(Boolean) as string[];
+
     let memories = await this.memoryRetriever.retrieveMemories(locusPath, enhancedEntities, {
       perception: decision.enhanced.perception,
+      entityUuids: personUuids.length > 0 ? personUuids : undefined,
     });
 
     // Phase B: 缓存原始记忆（供 retrieveAsSnapshot 使用）

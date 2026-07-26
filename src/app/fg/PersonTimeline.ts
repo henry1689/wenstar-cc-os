@@ -61,7 +61,7 @@ export class PersonTimeline {
       // 特定事件自动更新生命阶段
       await this._autoUpdateStage(personId, params.type, params.title);
 
-    } catch { /* 不阻塞 */ }
+    } catch (e) { console.error('[PersonTimeline] addEvent 失败:', e); }
   }
 
   /**
@@ -81,7 +81,7 @@ export class PersonTimeline {
         title: r.title as string,
         time: r.timestamp as string || undefined,
       }));
-    } catch { return []; }
+    } catch (e) { console.error('[PersonTimeline] getTimeline 失败:', e); return []; }
   }
 
   /**
@@ -101,7 +101,7 @@ export class PersonTimeline {
         title: r.title as string,
         time: r.timestamp as string || undefined,
       }));
-    } catch { return []; }
+    } catch (e) { console.error('[PersonTimeline] getAllEvents 失败:', e); return []; }
   }
 
   /**
@@ -124,6 +124,6 @@ export class PersonTimeline {
       if (stage) {
         this.sqlite.writeRaw('UPDATE hwg_persons SET stage = ? WHERE id = ?', [stage, personId]);
       }
-    } catch { /* */ }
+    } catch (e) { console.error('[PersonTimeline] _autoUpdateStage 失败:', e); }
   }
 }

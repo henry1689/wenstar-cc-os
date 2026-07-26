@@ -156,6 +156,11 @@ function _getGreetingStyle(
 
   // X 类 = 热度升级的交叉关系
   if (category === 'X') {
+    // 🆕 V10.10: X 类可能包含从 A/B/C 升级来的实体——原始身份+亲密互动并存
+    const _hasFamilyRelation = /母亲|父亲|妈妈|爸爸|爷爷|奶奶|儿子|女儿|孩子|妻子|丈夫|配偶|姐姐|妹妹|哥哥|弟弟|堂|表/.test(relation);
+    if (_hasFamilyRelation) {
+      return { salutation: '用你们最熟悉的称呼叫对方', tone: '亲密自然，像家人一样相处——你们之间有特别的牵绊', formalIntro: false };
+    }
     return { salutation: '按你最熟悉的身份称呼对方', tone: '可以比普通社交稍微更近一些，因为你们有过多次互动', formalIntro: false };
   }
 
@@ -175,7 +180,12 @@ function _describeIdentity(relation: string, category: string, occupation: strin
   if (category === 'A') parts.push('家人');
   else if (category === 'B') parts.push(occupation ? '工作中的同事/朋友' : '社交圈');
   else if (category === 'G') parts.push('新认识的人');
-  else if (category === 'X') parts.push('有多次互动的重要联系人');
+  else if (category === 'X') {
+    // 🆕 V10.10: X 类留存原始身份——家人/同事/朋友 + 亲密互动不互斥
+    const _hasFamilyRelation = /母亲|父亲|妈妈|爸爸|爷爷|奶奶|儿子|女儿|孩子|妻子|丈夫|配偶|姐姐|妹妹|哥哥|弟弟|堂|表/.test(relation);
+    if (_hasFamilyRelation) parts.push('家人，有多次亲密互动');
+    else parts.push('有多次互动的重要联系人');
+  }
   return parts.join('，') || '普通人';
 }
 

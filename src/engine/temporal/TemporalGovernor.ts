@@ -70,6 +70,7 @@ export class TemporalGovernor {
   }
 
   destroy(): void {
+    this.bus?.off('timer:expired', this.handleTimerExpired);
     this.silentMessages = [];
     this.storage = null;
   }

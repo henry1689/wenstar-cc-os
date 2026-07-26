@@ -111,7 +111,7 @@ export class HumanWorldGraph {
     try {
       this.sqlite.writeRaw(FG_EXTRA_TABLE);
       this._ready = true;
-    } catch { /* 表已存在 */ }
+    } catch (e) { console.error('[HWG] ensureTables 失败:', e); }
   }
 
   /**
@@ -194,7 +194,7 @@ export class HumanWorldGraph {
           result.push({ name: other, relation: describeRelation(rel), category: r.category as string, confidence: r.confidence as number });
         }
       }
-    } catch { /* 查询失败 */ }
+    } catch (e) { console.error('[HWG] getNetwork 查询失败:', e); }
 
     return result;
   }
@@ -208,7 +208,7 @@ export class HumanWorldGraph {
       const person = this.sqlite.queryAll('SELECT id FROM hwg_persons WHERE name = ?', [personName]);
       if (!person.length) return [];
       return this.progressiveProfile.getSnapshots((person[0] as any).id as string);
-    } catch { return []; }
+    } catch (e) { console.error('[HWG] getProgression 失败:', e); return []; }
   }
 
   /**
@@ -237,7 +237,7 @@ export class HumanWorldGraph {
         lastSeen: r.last_seen as string,
         mentionCount: r.mention_count as number,
       }));
-    } catch { return []; }
+    } catch (e) { console.error('[HWG] getAllPersons 失败:', e); return []; }
   }
 
   /**
@@ -250,7 +250,7 @@ export class HumanWorldGraph {
       const r = (this.sqlite.queryAll('SELECT COUNT(*) as c FROM hwg_relations')[0] as any)?.c || 0;
       const e = (this.sqlite.queryAll('SELECT COUNT(*) as c FROM hwg_events')[0] as any)?.c || 0;
       return { persons: p as number, relations: r as number, events: e as number };
-    } catch { return { persons: 0, relations: 0, events: 0 }; }
+    } catch (e) { console.error('[HWG] getStats 失败:', e); return { persons: 0, relations: 0, events: 0 }; }
   }
 
   // ─── 内部方法 ───
@@ -310,7 +310,7 @@ export class HumanWorldGraph {
           [rid, idA, idB, rel, category, confidence, 'conversation', now, now, now]
         );
       }
-    } catch { /* 不阻塞 */ }
+    } catch (e) { console.error('[HWG] _ensureRelation 失败:', e); }
   }
 
   private _reverseRelation(relation: string): string {

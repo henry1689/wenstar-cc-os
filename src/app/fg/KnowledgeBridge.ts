@@ -39,7 +39,7 @@ export class KnowledgeBridge {
 
   private ensureTable(): void {
     if (this._ready) return;
-    try { this.sqlite.writeRaw(BRIDGE_TABLE); this._ready = true; } catch { /* */ }
+    try { this.sqlite.writeRaw(BRIDGE_TABLE); this._ready = true; } catch (e) { console.error('[KnowledgeBridge] ensureTable 失败:', e); }
   }
 
   /**
@@ -72,7 +72,7 @@ export class KnowledgeBridge {
         }
       }
       if (count > 0) console.log(`[KnowledgeBridge] ${personName} → ${count} 条知识关联`);
-    } catch { /* */ }
+    } catch (e) { console.error('[KnowledgeBridge] bridgeFromPerson 失败:', e); }
     return count;
   }
 
@@ -110,7 +110,7 @@ export class KnowledgeBridge {
           }
         }
       }
-    } catch { /* */ }
+    } catch (e) { console.error('[KnowledgeBridge] bridgeFromKnowledge 失败:', e); }
     return count;
   }
 
@@ -129,7 +129,7 @@ export class KnowledgeBridge {
         title: r.knowledge_title as string,
         confidence: r.confidence as number,
       }));
-    } catch { return []; }
+    } catch (e) { console.error('[KnowledgeBridge] getLinkedKnowledge 失败:', e); return []; }
   }
 
   /**
@@ -143,6 +143,6 @@ export class KnowledgeBridge {
         [knowledgeTitle, knowledgeTitle]
       );
       return rows.map((r: any) => r.person_name as string);
-    } catch { return []; }
+    } catch (e) { console.error('[KnowledgeBridge] getLinkedPersons 失败:', e); return []; }
   }
 }

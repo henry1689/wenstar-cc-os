@@ -150,7 +150,7 @@ export async function runMeetingStage(input: Stage2Input): Promise<Stage2Output>
   const _safeNames = _rawNames.length > 0 ? _rawNames : [
     '徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟',
     '熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜',
-    '张小龙','罗权斌','邱工','刘云新','妹妹','老婆','妈妈'
+    '张小龙','罗权斌','刘运新','邱运财','陈锋华'
   ];
   // 🛡️ V10.0: 会晤激活已上移至 chat.ts V10.0 强制入口统一管理
   // process-stages 不再独立触发会晤进入，只处理切换和退出

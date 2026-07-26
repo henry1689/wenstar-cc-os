@@ -451,6 +451,9 @@ const RELATION_LABEL_CN: Record<string, string> = {
   _reverse_elder_brother_of: '弟弟', _reverse_younger_brother_of: '哥哥',
 };
 
+/** P0-1: "我"节点固定ID，防止DB重建后ID漂移导致关系网断裂 */
+const SELF_NODE_ID = 'SELF-00001';
+
 function uid(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).substring(2, 8);
@@ -812,28 +815,42 @@ export class FamilyGraph implements FamilyGraphInterface {
 
   /**
    * FG基建加固：确保"我"节点存在（家族图谱的基石）
+   * P0-1: 使用固定ID SELF-00001 替代随机 uid()，防止DB重建后ID漂移导致关系网断裂
    */
   private _ensureSelfNode(): void {
     try {
-      const existing = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
-      if (existing.length === 0) {
-        const meId = uid();
+      // ① 优先按固定ID查找（迁移后路径 + 正常路径）
+      const byFixedId = this.query("SELECT id FROM nodes WHERE id = ? AND type = ?", [SELF_NODE_ID, 'person']);
+      if (byFixedId.length > 0) {
+        this.userNodeId = SELF_NODE_ID;
+        return;
+      }
+      // ② 按 name='我' 查找（存量DB兼容路径，自动迁移）
+      const byName = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
+      if (byName.length > 0) {
+        const oldId = byName[0].id;
+        if (oldId !== SELF_NODE_ID) {
+          this.run('UPDATE edges SET source_id = ? WHERE source_id = ?', [SELF_NODE_ID, oldId]);
+          this.run('UPDATE edges SET target_id = ? WHERE target_id = ?', [SELF_NODE_ID, oldId]);
+          this.run('UPDATE nodes SET id = ? WHERE id = ?', [SELF_NODE_ID, oldId]);
+          console.log('[FG Shield] "我"节点ID已迁移: ' + oldId + ' → ' + SELF_NODE_ID);
+        }
+        this.userNodeId = SELF_NODE_ID;
+      } else {
+        // ③ 全新创建：使用固定ID，永不漂移
         const now = new Date().toISOString();
         const meProps = JSON.stringify({ name: '我', type: 'self', relation_to_user: '自己' });
         this.run("INSERT INTO nodes (id, type, name, properties, uuid, category, security_level, entity_source, status, legacy_ids, family_gene, social_group_genes, created_at, updated_at) VALUES (?, 'person', '我', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [meId, meProps, 'U-00001', 'U', 3, 'ai', 'active', '[]', null, 'WW', now, now]);
-        this.userNodeId = meId;
-        console.log('[FG Shield] "我"节点丢失！已重建 id=' + meId);
-        this.markDirty(true);
-      } else {
-        this.userNodeId = existing[0].id;
-        // 🛡️ V5.0: "我"节点 category = U (User)，不再是 S (Self — 仅玉瑶)
-        const currentInfo = this.query('SELECT category, security_level FROM nodes WHERE id = ?', [this.userNodeId]);
-        if (currentInfo.length > 0) {
-          const r = currentInfo[0] as any;
-          if (r.category !== 'U') {
-            this.run('UPDATE nodes SET category = ?, security_level = ? WHERE id = ?', ['U', 3, this.userNodeId]);
-          }
+          [SELF_NODE_ID, meProps, 'U-00001', 'U', 3, 'ai', 'active', '[]', null, 'WW', now, now]);
+        this.userNodeId = SELF_NODE_ID;
+        console.log('[FG Shield] "我"节点已创建 id=' + SELF_NODE_ID);
+      }
+      // 🛡️ V5.0: "我"节点 category = U (User)
+      const currentInfo = this.query('SELECT category, security_level FROM nodes WHERE id = ?', [this.userNodeId]);
+      if (currentInfo.length > 0) {
+        const r = currentInfo[0] as any;
+        if (r.category !== 'U') {
+          this.run('UPDATE nodes SET category = ?, security_level = ? WHERE id = ?', ['U', 3, this.userNodeId]);
         }
       }
     } catch (e) {
@@ -1698,7 +1715,7 @@ export class FamilyGraph implements FamilyGraphInterface {
           this.run('UPDATE edges SET source_id = ? WHERE source_id = ?', [node.id, existing.id]);
           this.run('UPDATE edges SET target_id = ? WHERE target_id = ?', [node.id, existing.id]);
           // 同步更新 userNodeId（如果指向"我"节点）
-          if (this.userNodeId === existing.id) this.userNodeId = node.id;
+          if (this.userNodeId === existing.id) this.userNodeId = SELF_NODE_ID;
         }
         this.run(
           'UPDATE nodes SET id = ?, aliases = ?, properties = ?, updated_at = ? WHERE id = ?',
@@ -2367,7 +2384,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
 
     this.run('DELETE FROM nodes WHERE id = ?', [sourceNode.id]);
-    if (this.userNodeId === sourceNode.id) this.userNodeId = targetNode.id;
+    if (this.userNodeId === sourceNode.id) this.userNodeId = SELF_NODE_ID;
     this.markDirty(true);
   }
 
@@ -2590,12 +2607,12 @@ export class FamilyGraph implements FamilyGraphInterface {
 
 
   async addFamilyMember(name: string, relation: string, aliases?: string[]): Promise<void> {
-    const selfName = this.userNodeId ?? '我';
-    const uNodes = this.query('SELECT id FROM nodes WHERE name = ?', [selfName]);
+    // P0-1: 按 name='我' 查询，不依赖 userNodeId 缓存（缓存值是ID字符串而非人名）
+    const uNodes = this.query("SELECT id FROM nodes WHERE name = ? AND type = ?", ['我', 'person']);
     let userNodeId: string;
     if (uNodes.length === 0) {
-      userNodeId = uid();
-      await this.addNode({ id: userNodeId, type: 'person', name: selfName });
+      userNodeId = SELF_NODE_ID;
+      await this.addNode({ id: userNodeId, type: 'person', name: '我' });
     } else {
       userNodeId = uNodes[0].id;
     }

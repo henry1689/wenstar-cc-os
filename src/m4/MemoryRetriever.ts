@@ -68,7 +68,7 @@ export class MemoryRetriever {
   async retrieveMemories(
     locusPath: string,
     entities: Array<{ name: string; type: string }>,
-    options?: { limit?: number; perception?: Perception24D; sessionId?: string }
+    options?: { limit?: number; perception?: Perception24D; sessionId?: string; entityUuids?: string[] }
   ): Promise<DNA[]> {
     const limit = options?.limit ?? 5;
     const startTs = Date.now();
@@ -232,7 +232,37 @@ export class MemoryRetriever {
       }
     }
 
-    // 4. 合并去重（加入 bySpine 源）
+    // 4. 🆕 实体归属检索（belong_entity_uuid 直查，不依赖 memory_kind）
+    const byEntityUuid: DNA[] = [];
+    const entityUuids = options?.entityUuids || [];
+    if (entityUuids.length > 0 && typeof (this.storage as any).findByEntityUuid === 'function') {
+      for (const uuid of entityUuids) {
+        try {
+          const entityMems = (this.storage as any).findByEntityUuid(uuid, 10);
+          if (entityMems && entityMems.length > 0) {
+            for (const em of entityMems) {
+              byEntityUuid.push({
+                branch_id: em.id,
+                locus_path: em.locus_path ?? '',
+                taxonomy_version: '1.0',
+                seq_pos: em.seq_pos ?? 0,
+                leaf_zone: (em as any).leaf_zone ?? 'language_semantic_zone',
+                ref: '',
+                entity_genes: [],
+                raw_input: em.raw_input ?? '',
+                created_at: em.created_at ?? '',
+                calcium_score: em.calcium_score,
+                calcium_level: em.calcium_level,
+                memory_kind: (em as any).memory_kind,
+                memory_type: (em as any).memory_type,
+              } as any);
+            }
+          }
+        } catch { /* 单条检索失败不阻塞 */ }
+      }
+    }
+
+    // 5. 合并去重（加入 bySpine 源）
     const seen = new Set<string>();
     let merged: DNA[] = [];
     for (const dna of [...byEmotion, ...byKeyword, ...bySpine, ...byLocus]) {
@@ -256,7 +286,19 @@ export class MemoryRetriever {
       merged.push(..._filtered);
     }
 
-    // 5. 知识库补充
+    // 🆕 实体归属检索追加 — 绕过 memory_kind 过滤，按 UUID 直达
+    //    跳过 rp_dialog 类型（纯角色扮演对话，不含客观信息）
+    if (byEntityUuid.length > 0) {
+      for (const dna of byEntityUuid) {
+        if (!seen.has(dna.branch_id)) {
+          if ((dna as any).memory_type === 'rp_dialog') continue;
+          seen.add(dna.branch_id);
+          merged.push(dna);
+        }
+      }
+    }
+
+    // 6. 知识库补充
     if (merged.length < limit * 0.5 && this.knowledgeBase && options?.perception) {
       try {
         const sceneTags = locusPath ? locusPath.split('.').filter(Boolean) : [];
@@ -443,7 +485,7 @@ export class MemoryRetriever {
   async retrieveMemoriesStructured(
     locusPath: string,
     entities: Array<{ name: string; type: string }>,
-    options?: { limit?: number; perception?: Perception24D; sessionId?: string }
+    options?: { limit?: number; perception?: Perception24D; sessionId?: string; entityUuids?: string[] }
   ): Promise<{ items: StructuredMemoryItem[]; summary: MemorySummary }> {
     const dnas = await this.retrieveMemories(locusPath, entities, options);
     const summary = this.compressMemories(dnas);

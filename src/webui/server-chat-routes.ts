@@ -239,7 +239,7 @@ function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
   // 会中切换由 EntityMeeting.detectSwitchIntent 管控（仅"换XX来"等明确命令触发）
   if (entityMeeting?.isActive?.()) return;
 
-  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','邱工','刘云新','陈工','李工'];
+  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
   for (const n of HC) {
     const nameBuf = Buffer.from(n, 'utf-8');
     if (rawBody.indexOf(nameBuf) >= 0) {

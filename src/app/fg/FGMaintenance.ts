@@ -61,7 +61,7 @@ export class FGMaintenance {
       );
       // sql.js doesn't return affected rows count directly
       return 1;
-    } catch { return 0; }
+    } catch (e) { console.error('[FGMaintenance] _markDormant 失败:', e); return 0; }
   }
 
   /**
@@ -75,7 +75,7 @@ export class FGMaintenance {
         [cutoff]
       );
       return 1;
-    } catch { return 0; }
+    } catch (e) { console.error('[FGMaintenance] _markArchived 失败:', e); return 0; }
   }
 
   /**
@@ -120,7 +120,7 @@ export class FGMaintenance {
         count++;
       }
       return count;
-    } catch { return 0; }
+    } catch (e) { console.error('[FGMaintenance] _transitiveInference 失败:', e); return 0; }
   }
 
   /**
@@ -156,6 +156,6 @@ export class FGMaintenance {
       }
 
       return conflicts;
-    } catch { return 0; }
+    } catch (e) { console.error('[FGMaintenance] _detectConflicts 失败:', e); return 0; }
   }
 }

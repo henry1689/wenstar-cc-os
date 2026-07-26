@@ -336,9 +336,14 @@ export async function buildMeetingContext(input: MeetingContextInput): Promise<M
     });
 
     if (display.length > 0) {
+      // L2: 稀疏记忆哨兵 — 检索结果极少时追加边界规则
+      let memoryBoundarySentinel = '';
+      if (display.length <= 2) {
+        memoryBoundarySentinel = '【⚠️ 记忆边界】你与' + meetingEntityName + '的共同回忆非常有限——以下就是你掌握的全部过往对话。除此之外没有更多往事。不要推测、补充或延长任何记忆中没有的对话内容。如果鸿艺问起你没见过的往事，直接回答"这个我不太记得了"或"你再提醒我一下？"——这是诚实，不是失败。\n';
+      }
       const narrativeIntro = '【回忆素材】以下是' + meetingEntityName + '的真实对话——回忆这些事不是编造。用自己的话像老朋友叙旧一样自然地讲出来。记忆中没写的细节不要自编。\n';
       const narrativeTail = '\n--- 以上，组织成自然的回忆叙述。 ---';
-      fragments.push(narrativeIntro + '\n' + display.join('\n') + narrativeTail);
+      fragments.push(memoryBoundarySentinel + narrativeIntro + '\n' + display.join('\n') + narrativeTail);
       stats.memory = allCandidates.length;
     }
 

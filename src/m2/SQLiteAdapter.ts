@@ -357,6 +357,18 @@ export class SQLiteAdapter {
         // memories 从 conversations 传导
         this.runSql("UPDATE memories SET belong_entity_uuid = (SELECT DISTINCT c.belong_entity_uuid FROM conversations c WHERE c.belong_entity_uuid IS NOT NULL AND c.content LIKE '%' || substr(memories.raw_input,1,30) || '%' LIMIT 1) WHERE belong_entity_uuid IS NULL");
 
+        // 🆕 V10.7: 旧 roleplay 记忆直接匹配 entities.name → UUID
+        //    间接回填路径（conversations 传导）可能因 raw_input/前缀不匹配而漏掉，
+        //    此处直接用 raw_input 中的人名匹配 entities 表，确保 roleplay 记忆 UUID 完整。
+        this.runSql(
+          "UPDATE memories SET belong_entity_uuid = (" +
+          "  SELECT e.uuid FROM entities e" +
+          "  WHERE e.type='person' AND e.uuid IS NOT NULL" +
+          "  AND memories.raw_input LIKE '%' || e.name || '%'" +
+          "  LIMIT 1" +
+          ") WHERE belong_entity_uuid IS NULL AND memory_kind='roleplay'"
+        );
+
         // black_diamond 从 source_id → memories 传导
         this.runSql("UPDATE black_diamond SET belong_entity_uuid = (SELECT m.belong_entity_uuid FROM memories m WHERE m.id = black_diamond.source_id AND m.belong_entity_uuid IS NOT NULL) WHERE belong_entity_uuid IS NULL AND source_id IS NOT NULL");
 
@@ -585,7 +597,7 @@ export class SQLiteAdapter {
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
-          opts.locusPath, opts.leafZone, opts.rawInput.substring(0, 2000),
+          opts.locusPath, opts.leafZone, (opts.rawInput.length > 2000 ? (console.warn(`[SQLiteAdapter] raw_input 截断: ${opts.rawInput.length}→2000 seq=${opts.seqPos}`), opts.rawInput.substring(0, 2000)) : opts.rawInput),
           opts.memoryKind ?? 'episodic',
           opts.lifecycleState ?? (opts.calciumLevel >= 2 ? 'active' : 'candidate'),
           opts.confidenceScore ?? 0.55,
@@ -1394,6 +1406,20 @@ export class SQLiteAdapter {
       relation: row[columns.indexOf('relation')] as string,
       strength: row[columns.indexOf('strength')] as number,
     }));
+  }
+
+  /**
+   * 🆕 V10.7: 按 belong_entity_uuid 直查实体记忆
+   * 不区分 memory_kind — 会晤中产生的记忆均属于该实体的合法记录。
+   * 走 belong_entity_uuid 列索引，limit=15，性能可控。
+   */
+  findByEntityUuid(uuid: string, limit = 15): EmotionalMemoryRecord[] {
+    this.ensureReady();
+    const res = this.execSql(
+      `SELECT * FROM memories WHERE belong_entity_uuid = ? ORDER BY seq_pos DESC LIMIT ?`,
+      [uuid, limit],
+    );
+    return this.rowsToRecords(res);
   }
 
   // ─── 私有方法 ───

@@ -71,7 +71,8 @@ export class ProgressiveProfile {
       );
 
       return { id, personId, identity, confidence, attributes: merged, source: sourceText.substring(0, 100), createdAt: now };
-    } catch {
+    } catch (e) {
+      console.error('[ProgressiveProfile] addSnapshot 失败:', e);
       return { id: '', personId, identity, confidence: 0, attributes: {}, source: '', createdAt: '' };
     }
   }
@@ -90,7 +91,7 @@ export class ProgressiveProfile {
         confidence: r.confidence as number,
         time: r.created_at as string,
       }));
-    } catch { return []; }
+    } catch (e) { console.error('[ProgressiveProfile] getSnapshots 失败:', e); return []; }
   }
 
   /**
@@ -105,7 +106,7 @@ export class ProgressiveProfile {
         const d = JSON.parse((rows[0] as any).extra_data as string || '{}');
         return (d as any).knownAs || '';
       }
-    } catch { /* */ }
+    } catch (e) { console.error('[ProgressiveProfile] getLatestIdentity 失败:', e); }
     return '';
   }
 

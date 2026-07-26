@@ -208,7 +208,8 @@ export class MemoryAssessor {
         const calciumScore = Number(conv.calcium_score || 1.0);
         const memoryId = `mem_${dnaRootId.replace(/[^\w-]/g, '_')}_${conversationId || nextSeq}`;
         const perception = parseSandPerception(conv.perception_summary);
-        const calciumLevel = clamp(Math.floor(calciumScore), 0, 3) as 0 | 1 | 2 | 3;
+        // 🆕 V10.11: calcium_level 改用阈值映射（与 M3_CONFIG 一致），Math.floor(score) 对 0-2 范围会丢失精度
+        const calciumLevel = (calciumScore >= 0.65 ? 3 : calciumScore >= 0.45 ? 2 : calciumScore >= 0.25 ? 1 : 0) as 0 | 1 | 2 | 3;
         const normalizedCalcium = clamp(calciumScore / MEMORY_CONFIG.recall.calciumMax, 0, 1);
         const narrativeTag = deriveNarrativeTag(text, conv.topic);
         const entityGenes = parseConversationEntities(conv.entity_names);

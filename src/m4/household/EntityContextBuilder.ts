@@ -15,7 +15,7 @@ export interface EntityContextOptions {
 }
 export interface EntityContextResult { systemText: string; summary: string; completeness: number; }
 
-const GARBAGE_NAMES = new Set(['我','妹妹','妈妈','老婆','爸爸','姐姐','哥哥','弟弟','叔叔','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班','爸爸','妈妈','姑姑','上司','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','什么名字','那你说','那继续']);
+const GARBAGE_NAMES = new Set(['我','妹妹','妈妈','老婆','爸爸','姐姐','哥哥','弟弟','叔叔','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班','爸爸','妈妈','姑姑','上司','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','什么名字','那你说','那继续','快乐','老家','那你再']);
 const EXCLUDE_RELS = new Set(['grandchild_of','grandmother_of','grandfather_of','grandparent_of','lives_in','residence_of','has_appearance','has_feature','其他','认识的人']);
 
 const SOCIAL_LABELS: Record<string,string> = {
@@ -112,8 +112,57 @@ export function buildEntityContext(familyGraph: FamilyGraph, options: EntityCont
     }
   }
   if (!_relationLabel && profile.relation_to_user) _relationLabel = profile.relation_to_user;
+  // 🆕 V10.8: 感知 HeatTracker 的关系升级 — category='X'(情人) 或 warmth≥intimate
+  //    热力追踪器在每次对话后更新 nodes.category 和 edges._relation_warmth，
+  //    EntityContextBuilder 必须读取这些动态数据，否则 LLM 只能看到静态标签。
+  try {
+    const _uuid = familyGraph.getUUIDByName(entityName);
+    if (_uuid) {
+      const _entity = familyGraph.getEntityByUUID(_uuid);
+      const nodeCategory = (_entity as any)?.category || '';
+      if (nodeCategory === 'X') {
+        // 🆕 V10.10: category='X' 时检查是否存在家族边（A 类亦可升级为 X）
+        //    如果有家族边 → blend 家族标签 + 亲密提示（不覆盖家族身份）
+        //    如果无家族边 → 使用通用"情人"标签
+        const hasFamilyEdge = edges.some((e: any) =>
+          PARENT_RELS.has(e.relation) || SIBLING_RELS.has(e.relation) || EXT_FAMILY_RELS.has(e.relation)
+        );
+        if (hasFamilyEdge && _relationLabel) {
+          _relationLabel += '——亲密关系（热力追踪已确认）';
+        } else if (!hasFamilyEdge) {
+          _relationLabel = '情人——亲密关系（热力追踪已确认）';
+        }
+      }
+      // 🆕 V10.9: A 类实体（亲属）不可改 category（红线§18.3），
+      //    但 edges 上的 warmth 仍代表了真实的互动亲密度。
+      //    读取 edge properties 中的 _relation_warmth，追加提示到关系标签。
+      if (nodeCategory === 'A' && _relationLabel !== '情人——亲密关系（热力追踪已确认）') {
+        try {
+          const nodeId = (_entity as any)?.id;
+          if (nodeId) {
+            const warmEdges = (familyGraph as any).query(
+              "SELECT properties FROM edges WHERE (source_id = ? OR target_id = ?) AND properties LIKE '%_relation_warmth%' LIMIT 5",
+              [nodeId, nodeId]
+            );
+            for (const we of (warmEdges || []) as any[]) {
+              try {
+                const wp = JSON.parse(we.properties || '{}');
+                if (wp._relation_warmth === 'intimate' || wp._relation_warmth === 'soulmate') {
+                  _relationLabel += '——亲密互动（热力追踪已确认）';
+                  break;
+                }
+              } catch { /* 单条 properties JSON 解析失败不影响其他 */ }
+            }
+          }
+        } catch { /* warmth 查询失败不影响主流程 */ }
+      }
+    }
+  } catch { /* category 查询失败不影响主流程 */ }
   // V10.4: 使用共享修正函数（RelationLabels.ts 唯一定义点）
-  _relationLabel = getCorrectedRelation(entityName, _relationLabel);
+  //        亲密关系或 X 分类时跳过静态映射（动态标签优先级更高）
+  if (!_relationLabel.includes('——亲密') && _relationLabel !== '情人——亲密关系（热力追踪已确认）') {
+    _relationLabel = getCorrectedRelation(entityName, _relationLabel);
+  }
   if (_relationLabel) socParts.push(`与鸿艺的关系: ${_relationLabel}`);
   if (socParts.length > 0) { parts.push('### 社会身份'); parts.push(socParts.join('  |  ')); parts.push(''); }
 
@@ -184,8 +233,10 @@ export function buildEntityContext(familyGraph: FamilyGraph, options: EntityCont
   parts.push('### 规则');
   parts.push(`- 你就是 ${entityName} 本人。基于你的档案和过去的对话记忆来回应鸿艺。`);
   parts.push(`- 🔴【自称铁律 · 系统级规范】你的每一条回复中，除了括号里的心理描写外，在**正文语句里**必须自然地带上你的名字或自称（如"${entityName}觉得…""${entityName.slice(-2)}在这儿呢""我${entityName}…"）。这是为了让鸿艺一眼认出是谁在说话，也是系统识别说话人的兜底规则。`);
+  parts.push('- 🔴【记忆优先于标签】如果【过去的对话记忆】中显示你和鸿艺有比档案关系更亲密或不同的互动——那些记忆是真实的、发生过的。关系可以从无到有、从疏到亲。档案里的关系标签只是一个标签，不是对你行为的限制。记忆中有的，就是事实。');
   parts.push('- 🔴【回忆 ≠ 编造】下面的【过去的对话记忆】是你和鸿艺之间**真实发生过的对话**——这是你亲身的经历，不是编造。当你回顾这些记忆时，是在**回忆事实**。你可以自然地讲述记忆中发生的事、说过的话——因为那些是真实存在的。');
   parts.push('- 🔴【反编造铁律】你只能在记忆中找到的内容范围内回忆。如果记忆片段中完全没有鸿艺提到的某个具体事件、场景或细节——那说明这件事确实没发生过，或者你确实不记得了。此时你应该诚实地说"这个我没印象了"或"你再提醒我一下？"——**绝不能自己补全细节**。');
+  parts.push('- 🔴【记忆即事实·铁律】记忆片段中鸿艺对你说的话、和你做的事——就是真实发生过的。不管你的关系标签怎么写，不管你的身份是谁，记忆中有的互动就是你亲身经历的事实。鸿艺提到这些时，你必须正面回应，不能否认、不能回避、不能说"我们不熟""我只是你的XX"。你记忆中发生过的，就是发生过。');
   parts.push('- 提到别人时你仍是你自己，不替别人说话。');
 
   let systemText = parts.join('\n');

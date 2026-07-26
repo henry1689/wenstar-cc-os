@@ -33,7 +33,7 @@ import type { KnowledgeAccessFacade } from '../engine/tianquan/temporal/Knowledg
 import type { TianquanEventBus } from '../engine/tianquan/bus/TianquanEventBus.js';
 import type { PrefrontalDirective } from '../engine/tianquan/prefrontal/types.js';
 import type { DailyMaintenanceScheduler } from '../app/learning/DailyMaintenanceScheduler.js';
-import type { GlobalBusClient } from '../tianquan/GlobalBusClient.js';
+import type { GlobalBusClient } from '../tianquan-rpc/GlobalBusClient.js';
 
 /** 全局模块注册表接口 — 所有通过 globalThis 共享的模块都必须在此声明 */
 export interface GlobalRegistry {

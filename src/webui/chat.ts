@@ -1200,12 +1200,43 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
                 // 人物信息上下文注入 — 仅当用户明显在谈论/询问人物时才注入
 
 
-let memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('\n') : '';
-// 剥离场景描写：raw_input 里存着 LLM 自己生成的"（我趴在浴缸边…）"等动作描写，
-// 原样注入回去会让 LLM 读到自己的场景文本并自动进入那个场景——形成循环引用。
-// 场景是生成的产物，不是记忆的内容。只保留语义/对话内容，不留场景。
-memoryText = memoryText.replace(/（[^）]*）/g, '');// V4.0 实体会晤：注入实体上下文（优先于 knowledgeBaseText）
+// 🆕 V10.11: MemoryInjector 统一注入 — 去重 + 优先级排序 + 预算分配（替代旧 slice(0,8) 硬截断）
+let memoryText = '';
+try {
+  const _m4Timeline = ctx_m4?.memory_summary?.timeline || [];
+  const _vaultHits: string[] = [];  // vault_log 结果由 retrieval-stage 并入 memoryFragments
+  const { injectMemories } = await import('../m4/MemoryInjector.js');
+  memoryText = injectMemories({
+    memoryFragments,
+    m4Timeline: _m4Timeline,
+    knowledgeBaseText,
+    vaultHits: _vaultHits,
+    maxChars: 8000,
+    preserveLabels: !!_meetingEntityName,
+  });
+} catch (_miErr) {
+  // 降级: MemoryInjector 不可用时保留旧行为
+  memoryText = memoryFragments.length > 0 ? memoryFragments.slice(0, 8).join('\n') : '';
+  if (memoryText) memoryText = memoryText.replace(/（[^）]*）/g, '');
+}
+// V4.0 实体会晤：注入实体上下文（优先于 knowledgeBaseText）
 let finalKnowledgeText = _entityContextText ? (_entityContextText + '\n\n' + knowledgeBaseText) : knowledgeBaseText;
+      // 🆕 V4.0 P1: 正常模式下注入 FG 已知人物的简要参考档案（参考信息，非身份切换）
+      if (!_entityContextText && ctx.m4) {
+        try {
+          const _fg = ctx.m4.getFamilyGraph();
+          if (_fg) {
+            const _personNames = (dna.entity_genes || [])
+              .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1)
+              .map((g: any) => g.name);
+            if (_personNames.length > 0) {
+              const { KnowledgeTextAssembler } = await import('./chat/KnowledgeTextAssembler.js');
+              const _entityRefs = new KnowledgeTextAssembler().withEntityProfiles(_fg, _personNames).build();
+              if (_entityRefs) finalKnowledgeText = _entityRefs + '\n\n' + (finalKnowledgeText || '');
+            }
+          }
+        } catch (_e) { /* 档案注入失败不阻塞 */ }
+      }
       // ================================================================
       // V4.0 Phase 6: PFC 统一门控 — processEnhanced 内部闭环组装所有上下文
       //   所有旧 ad-hoc 块（CoreMemory/Facade/Emotion/Forgetting/cortex/_snap）
@@ -1496,6 +1527,15 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         }
       }
     } catch (_ve) { /* 校验失败不阻塞主线 */ }
+
+    // L5: FabGuard 事后编造检测 — 检查回忆性断言是否有 memoryFragments 支撑
+    try {
+      const { guardReply, writeFabGuardLog } = await import('../app/validation/FabGuard.js');
+      const fgResult = guardReply(reply, memoryFragments);
+      if (fgResult.hasViolation) {
+        writeFabGuardLog(ctx.storage.getSQLite(), reply, fgResult, memoryFragments.length);
+      }
+    } catch (_fe) { /* FabGuard 失败不阻塞主线 */ }
 
     // 🆕 V10.5: 会晤模式自称检测
     if (_meetingEntityName && reply && reply.length > 20) {

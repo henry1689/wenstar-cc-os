@@ -221,7 +221,8 @@ export class RelationHeatTracker {
     if (!entity) return null;
 
     const currentCategory = entity.category || '';
-    if (currentCategory === 'A' || currentCategory === 'X') return null;
+    // 已是 X 则跳过
+    if (currentCategory === 'X') return null;
 
     // V4.0: 仅更新 category 列，TXS-ID 终身不变
     try {

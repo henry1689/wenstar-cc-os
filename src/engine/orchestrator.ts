@@ -181,6 +181,13 @@ export class Orchestrator {
   /** 销毁所有模块 */
   async destroy(): Promise<void> {
     if (this._temporalTimer) { clearInterval(this._temporalTimer); this._temporalTimer = null; }
+    for (const key of Object.keys(this._temporalModules)) {
+      const mod = this._temporalModules[key as keyof typeof this._temporalModules];
+      if (mod && typeof (mod as any).destroy === 'function') {
+        try { await (mod as any).destroy(); } catch (e: any) { console.error('[Orchestrator] 销毁_temporalModules失败:', e?.message); }
+      }
+    }
+    this._temporalModules = {};
     for (const mod of this.modules.reverse()) {
       await mod.destroy();
     }
