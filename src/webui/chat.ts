@@ -1606,26 +1606,30 @@ if (_compressedSummary) {
   finalKnowledgeText = _compressedSummary + '\n\n' + (finalKnowledgeText || '');
 }
 
-// ═══ V12.0 P0-1: PromptAssembler 结构化验证 ═══
+// ═══ V12.0 P0-1+P0-2: PromptAssembler + ChatPolicy 模式感知 ═══
 try {
   const { PromptAssembler, hardRule, safetyBlock, identityBlock, memoryBlock, personaBlock } = await import('../m5/prompts/PromptAssembler.js');
+  const { ChatPolicy, meetingMode, normalMode } = await import('../app/chat/ChatPolicy.js');
   const assembler = new PromptAssembler();
+  // P0-2: 从旧标志位构建 ChatPolicy
   const _isMeeting = !!_meetingEntityName;
+  const policy = _isMeeting ? new ChatPolicy(meetingMode('', _meetingEntityName || ''))
+    : new ChatPolicy(normalMode());
 
   // 🔴 hard_rule: 家族铁律 + 反编造
   if (familyConstraint && (_msgMentionsFamily || isFactualRecallQuery)) {
     assembler.add(hardRule('family_constraint', familyConstraint + '\n【强制】未在档案中的外貌特征你不知道，绝对不能编造。'));
   }
-  // 🔴 safety: 不知道守卫
-  if (_isSelfQ && !_isWorkQ && !knowledgeBaseText && !_meetingEntityName) {
+  // 🔴 safety: 不知道守卫（P0-2: 用 policy 判断）
+  if (_isSelfQ && !_isWorkQ && !knowledgeBaseText && policy.canUseUnknownGuard()) {
     assembler.add(safetyBlock('unknown_guard', '【不知道】这个问题我确实不知道答案。我不想编造，所以诚实地告诉你我不清楚。'));
   }
   // 🔴 safety: 亲密过滤
   if (intimacyFilter) {
     assembler.add(safetyBlock('intimacy_filter', intimacyFilter));
   }
-  // 🟡 identity: 角色路由（会晤模式跳过）
-  if (roleHint) {
+  // 🟡 identity: 角色路由（P0-2: 用 policy 判断）
+  if (roleHint && policy.canUseRoleHint()) {
     assembler.add(identityBlock('role_hint', '【当前角色】' + roleHint, ['normal', 'secretary']));
   }
   // 🟡 memory: 记忆片段
