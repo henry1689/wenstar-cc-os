@@ -320,8 +320,8 @@ describe('[M2守卫] SQLiteAdapter 公开方法', () => {
     expect(typeof proto.queryAll).toBe('function');
   });
 
-  it('flush() — 强制落盘', () => {
-    expect(typeof proto.flush).toBe('function');
+  it('flushNow() — 强制落盘', () => {
+    expect(typeof proto.flushNow).toBe('function');
   });
 
   it('findRelatedEntities(entityNames, minStrength?)', () => {

@@ -84,6 +84,11 @@ export class SQLiteAdapter {
    * 策略：一轮对话内的多次写入（消息×2 + 对话组锚点/碎片/黑钻 ~10 次）合并为一次 export。
    * - _FLUSH_INTERVAL：首次写入后 150ms 内的写入合并落盘（崩溃丢失窗口 ~150ms，远小于旧的 2s）
    * - _FLUSH_BATCH：硬上限，仅当同步突发写入积压过多时才强制立即落盘（兜底，避免内存无界）
+   *
+   * P0-3 加固：
+   * - flushNow() 公开强制落盘（替代旧私有 flush()）
+   * - shutdownFlush() 关闭前清除定时器 + 强制落盘 + 关闭数据库
+   * - close() 增强：落盘前清定时器，确保不丢数据
    */
   private _dirtyCount = 0;
   private _flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -389,7 +394,7 @@ export class SQLiteAdapter {
         console.log('[Backfill] memories标注: ' + _memBefore + '→' + _memAfter);
 
         // 🔴 持久化：回填必须立即 flush（save 只计数不落盘）
-        this.flush();
+        this.flushNow();
       } catch (_bfErr) { console.warn('[Backfill] 自动回填失败:', (_bfErr as Error)?.message); }
     }
   }
@@ -403,7 +408,7 @@ export class SQLiteAdapter {
 
   close(): void {
     // C4: 关闭前确保所有待写入数据已落盘
-    this.flush();
+    this.flushNow();
     if (this.db) this.db.close();
     this.ready = false;
   }
@@ -1448,14 +1453,14 @@ export class SQLiteAdapter {
 
     // 每 _FLUSH_BATCH 次直接落盘
     if (this._dirtyCount >= this._FLUSH_BATCH) {
-      this.flush();
+      this.flushNow();
       return;
     }
 
     // 否则设定时器兜底（_FLUSH_INTERVAL 内没有再触发 save 则落盘）
     if (!this._flushTimer) {
       this._flushTimer = setTimeout(() => {
-        this.flush();
+        this.flushNow();
       }, this._FLUSH_INTERVAL);
     }
   }
@@ -1469,20 +1474,44 @@ export class SQLiteAdapter {
     this.save();
   }
 
-  /** 强制立即落盘 */
-  flush(): void {
+  /** P0-3: 强制立即落盘（公开方法，供 handleShutdown 和关键路径调用） */
+  flushNow(): void {
     if (!this.db || this._dirtyCount === 0) return;
     try {
       const data = (this.db as any).export();
       const buffer = Buffer.from(data);
       writeFileSync(this.dbPath, buffer);
       this._dirtyCount = 0;
-      if (this._flushTimer) {
-        clearTimeout(this._flushTimer);
-        this._flushTimer = null;
-      }
     } catch (err) {
-      console.error('[SQLiteAdapter] flush failed:', err);
+      console.error('[SQLiteAdapter] flushNow failed:', err);
+    }
+    this._clearFlushTimer();
+  }
+
+  /** P0-3: 关闭前安全落盘 — 清定时器 → 强制落盘 → 关闭数据库 */
+  shutdownFlush(): void {
+    this._clearFlushTimer();
+    if (this.db && this._dirtyCount > 0) {
+      try {
+        const data = (this.db as any).export();
+        writeFileSync(this.dbPath, Buffer.from(data));
+        this._dirtyCount = 0;
+        console.log('[SQLiteAdapter] shutdownFlush: 关闭前落盘完成');
+      } catch (err) {
+        console.error('[SQLiteAdapter] shutdownFlush failed:', err);
+      }
+    }
+    if (this.db) {
+      try { this.db.close(); } catch { /* best effort */ }
+      this.db = undefined as any;
+      this.ready = false;
+    }
+  }
+
+  private _clearFlushTimer(): void {
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
     }
   }
 

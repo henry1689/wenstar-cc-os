@@ -220,7 +220,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
         console.warn('[DualHelix] 写入失败 (将在下次定时重试):', dhResult.error);
       }
     } catch (e) { console.warn('[DualHelix] 写入跳过:', (e as Error).message); }
-    try { dhsqlite.flush(); } catch { /* flush optional */ }
+    try { dhsqlite.flushNow?.(); } catch { /* flush optional */ }
   }
 
   // ── Step 3.6: Transcoder 序列化验证 (蓝皮书 §8.3, P4 前置) ──

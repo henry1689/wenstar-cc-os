@@ -395,6 +395,22 @@ export class FusionStorageAdapter {
     return this.sqlite;
   }
 
+  /** P0-3: 强制立即落盘（委托给 SQLiteAdapter） */
+  flushNow(): void {
+    this.sqlite.flushNow();
+  }
+
+  /** P0-3: 关闭前安全落盘 — 清定时器 → 强制落盘 → 关闭数据库 */
+  shutdownFlush(): void {
+    // 先让 ConversationDB 落盘（如果共享同一 db 实例则跳过）
+    try {
+      if (this._conversationDB?.shutdownFlush) {
+        this._conversationDB.shutdownFlush();
+      }
+    } catch { /* best effort */ }
+    this.sqlite.shutdownFlush();
+  }
+
   /** 获取共享的 ConversationDB 实例（三段存储③砂金库） */
   getConversationDB(): any {
     return this._conversationDB;

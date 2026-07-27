@@ -172,7 +172,7 @@ export class ConversationDB {
   getRecentConversations(limit = 100): ConversationRow[] {
     this.ensureReady();
     const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp, topic, is_summary FROM conversations WHERE is_compacted = 0 ORDER BY timestamp DESC LIMIT ?`,
+      `SELECT id, role, content, timestamp, topic, is_summary FROM conversations WHERE is_compacted = 0 AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp DESC LIMIT ?`,
     );
     stmt.bind([limit]);
     const rows: ConversationRow[] = [];
@@ -251,6 +251,27 @@ export class ConversationDB {
     while (stmt.step()) rows.push(stmt.getAsObject());
     stmt.free();
     return rows;
+  }
+
+  /** P0-3: 关闭前安全落盘（清定时器 + 强制落盘，不关闭共享 db） */
+  shutdownFlush(): void {
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+    if (!this.db) return;
+    if (this.sharedMode) {
+      // 共享 db：落盘后不关闭数据库（owner 负责关闭）
+      try {
+        writeFileSync(this.dbPath, Buffer.from(this.db.export()));
+      } catch (err) {
+        console.error('[ConversationDB] shutdownFlush 落盘失败:', err);
+      }
+      return;
+    }
+    // 独立模式：落盘
+    try {
+      writeFileSync(this.dbPath, Buffer.from(this.db.export()));
+    } catch (err) {
+      console.error('[ConversationDB] shutdownFlush 落盘失败:', err);
+    }
   }
 
   close(): void {

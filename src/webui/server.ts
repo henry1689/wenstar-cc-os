@@ -2732,9 +2732,9 @@ async function main(): Promise<void> {
       console.error('[Server] 刷出失败:', err);
     }
     if (masterHarris) { try { await masterHarris.stop(); } catch (e) { /* ignore */ } }
-    // 确保数据落盘
+    // P0-3: 确保数据落盘 — shutdownFlush 清定时器 → 强制落盘 → 关闭数据库
     flushConversationHistory();
-    try { storage?.getSQLite()?.flush(); } catch (e: any) { console.error('[server] error:', e?.message); }
+    try { storage?.shutdownFlush(); } catch (e: any) { console.error('[server] error:', e?.message); }
     console.log('[Server] 数据已落盘');
     process.exit(0);
   }
