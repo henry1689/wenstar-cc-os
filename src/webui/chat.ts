@@ -1138,15 +1138,10 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     const beijingTime = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 
-    // 农历日期（2026年映射表）
-    const lunarMap: Record<number, string> = {
-      119:'腊月廿一',128:'正月初一',129:'正月初二',217:'腊月三十',218:'正月初一',
-      312:'正月廿四',405:'二月十八',502:'三月十五',605:'四月十九',619:'五月初五',
-      702:'五月十七',801:'六月十七',905:'七月廿四',927:'八月十六',1003:'八月廿二',
-      1101:'九月廿二',1201:'十月廿二',
-    };
+    // P1-4: 农历日期映射 → src/config/app-identity.ts
     const _md = (now.getMonth()+1)*100+now.getDate();
-    const lunarDate = lunarMap[_md] || '';
+    const { LUNAR_2026 } = await import('../config/app-identity.js');
+    const lunarDate = LUNAR_2026[_md] || '';
 
     const timeGuard = `[当前时间] ${beijingTime}（北京时间）${lunarDate ? ' 农历' + lunarDate : ''}——回答时间、日期、节气、节日问题必须以此为准，不能编造。`;
 
@@ -1909,9 +1904,9 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
 
         const keyword = needs[0];
 
-        // 跳过亲密/脏话关键词（避免"操死""弄坏"等污染知识库）
-
-        const intimateSkip = ['操','干','日','插','顶','舔','吸','咬','揉','捏','掐','摸','吻','骚','浪','奶','鸡','肉','屌','阴','淫','湿','水','抱','贴','蹭','扭','喘'];
+        // P1-4: 亲密/脏话关键词过滤 → src/config/app-identity.ts
+        const { FILTER_KEYWORDS } = await import('../config/app-identity.js');
+        const intimateSkip = FILTER_KEYWORDS.intimateSkip;
 
         if (!intimateSkip.some(w => keyword.includes(w))) {
 
