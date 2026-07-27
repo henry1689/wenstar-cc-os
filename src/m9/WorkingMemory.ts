@@ -12,6 +12,7 @@ import type { Perception24D } from '../m3/types/perception.js';
 import type { DNA } from '../m1/types/dna.js';
 import type { WriteResult } from '../m2/types/index.js';
 import { PerceptionAnalyzer } from '../m3/PerceptionAnalyzer.js';
+import { M3_CONFIG } from '../config/M3Config.js';
 
 interface WorkingEntry {
   dna: DNA;
@@ -129,8 +130,8 @@ export class MemoryWriteBuffer {
   private shouldGraduate(entry: WorkingEntry): 'full' | false {
     if (!entry.hasMeaningfulEntity) return false;
     // P0: 使用 calciumScore（连续值0-1）而不是 calciumLevel（离散值0-3）
-    // ⚠️ 阶梯阈值过渡: 0.15→0.3，观察3天逐步上调
-    if (entry.calciumScore >= 0.15) return 'full';
+    // P2-6: 毕业阈值统一引用 M3_CONFIG.calcium.level0Threshold（0.25），不再独立硬编码
+    if (entry.calciumScore >= M3_CONFIG.calcium.level0Threshold) return 'full';
     return false;
   }
 

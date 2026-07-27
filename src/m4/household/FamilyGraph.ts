@@ -28,7 +28,7 @@
 
 // @ts-ignore - sql.js ships its own types via dist/sql-wasm.js
 import initSqlJs from 'sql.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EntityGene } from '../../m1/types/dna.js';
@@ -624,8 +624,6 @@ export class FamilyGraph implements FamilyGraphInterface {
     this.markDirty();
     this.ready = true;
 
-    // 🛡️ V4.0: 备份已由 server.ts 统一备份引擎负责，此处不再创建重复备份
-    // 仅在清理旧备份时，修正过滤器匹配统一备份引擎的文件命名格式
     this._ensureSelfNode();
     this._ensureYuyaoProfile();
   }
@@ -757,61 +755,8 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
   }
 
-  /**
-   * FG基建加固：自动备份到 data/webui/backups/family_graph/
-   */
-  private _ensureBackup(): void {
-    try {
-      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
-      if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true });
-      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-      const backupPath = join(backupDir, 'family_graph_backup_' + ts + '.db');
-      if (existsSync(this.dbPath)) {
-        copyFileSync(this.dbPath, backupPath);
-        console.log('[FG Shield] 自动备份完成: backup_' + ts + '.db');
-      }
-    } catch (e) {
-      console.warn('[FG Shield] 自动备份失败:', e);
-    }
-    // V4.0 Phase 3: 异步清理旧备份（不阻塞主流程）
-    setImmediate(() => this._cleanupOldBackups());
-  }
-
-  /** V4.0 Phase 3: 备份分级清理 — 7天内每天1份/30天内每周1份/30天+每月1份 */
-  private _cleanupOldBackups(): void {
-    try {
-      const backupDir = join(dirname(this.dbPath), '..', 'backups', 'family_graph');
-      if (!existsSync(backupDir)) return;
-      const files = readdirSync(backupDir)
-        .filter((f: string) => f.startsWith('family_graph_backup_') && f.endsWith('.db'));
-      if (files.length < 15) return; // 不足15份不触发清理（户籍制度 §7.2）
-
-      const now = Date.now(); const oneDay = 86400000;
-      const byDay = new Map<string, { path: string; mtime: number }[]>();
-      for (const f of files) {
-        const fp = join(backupDir, f); const st = statSync(fp);
-        const dk = new Date(st.mtimeMs).toISOString().substring(0, 10);
-        if (!byDay.has(dk)) byDay.set(dk, []);
-        byDay.get(dk)!.push({ path: fp, mtime: st.mtimeMs });
-      }
-
-      const toKeep = new Set<string>();
-      for (const [i, day] of [...byDay.keys()].sort().entries()) {
-        const dfs = byDay.get(day)!.sort((a, b) => b.mtime - a.mtime);
-        const age = (now - dfs[0].mtime) / oneDay;
-        if (age <= 7) { toKeep.add(dfs[0].path); }
-        else if (age <= 30) { if (new Date(dfs[0].mtime).getDay() === 1) toKeep.add(dfs[0].path); }
-        else { if (new Date(dfs[0].mtime).getDate() <= 7) toKeep.add(dfs[0].path); }
-      }
-
-      let deleted = 0;
-      for (const f of files) {
-        const fp = join(backupDir, f);
-        if (!toKeep.has(fp)) { unlinkSync(fp); deleted++; }
-      }
-      if (deleted > 0) console.log('[FG Shield] 备份清理: 删除 ' + deleted + '/' + files.length + ' 份, 保留 ' + toKeep.size + ' 份');
-    } catch { /* 清理失败不影响主功能 */ }
-  }
+  // 🛡️ FG 备份已由 server.ts 统一备份引擎负责（runUnifiedBackup, 30min 周期）
+  // _ensureBackup / _cleanupOldBackups 已移除 — 避免双写和僵尸代码
 
   /**
    * FG基建加固：确保"我"节点存在（家族图谱的基石）
@@ -2599,9 +2544,9 @@ export class FamilyGraph implements FamilyGraphInterface {
       });
     }
 
-    this.markDirty();
+    // 🛡️ P2-4: 边关系变更后立即落盘，避免崩溃窗口
+    this.markDirty(true);
 
-    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
   }
 
@@ -2892,9 +2837,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     const merged = { ...existingProps, ...props };
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(merged), new Date().toISOString(), nodes[0].id]);
-    this.markDirty();
+    // 🛡️ P2-4: 节点属性变更立即落盘
+    this.markDirty(true);
 
-    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
   }
 
@@ -3599,9 +3544,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     }
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(parsed), new Date().toISOString(), node.id]);
-    this.markDirty();
+    // 🛡️ P2-4: 人物档案变更立即落盘
+    this.markDirty(true);
 
-    // 🛡️ 备份仅在 initialize() 时执行，写操作不触发全量备份（户籍制度 §7.1）
     this._ensureSelfNode();
   }
 
@@ -3662,7 +3607,8 @@ export class FamilyGraph implements FamilyGraphInterface {
 
     this.run('UPDATE nodes SET properties = ?, updated_at = ? WHERE id = ?',
       [JSON.stringify(props), new Date().toISOString(), node.id]);
-    this.markDirty();
+    // 🛡️ P2-4: 冲突解决是用户手动操作，立即落盘
+    this.markDirty(true);
     console.log(`[FamilyGraph] 冲突解决: ${personName} ${field} → ${resolution}`);
   }
 
@@ -5105,11 +5051,13 @@ export class FamilyGraph implements FamilyGraphInterface {
   getAllPersonNames(): string[] {
     const rows = this.query('SELECT name FROM nodes WHERE type = ?', ['person']);
     // 🛡️ V10.0: 系统级过滤 — 排除泛称词和垃圾节点名
+    // 🆕 V10.11: 与 EntityContextBuilder.GARBAGE_NAMES 保持同步
     const DIRTY_WORDS = new Set(['老公','老婆','爸爸','妈妈','爷爷','奶奶','外公','外婆',
       '哥哥','弟弟','姐姐','妹妹','儿子','女儿','同事','同学','朋友','室友',
       '老板','上司','领导','客户','老师','医生','邻居','合伙人','我','公司',
       '叔叔','时候你','学生','纪实小','小说','开心','计划吗','那你',
-      '姑姑','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','上司']);
+      '姑姑','小龙','老邱','老大','焦虑','方案','无聊','徐茜','徐敏','上司',
+      '加班','什么名字','那你说','那继续','快乐','老家','那你再']);
     return (rows as any[])
       .map(r => r.name as string)
       .filter(n => n && n.length >= 2 && !DIRTY_WORDS.has(n));

@@ -205,7 +205,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     const dhsqlite = input.ctx.storage.getSQLite();
     try {
       const { writeToDualHelix } = await import('../../m2/DualHelixWriter.js');
-      writeToDualHelix(dhsqlite.rawDb, {
+      const dhResult = writeToDualHelix(dhsqlite.rawDb, {
         globalUid: input.dna.global_uid,
         perceptionJson: buildPerceptionJson(input.p),
         seqPos: input.seqPos,
@@ -216,6 +216,9 @@ export async function persistConversation(input: PersistInput): Promise<void> {
         entityNames: input.dna.entity_genes?.filter((g: any) => g.type !== 'self').map((g: any) => g.name),
         calciumScore: input.decision.enhanced.calcium_score,
       });
+      if (!dhResult.success) {
+        console.warn('[DualHelix] 写入失败 (将在下次定时重试):', dhResult.error);
+      }
     } catch (e) { console.warn('[DualHelix] 写入跳过:', (e as Error).message); }
     try { dhsqlite.flush(); } catch { /* flush optional */ }
   }

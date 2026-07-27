@@ -1083,6 +1083,17 @@ async function initPipeline(): Promise<void> {
   console.log('  统一备份引擎已启动 ✓ (15min首执行, 30min周期)');
   markModuleAlive('Backup·备份引擎');
 
+  // ── DualHelix 失败重试 — 每 5 分钟回放写入失败的双螺旋底座 ──
+  addTimer(setInterval(async () => {
+    try {
+      const dhsqlite = storage?.getSQLite();
+      if (!dhsqlite) return;
+      const { retryHelixQueue } = await import('../m2/DualHelixWriter.js');
+      retryHelixQueue(dhsqlite.rawDb);
+    } catch { /* 静默，告警在 retryHelixQueue 内部 */ }
+  }, 5 * 60 * 1000));
+  console.log('  DualHelix 失败重试已启动 ✓ (5min周期)');
+
   // 🛡️ V4.0: 音频文件清理（启动时 + 每 24h）
   cleanupOldAudioFiles();
   addTimer(setInterval(() => cleanupOldAudioFiles(), 24 * 3600_000));
@@ -1272,6 +1283,42 @@ async function initPipeline(): Promise<void> {
   markModuleAlive('AQC·质检引擎');
 
   console.log(`  融合存储已初始化 (${storage.getSQLite().getStatus().totalRecords} 条记忆 ✓`);
+  // 🆕 V10.11: UUID 索引维护 — 保障多角色检索性能
+  try {
+    const { ensureEntityUUIDIndexes, verifyIndexes } = await import('../app/entity/EntityIndexMaintainer.js');
+    const _sql = storage.getSQLite();
+    ensureEntityUUIDIndexes(_sql);
+    console.log(`  实体UUID索引${verifyIndexes(_sql) ? '✅' : '⚠️ 部分缺失'} ✓`);
+    // 🆕 V10.11 Phase 2: 跨会话上下文重建 — 启动时为所有 FG 实体恢复对话历史
+    try {
+      const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+      const _store = new EntityContextStore(_sql);
+      EntityContextStore.ensureSchema(_sql);
+      const _allNames = familyGraph?.getAllPersonNames?.() || [];
+      const _entities = _allNames
+        .filter((n: string) => n.length >= 2)
+        .map((n: string) => ({ name: n, uuid: familyGraph.getUUIDByName(n) || '' }))
+        .filter((e: any) => e.uuid);
+      if (_entities.length > 0) {
+        const _rebuilt = await _store.rebuildAllContexts(_entities);
+        let _totalTurns = 0;
+        // 🔴 合并到 conversationHistory — 去重后按时间排序
+        const _existingIds = new Set(conversationHistory.map((t: any) => t.timestamp + (t as any).content?.substring(0, 20)));
+        for (const [, turns] of _rebuilt) {
+          for (const t of turns) {
+            const _key = (t as any).timestamp + (t.content || '').substring(0, 20);
+            if (!_existingIds.has(_key)) {
+              conversationHistory.push(t as any);
+              _existingIds.add(_key);
+              _totalTurns++;
+            }
+          }
+        }
+        conversationHistory.sort((a: any, b: any) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+        if (_totalTurns > 0) console.log(`  跨会话上下文重建: ${_rebuilt.size}实体/+${_totalTurns}轮对话 ✓`);
+      }
+    } catch (_err) { console.warn('[server] 上下文重建失败:', (_err as Error)?.message); }
+  } catch (_) { /* 非致命 */ }
   // 景幻仙姑自动巡检（每30分钟）
   addTimer(setInterval(async () => {
     try {
@@ -1334,7 +1381,7 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
   // 🔥 V10.0: 自然语言会晤触发 — 支持"我想找XX聊聊""瑶瑶，找XX来"等句式
   if (entityMeeting && !entityMeeting.isActive()) {
-    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+    const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
     let found: string | null = null;
 
     // 路径A: "找XX聊聊/谈谈/了解一下" | "想找XX" | "想和XX聊" | "叫XX来" | "让XX过来"
@@ -1388,7 +1435,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
 async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
   // 🔥 V10.0: 服务器级会晤强制激活
   if (entityMeeting && !entityMeeting.isActive()) {
-    const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+    const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
     for (const n of HC) {
       if (message.indexOf(n) >= 0 || (n.length >= 3 && message.indexOf(n.slice(-2)) >= 0)) {
         entityMeeting.enter(n, conversationHistory?.length ?? 0);

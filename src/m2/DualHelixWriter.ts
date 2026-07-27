@@ -13,9 +13,15 @@
  *   - atom_address_timeline: 仅 B+Tree+倒排, 禁止存语义向量
  *   - 原始数据层 (memories): 仅文本, 禁止直接做语义检索
  *
+ * V2.0 可靠性增强：
+ *   - 返回值改为 { success, error, details }，调用方可感知写入失败
+ *   - 失败队列 + 3 次重试 + 超限告警（console.error 结构化格式）
+ *   - retryHelixQueue() 供服务端定时重放
+ *
  * 使用:
- *   import { writeToDualHelix } from '../m2/DualHelixWriter.js';
- *   await writeToDualHelix(db, { globalUid, perceptionJson, seqPos, ... });
+ *   import { writeToDualHelix, retryHelixQueue } from '../m2/DualHelixWriter.js';
+ *   const result = writeToDualHelix(db, { globalUid, perceptionJson, seqPos, ... });
+ *   if (!result.success) console.error('[DualHelix] 写入失败:', result.error);
  */
 
 import type { DNA } from '../m1/types/dna.js';
@@ -42,38 +48,66 @@ export interface HelixWriteParams {
   calciumScore?: number;
 }
 
+export interface HelixWriteResult {
+  success: boolean;
+  error?: string;
+  /** 失败底座列表，成功时为空数组 */
+  failedSpines?: string[];
+}
+
+interface FailedEntry {
+  params: HelixWriteParams;
+  retries: number;
+  firstError: string;
+  firstFailedAt: string;
+}
+
+// ── 失败重试队列 ──
+const MAX_RETRIES = 3;
+const _failedQueue: FailedEntry[] = [];
+
 /**
  * 向双螺旋三底座写入一条海胆记录。
- * 在 persistConversation() 的每个 writeMemory() 后调用。
  *
- * 幂等: INSERT OR REPLACE 防止重复。
+ * 在 persistConversation() 的每个 writeMemory() 后调用。
+ * 每个底座独立 try-catch，部分失败不影响其他底座写入。
+ *
+ * @returns { success, error, failedSpines } — success 为 false 时至少一个底座写入失败
  */
-export function writeToDualHelix(db: any, params: HelixWriteParams): void {
+export function writeToDualHelix(db: any, params: HelixWriteParams): HelixWriteResult {
   if (!params.globalUid) {
-    console.warn('[DualHelix] 跳过: 缺少 global_uid');
-    return;
+    return { success: false, error: '缺少 global_uid', failedSpines: [] };
   }
 
+  const failedSpines: string[] = [];
+  let perception: Record<string, number> = {};
+
   try {
-    const perception = JSON.parse(params.perceptionJson || '{}');
-    const ts = new Date(params.createdAt).getTime();
-    const locFp = params.locationFingerprint || '0'.repeat(32);
-    const checksum = createHash('sha256')
-      .update(`${params.globalUid}:${params.seqPos}:${ts}`)
-      .digest('hex').substring(0, 16);
+    perception = JSON.parse(params.perceptionJson || '{}');
+  } catch {
+    failedSpines.push('parse_perception');
+    return { success: false, error: 'perceptionJson 解析失败', failedSpines };
+  }
 
-    // ═══════ 底座1: state_spines (24D 拆为 24 行, P3→32D) ═══════
-    const dims: [string, number][] = [
-      ['pleasure', 1], ['arousal', 2], ['dominance', 3],
-      ['aggression', 4], ['sincerity', 5], ['humor', 6],
-      ['factual', 7], ['logical', 8], ['certainty', 9],
-      ['abstract', 10], ['temporal_focus', 11], ['self_ref', 12],
-      ['intimacy', 13], ['power_diff', 14], ['dependency', 15],
-      ['moral_judgment', 16], ['etiquette', 17], ['belonging', 18],
-      ['sexual_attraction', 19], ['sensory_craving', 20], ['energy_merge', 21],
-      ['possessiveness', 22], ['ecstasy', 23], ['safety', 24],
-    ];
+  const ts = new Date(params.createdAt).getTime();
+  const locFp = params.locationFingerprint || '0'.repeat(32);
+  const checksum = createHash('sha256')
+    .update(`${params.globalUid}:${params.seqPos}:${ts}`)
+    .digest('hex').substring(0, 16);
 
+  // ═══════ 底座1: state_spines (24D 拆为 24 行, P3→32D) ═══════
+  const dims: [string, number][] = [
+    ['pleasure', 1], ['arousal', 2], ['dominance', 3],
+    ['aggression', 4], ['sincerity', 5], ['humor', 6],
+    ['factual', 7], ['logical', 8], ['certainty', 9],
+    ['abstract', 10], ['temporal_focus', 11], ['self_ref', 12],
+    ['intimacy', 13], ['power_diff', 14], ['dependency', 15],
+    ['moral_judgment', 16], ['etiquette', 17], ['belonging', 18],
+    ['sexual_attraction', 19], ['sensory_craving', 20], ['energy_merge', 21],
+    ['possessiveness', 22], ['ecstasy', 23], ['safety', 24],
+  ];
+
+  try {
     for (const [key, dimId] of dims) {
       const value = typeof perception[key] === 'number' ? perception[key] : 0;
       db.run(
@@ -82,8 +116,12 @@ export function writeToDualHelix(db: any, params: HelixWriteParams): void {
         [params.globalUid, dimId, value, locFp, ts, checksum],
       );
     }
+  } catch (e) {
+    failedSpines.push('spine1:state_spines');
+  }
 
-    // ═══════ 底座2: atom_address_timeline ═══════
+  // ═══════ 底座2: atom_address_timeline ═══════
+  try {
     const timeSliceTag = new Date(ts).toISOString().substring(0, 7); // YYYY-MM
     const entityBelong = params.entityNames?.[0] || '';
     db.run(
@@ -97,8 +135,12 @@ export function writeToDualHelix(db: any, params: HelixWriteParams): void {
         JSON.stringify([{ workshop: 'M1', phase_id: 'encode', node_id: 'DNAEncoder', timestamp: ts / 1000, detail: 'initial_encode' }]),
       ],
     );
+  } catch (e) {
+    failedSpines.push('spine2:atom_address_timeline');
+  }
 
-    // ═══════ 底座3: atom_repair_index ═══════
+  // ═══════ 底座3: atom_repair_index ═══════
+  try {
     db.run(
       `INSERT OR REPLACE INTO atom_repair_index (global_uid, spine_storage_position, flesh_storage_position, last_verified_at)
        VALUES (?, ?, ?, unixepoch())`,
@@ -108,8 +150,86 @@ export function writeToDualHelix(db: any, params: HelixWriteParams): void {
         `memories::${params.dnaRootId || params.globalUid}`,
       ],
     );
-
   } catch (e) {
-    console.warn('[DualHelix] 写入失败:', (e as Error).message);
+    failedSpines.push('spine3:atom_repair_index');
   }
+
+  if (failedSpines.length > 0) {
+    // 入失败队列，供后续重试
+    _failedQueue.push({
+      params,
+      retries: 0,
+      firstError: `底座写入失败: ${failedSpines.join(', ')}`,
+      firstFailedAt: new Date().toISOString(),
+    });
+    return { success: false, error: `底座写入失败: ${failedSpines.join(', ')}`, failedSpines };
+  }
+
+  return { success: true, failedSpines: [] };
+}
+
+/**
+ * 重试失败队列中的所有条目。
+ * 每个条目最多重试 MAX_RETRIES 次，超限后输出结构化告警日志。
+ *
+ * 供 server.ts 定时调用（建议 5 分钟间隔）。
+ *
+ * @returns 本次重试成功的条目数
+ */
+export function retryHelixQueue(db: any): number {
+  if (_failedQueue.length === 0) return 0;
+
+  let succeeded = 0;
+  const stillFailed: FailedEntry[] = [];
+
+  for (const entry of _failedQueue) {
+    entry.retries++;
+    const result = writeToDualHelix(db, entry.params);
+
+    if (result.success) {
+      succeeded++;
+      // 不重新入队列
+    } else if (entry.retries >= MAX_RETRIES) {
+      // 超限告警 — 结构化格式，供 observability 采集
+      console.error(JSON.stringify({
+        alert: 'DualHelixWriteFailed',
+        severity: 'ERROR',
+        globalUid: entry.params.globalUid,
+        seqPos: entry.params.seqPos,
+        retries: entry.retries,
+        firstError: entry.firstError,
+        lastError: result.error,
+        firstFailedAt: entry.firstFailedAt,
+        lastFailedAt: new Date().toISOString(),
+        message: `[DualHelix] ${entry.params.globalUid} 写入失败，已重试 ${entry.retries} 次仍失败，HNSW 索引可能残缺`,
+      }));
+      // 不再重试，保留日志即可
+    } else {
+      stillFailed.push(entry);
+    }
+  }
+
+  // 清空旧队列，仅保留仍需重试的条目
+  _failedQueue.length = 0;
+  _failedQueue.push(...stillFailed);
+
+  if (succeeded > 0) {
+    console.log(`[DualHelix] 重试成功: ${succeeded} 条`);
+  }
+  if (stillFailed.length > 0) {
+    console.warn(`[DualHelix] 仍有 ${stillFailed.length} 条待重试 (已重试 ${stillFailed[0]?.retries || 0}/${MAX_RETRIES})`);
+  }
+
+  return succeeded;
+}
+
+/**
+ * 获取失败队列状态，供监控端点查询。
+ */
+export function getHelixQueueStatus(): { size: number; oldestFailedAt: string | null; maxRetries: number } {
+  return {
+    size: _failedQueue.length,
+    oldestFailedAt: _failedQueue.length > 0 ? _failedQueue[0].firstFailedAt : null,
+    maxRetries: MAX_RETRIES,
+  };
 }

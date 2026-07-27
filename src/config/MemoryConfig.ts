@@ -35,20 +35,25 @@ export const MEMORY_CONFIG = {
   decay: {
     /** 调度间隔（毫秒） */
     intervalMs: 24 * 60 * 60 * 1000,
-    /** 强烈情感记忆（calcium>=3）衰减速率 */
-    highCalciumDecay: 0.02,
-    /** 工作相关记忆衰减速率 */
-    workDecay: 0.05,
-    /** 普通中性记忆衰减速率 */
-    normalDecay: 0.10,
-    /** 强烈情感记忆强度衰减系数 */
-    highStrengthFactor: 0.995,
-    /** 工作记忆强度衰减系数 */
-    workStrengthFactor: 0.985,
-    /** 普通记忆强度衰减系数 */
-    normalStrengthFactor: 0.95,
     /** 有效强度下限 */
     strengthFloor: 0.1,
+  },
+
+  // ── P2-1: 保留衰减率 — 按内容类别独立控制（与 calcium_score 晋升/召回解耦）──
+  /** calcium_score 仅用于晋升门槛和召回优先级，衰减速率由内容类别独立推导 */
+  retentionDecay: {
+    /** 情感/亲密类记忆（家属、情人、恋人） */
+    emotional: { decay: 0.02, strengthFactor: 0.995 },
+    /** 关系类记忆（朋友、同事、社交） */
+    relational: { decay: 0.05, strengthFactor: 0.985 },
+    /** 工作/项目类记忆 */
+    work: { decay: 0.08, strengthFactor: 0.97 },
+    /** 中性/默认记忆 */
+    neutral: { decay: 0.10, strengthFactor: 0.95 },
+    /** 被压制记忆（快速遗忘） */
+    suppressed: { decay: 0.20, strengthFactor: 0.90 },
+    /** 活跃记忆（保持优先） */
+    active: { decay: 0.04, strengthFactor: 0.99 },
   },
 
   // ── 黑钻库 ──

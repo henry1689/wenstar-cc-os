@@ -295,27 +295,28 @@ export class MemoryAssessor {
   }
 
   // ── ③ 钙化分衰减 ──
+  // P2-1: 衰减速率按内容类别独立控制（不再按 calcium_score 分桶），
+  //       calcium_score 专职晋升门槛和召回优先级。
 
   private async runDecay(): Promise<void> {
     const dc = MEMORY_CONFIG.decay;
+    const rd = MEMORY_CONFIG.retentionDecay;
     try {
       const sqlite = this.storage.getSQLite();
       const now = new Date().toISOString();
 
-      // 强烈情感记忆 (calcium >= 3) → 极慢衰减
+      // 1. 被压制记忆 — 最高优先级，快速遗忘（不区分内容类别）
       sqlite.writeRaw(
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
          strength_updated_at = ?
          WHERE calcium_score > 0
-           AND COALESCE(promoted_to_diamond, 0) = 0
-           AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
-           AND calcium_score >= 3.0`,
-        MEMORY_CONFIG.recall.calciumMin, dc.highCalciumDecay,
-        dc.strengthFloor, dc.highStrengthFactor, now,
+         AND COALESCE(lifecycle_state, 'candidate') = 'suppressed'`,
+        MEMORY_CONFIG.recall.calciumMin, rd.suppressed.decay,
+        dc.strengthFloor, rd.suppressed.strengthFactor, now,
       );
 
-      // 工作相关记忆 → 慢衰减
+      // 2. 情感/亲密类 — 极慢衰减
       sqlite.writeRaw(
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
@@ -323,29 +324,91 @@ export class MemoryAssessor {
          WHERE calcium_score > 0
          AND COALESCE(promoted_to_diamond, 0) = 0
          AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
-         AND calcium_score < 3.0
+         AND (COALESCE(narrative_tag, '') LIKE '%家庭%' OR COALESCE(narrative_tag, '') LIKE '%家人%'
+              OR COALESCE(narrative_tag, '') LIKE '%情人%' OR COALESCE(narrative_tag, '') LIKE '%恋人%'
+              OR COALESCE(narrative_tag, '') LIKE '%感情%' OR COALESCE(narrative_tag, '') LIKE '%恋爱%'
+              OR COALESCE(narrative_tag, '') LIKE '%亲密%' OR COALESCE(narrative_tag, '') LIKE '%伴侣%'
+              OR COALESCE(narrative_tag, '') LIKE '%怀旧%' OR COALESCE(narrative_tag, '') LIKE '%回忆%')`,
+        MEMORY_CONFIG.recall.calciumMin, rd.emotional.decay,
+        dc.strengthFloor, rd.emotional.strengthFactor, now,
+      );
+
+      // 3. 关系/社交类 (_narrative_tag 匹配朋友/同事/社交/邻居等）
+      sqlite.writeRaw(
+        `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
+         effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
+         strength_updated_at = ?
+         WHERE calcium_score > 0
+         AND COALESCE(promoted_to_diamond, 0) = 0
+         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
+         AND (COALESCE(narrative_tag, '') LIKE '%朋友%' OR COALESCE(narrative_tag, '') LIKE '%同事%'
+              OR COALESCE(narrative_tag, '') LIKE '%社交%' OR COALESCE(narrative_tag, '') LIKE '%邻居%'
+              OR COALESCE(narrative_tag, '') LIKE '%关系%')`,
+        MEMORY_CONFIG.recall.calciumMin, rd.relational.decay,
+        dc.strengthFloor, rd.relational.strengthFactor, now,
+      );
+
+      // 4. 工作/项目类
+      sqlite.writeRaw(
+        `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
+         effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
+         strength_updated_at = ?
+         WHERE calcium_score > 0
+         AND COALESCE(promoted_to_diamond, 0) = 0
+         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
          AND (COALESCE(narrative_tag, '') LIKE '%工作%' OR COALESCE(narrative_tag, '') LIKE '%项目%'
               OR COALESCE(narrative_tag, '') LIKE '%公司%' OR COALESCE(narrative_tag, '') LIKE '%会议%')`,
-        MEMORY_CONFIG.recall.calciumMin, dc.workDecay,
-        dc.strengthFloor, dc.workStrengthFactor, now,
+        MEMORY_CONFIG.recall.calciumMin, rd.work.decay,
+        dc.strengthFloor, rd.work.strengthFactor, now,
       );
 
-      // 普通中性记忆 → 正常衰减
+      // 5. 活跃记忆 (无特殊标签的活跃态 — 避免覆盖内容分类)
+      const noSpecialTag = `(COALESCE(narrative_tag, '') NOT LIKE '%家庭%' AND COALESCE(narrative_tag, '') NOT LIKE '%家人%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%情人%' AND COALESCE(narrative_tag, '') NOT LIKE '%恋人%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%感情%' AND COALESCE(narrative_tag, '') NOT LIKE '%恋爱%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%亲密%' AND COALESCE(narrative_tag, '') NOT LIKE '%伴侣%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%怀旧%' AND COALESCE(narrative_tag, '') NOT LIKE '%回忆%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%朋友%' AND COALESCE(narrative_tag, '') NOT LIKE '%同事%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%社交%' AND COALESCE(narrative_tag, '') NOT LIKE '%邻居%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%关系%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%工作%' AND COALESCE(narrative_tag, '') NOT LIKE '%项目%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%公司%' AND COALESCE(narrative_tag, '') NOT LIKE '%会议%')`;
       sqlite.writeRaw(
         `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
          effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
          strength_updated_at = ?
          WHERE calcium_score > 0
          AND COALESCE(promoted_to_diamond, 0) = 0
-         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'active', 'healed')
-         AND calcium_score < 3.0
-         AND (COALESCE(narrative_tag, '') NOT LIKE '%工作%' AND COALESCE(narrative_tag, '') NOT LIKE '%项目%'
-              AND COALESCE(narrative_tag, '') NOT LIKE '%公司%' AND COALESCE(narrative_tag, '') NOT LIKE '%会议%')`,
-        MEMORY_CONFIG.recall.calciumMin, dc.normalDecay,
-        dc.strengthFloor, dc.normalStrengthFactor, now,
+         AND COALESCE(lifecycle_state, 'candidate') = 'active'
+         AND ${noSpecialTag}`,
+        MEMORY_CONFIG.recall.calciumMin, rd.active.decay,
+        dc.strengthFloor, rd.active.strengthFactor, now,
       );
 
-      console.log('[MemoryAssessor] 钙化分衰减完成');
+      // 6. 中性/默认 — candidate/healed 且无特殊标签
+      const neutralTag = `(COALESCE(narrative_tag, '') NOT LIKE '%家庭%' AND COALESCE(narrative_tag, '') NOT LIKE '%家人%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%情人%' AND COALESCE(narrative_tag, '') NOT LIKE '%恋人%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%感情%' AND COALESCE(narrative_tag, '') NOT LIKE '%恋爱%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%亲密%' AND COALESCE(narrative_tag, '') NOT LIKE '%伴侣%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%怀旧%' AND COALESCE(narrative_tag, '') NOT LIKE '%回忆%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%朋友%' AND COALESCE(narrative_tag, '') NOT LIKE '%同事%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%社交%' AND COALESCE(narrative_tag, '') NOT LIKE '%邻居%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%关系%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%工作%' AND COALESCE(narrative_tag, '') NOT LIKE '%项目%'
+        AND COALESCE(narrative_tag, '') NOT LIKE '%公司%' AND COALESCE(narrative_tag, '') NOT LIKE '%会议%')`;
+      sqlite.writeRaw(
+        `UPDATE memories SET calcium_score = ROUND(MAX(?, calcium_score - ?), 1),
+         effective_strength = ROUND(MAX(?, effective_strength * ?), 4),
+         strength_updated_at = ?
+         WHERE calcium_score > 0
+         AND COALESCE(promoted_to_diamond, 0) = 0
+         AND COALESCE(lifecycle_state, 'candidate') IN ('candidate', 'healed')
+         AND ${neutralTag}`,
+        MEMORY_CONFIG.recall.calciumMin, rd.neutral.decay,
+        dc.strengthFloor, rd.neutral.strengthFactor, now,
+      );
+
+      console.log('[MemoryAssessor] 钙化分衰减完成 (按内容类别)');
     } catch (err) {
       console.warn('[MemoryAssessor] 钙化分衰减失败:', err);
     }
