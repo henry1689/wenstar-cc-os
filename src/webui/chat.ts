@@ -1606,6 +1606,70 @@ if (_compressedSummary) {
   finalKnowledgeText = _compressedSummary + '\n\n' + (finalKnowledgeText || '');
 }
 
+// ═══ V12.0 P0-1: PromptAssembler 结构化验证 ═══
+try {
+  const { PromptAssembler, hardRule, safetyBlock, identityBlock, memoryBlock, personaBlock } = await import('../m5/prompts/PromptAssembler.js');
+  const assembler = new PromptAssembler();
+  const _isMeeting = !!_meetingEntityName;
+
+  // 🔴 hard_rule: 家族铁律 + 反编造
+  if (familyConstraint && (_msgMentionsFamily || isFactualRecallQuery)) {
+    assembler.add(hardRule('family_constraint', familyConstraint + '\n【强制】未在档案中的外貌特征你不知道，绝对不能编造。'));
+  }
+  // 🔴 safety: 不知道守卫
+  if (_isSelfQ && !_isWorkQ && !knowledgeBaseText && !_meetingEntityName) {
+    assembler.add(safetyBlock('unknown_guard', '【不知道】这个问题我确实不知道答案。我不想编造，所以诚实地告诉你我不清楚。'));
+  }
+  // 🔴 safety: 亲密过滤
+  if (intimacyFilter) {
+    assembler.add(safetyBlock('intimacy_filter', intimacyFilter));
+  }
+  // 🟡 identity: 角色路由（会晤模式跳过）
+  if (roleHint) {
+    assembler.add(identityBlock('role_hint', '【当前角色】' + roleHint, ['normal', 'secretary']));
+  }
+  // 🟡 memory: 记忆片段
+  if (memoryText && !finalKnowledgeText.includes('【相关记忆】')) {
+    const _memBlock = '【情感背景·过往记忆】' + memoryText + '\n（以上是你以前的记忆片段。你**现在不在那些场景里**。如果当前话题提到了记忆中的人或事，可以用"我记得以前…"的方式轻轻提起。但**绝对不要从记忆里的场景开始说话**——你是正在和对方聊天的活人，不是在重演过去的场景。）';
+    assembler.add(memoryBlock('memory_context', _memBlock, ['normal']));
+  }
+  // 🟢 persona: M6 自我模型（会晤模式禁用）
+  try {
+    if (ctx.m6 && !_isMeeting) {
+      const _m6 = ctx.m6 as any;
+      const _traits = _m6.getTraits?.();
+      const _prefs = _m6.getPreferences?.();
+      if (_traits || _prefs) {
+        const _parts: string[] = [];
+        if (_traits) {
+          const td: string[] = [];
+          if (_traits.agreeableness > 0.7) td.push('温柔体贴');
+          if (_traits.extraversion > 0.6) td.push('活泼热情');
+          else if (_traits.extraversion < 0.4) td.push('安静内敛');
+          if (_traits.openness > 0.75) td.push('好奇心强');
+          if (td.length > 0) _parts.push('【性格】你' + td.join('，') + '。');
+        }
+        if (_prefs?.length > 0) {
+          const _prefStop = new Set(['喜欢','爱','讨厌','感动','开心','难过','不喜欢','喜爱']);
+          const _validPrefs = _prefs.filter((p: any) => p && p.strength >= 0.5 && (p.name || '').length >= 2 && !_prefStop.has(p.name)).slice(0, 3);
+          if (_validPrefs.length > 0) _parts.push('【偏好】你喜欢：' + _validPrefs.map((p: any) => p.name).join('、') + '。');
+        }
+        if (_parts.length > 0) {
+          assembler.add(personaBlock('m6_self', _parts.join(' '), ['normal', 'secretary']));
+        }
+      }
+    }
+  } catch { /* M6不阻塞 */ }
+
+  const _mode = _isMeeting ? 'entity_meeting' as const : 'normal' as const;
+  const _assembled = assembler.render({ mode: _mode, maxChars: 12000 });
+  if (_assembled.text.length > 0 && _assembled.blocks.length >= 2) {
+    // PFC + entityContext 从旧管线注入，新块从 assembler
+    finalKnowledgeText = _assembled.text + '\n\n' + (finalKnowledgeText || '');
+    console.log('[PromptAssembler] ' + _assembled.blocks.length + ' blocks, ' + _assembled.charCount + ' chars' + (_assembled.dropped.length > 0 ? ', ' + _assembled.dropped.length + ' dropped' : ''));
+  }
+} catch { /* 降级到旧拼接链 */ }
+
 // 规则引擎拦截：违规时跳过LLM生成，直接返回合规回复
 if (_ruleEngineBlocked && _ruleEngineReply) {
   reply = _ruleEngineReply;
