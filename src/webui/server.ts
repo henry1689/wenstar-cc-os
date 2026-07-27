@@ -1109,6 +1109,20 @@ async function initPipeline(): Promise<void> {
     } catch { /* 回填失败不阻塞启动 */ }
   })();
 
+  // ── P0-4: UUID 健康报告（启动时输出） ──
+  (async () => {
+    try {
+      const _si = storage.getSQLite();
+      if (_si?.rawDb) {
+        const { reportUUIDHealth, formatHealthReport } = await import('../app/entity/UUIDHealthReport.js');
+        const _health = reportUUIDHealth(_si.rawDb);
+        console.log(formatHealthReport(_health));
+        // 存储全局引用供 /api/health 端点使用
+        (globalThis as any).__uuidHealth = _health;
+      }
+    } catch { /* 不阻塞启动 */ }
+  })();
+
   // 🛡️ V4.0: 音频文件清理（启动时 + 每 24h）
   cleanupOldAudioFiles();
   addTimer(setInterval(() => cleanupOldAudioFiles(), 24 * 3600_000));

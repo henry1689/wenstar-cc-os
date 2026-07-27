@@ -104,18 +104,11 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   }
 
   // ── Step 2: conversations.db（对话历史库） ──
-  // V4.0: 解析当前对话归属的实体 UUID（通过 M1 entity_genes）
-  const resolveBelongUUID = (): string | null => {
-    try {
-      const fg = input.ctx.m4?.getFamilyGraph?.();
-      if (!fg) return null;
-      // 归属第一个提到的 person 实体
-      const firstPerson = input.dna.entity_genes?.find((g: any) => g.type === 'person' && g.name && g.name !== '我');
-      if (firstPerson) return fg.getUUIDByName?.(firstPerson.name) || null;
-      return null;
-    } catch { return null; }
-  };
-  const belongUUID = resolveBelongUUID();
+  // P0-4: 统一实体归属解析 — EntityOwnershipResolver 单一入口
+  const { resolveOwnership } = await import('../../app/entity/EntityOwnershipResolver.js');
+  const _fg = input.ctx.m4?.getFamilyGraph?.();
+  const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
+  const belongUUID = _ownerResult.uuid;
 
   try {
     input.ctx.conversationDB?.insertConversation('user', input.message, {
