@@ -1665,6 +1665,24 @@ try {
     }
   } catch { /* M6不阻塞 */ }
 
+  // 🟡 safety: 事实问答守卫（P0-6: 从旧拼接链迁移）
+  if (isFactualRecallQuery && factualRecallGuard) {
+    assembler.add(safetyBlock('factual_recall', factualRecallGuard));
+  }
+  // 🟡 task: 感受展开提示（P0-6: 迁移）
+  if (feelingGuard) {
+    assembler.add({ id: 'feeling_guard', type: 'task', priority: 650, source: 'chat.ts', modeScope: ['normal'], content: feelingGuard, conflictPolicy: 'override' });
+  }
+  // 🟡 identity: 主人大脑镜像（P0-6: 迁移）
+  try {
+    if (ctx.masterProfile) {
+      const _aboutYou = ctx.masterProfile.retrieveAboutYou(5);
+      if (_aboutYou) {
+        assembler.add(identityBlock('master_profile', _aboutYou, ['normal', 'secretary', 'entity_meeting']));
+      }
+    }
+  } catch { /* masterProfile不阻塞 */ }
+
   const _mode = _isMeeting ? 'entity_meeting' as const : 'normal' as const;
   const _assembled = assembler.render({ mode: _mode, maxChars: 12000 });
   if (_assembled.text.length > 0 && _assembled.blocks.length >= 2) {
