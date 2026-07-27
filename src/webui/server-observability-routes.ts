@@ -917,6 +917,47 @@ export async function buildCommandCenterSnapshot(
       mirror: mirrorCounts,
     },
     heart,
+    // ── P2-7: 认知一致性指标 ──
+    cognitive_health: (() => {
+      try {
+        const _si = sqlite as any;
+        const _health = (globalThis as any).__uuidHealth || null;
+        return {
+          uuid_annotation: _health ? {
+            conversations_rate: _health.conversationsRate,
+            memories_rate: _health.memoriesRate,
+            black_diamond_rate: _health.blackDiamondRate,
+            knowledge_base_rate: _health.knowledgeBaseRate,
+            overall_score: _health.overallHealth,
+          } : null,
+          anomalies: _health ? {
+            orphan_uuids: _health.orphanUUIDs,
+            duplicate_names: _health.duplicateNameUUIDs,
+            garbage_entities: _health.garbageEntities,
+          } : null,
+          // 检索命中来源分布（从 search_index 推断）
+          search_index: (() => {
+            try {
+              const _conv = _si?.queryAll?.('SELECT COUNT(*) as cnt FROM search_index WHERE source_type=?', ['conversation']) || [];
+              const _mem = _si?.queryAll?.('SELECT COUNT(*) as cnt FROM search_index WHERE source_type=?', ['memory']) || [];
+              const _bd = _si?.queryAll?.('SELECT COUNT(*) as cnt FROM search_index WHERE source_type=?', ['black_diamond']) || [];
+              const _kb = _si?.queryAll?.('SELECT COUNT(*) as cnt FROM search_index WHERE source_type=?', ['knowledge_base']) || [];
+              return {
+                conversations: Number(_conv[0]?.cnt || 0),
+                memories: Number(_mem[0]?.cnt || 0),
+                black_diamond: Number(_bd[0]?.cnt || 0),
+                knowledge_base: Number(_kb[0]?.cnt || 0),
+              };
+            } catch { return null; }
+          })(),
+          // 提示词块使用统计（从 ChatPolicy 推断）
+          prompt_governance: {
+            assembler_active: !!(globalThis as any).__pfcDirective,
+            policy_mode: orchestrator?.getMode?.() ?? 'legacy',
+          },
+        };
+      } catch { return { error: 'unavailable' }; }
+    })(),
   };
 }
 
