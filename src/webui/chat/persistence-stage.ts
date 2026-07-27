@@ -304,4 +304,20 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       }
     }
   } catch (_indErr) { /* 归纳失败不阻塞 */ }
+
+  // ── V11.0: 增量n-gram索引写入（异步，fire-and-forget）──
+  try {
+    const _sqlite = input.ctx.storage?.getSQLite();
+    if (_sqlite?.rawDb) {
+      const { indexDocument } = await import('../../m4/SearchIndexBuilder.js');
+      // 索引用户消息
+      if (input.message?.length > 5) {
+        indexDocument(_sqlite.rawDb, 'conversation', String(input.dna?.dna_root_id || 'conv_' + Date.now()), input.message, (input.dna as any)?.belong_entity_uuid);
+      }
+      // 索引助手回复
+      if (input.reply?.length > 5) {
+        indexDocument(_sqlite.rawDb, 'conversation', 'reply_' + String(input.dna?.dna_root_id || Date.now()), input.reply, (input.dna as any)?.belong_entity_uuid);
+      }
+    }
+  } catch { /* 索引写入不阻塞主流程 */ }
 }

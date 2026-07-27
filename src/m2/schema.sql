@@ -232,6 +232,20 @@ CREATE TABLE IF NOT EXISTS black_diamond_terms (
 CREATE INDEX IF NOT EXISTS idx_bd_terms_term ON black_diamond_terms(term);
 CREATE INDEX IF NOT EXISTS idx_bd_terms_bd_id ON black_diamond_terms(bd_id);
 
+-- V11.0: 统一语义搜索索引 — n-gram倒排表，覆盖四层存储
+-- n-gram仅作前置围栏过滤器，不参与最终排序。
+-- 最终排序由自有32D语义向量 完成。
+CREATE TABLE IF NOT EXISTS search_index (
+    term TEXT NOT NULL,              -- 2-3字中文n-gram
+    source_type TEXT NOT NULL,       -- 'conversation'|'memory'|'black_diamond'|'knowledge_base'
+    source_id TEXT NOT NULL,         -- 对应表的id
+    belong_entity_uuid TEXT,         -- 实体归属
+    position INTEGER DEFAULT 0,      -- term在原文中的位置
+    PRIMARY KEY (term, source_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_si_term ON search_index(term);
+CREATE INDEX IF NOT EXISTS idx_si_source ON search_index(source_type, source_id);
+
 -- AQC质检表
 CREATE TABLE IF NOT EXISTS aqc_records (
     id TEXT PRIMARY KEY,

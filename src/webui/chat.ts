@@ -98,9 +98,6 @@ export function resetVadStatus(): void {
 }
 
 
-// SP3-3: 黑钻向量补充每轮缓存（同轮不重复全表扫描）
-const _bdVecCache = new Map<string, Array<{ row: any; score: number }>>();
-
 // SP4-2: 候选人回复缓存（替代 globalThis）
 let _lastCandidates: any = null;
 
@@ -564,16 +561,82 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     // 修复：干净的三层注入结构——对话原文/enrichedHistory、记忆/memoryFragments、知识/knowledgeBaseText
     let memoryFragments: string[] = [];
     let enrichedHistory: Array<ConversationTurn & { topic?: string }>;
-    enrichedHistory = ctx.conversationHistory.slice(-40);
         // ── 记忆检索：时间导航 + 情感检索 + 黑钻检索（已拆分至 retrieval-stage） ──
     // 🛡️ V5.1: 会晤模式下获取当前实体名，传入检索以启用信息隔离
     const _activeMeetingName = ctx._entityMeeting?.isActive() ? ctx._entityMeeting.getEntityName() : null;
+    // 🆕 V10.11: 多角色上下文隔离 — 会晤模式优先从 DB 按 UUID 精准查询
+    //   RAM conversationHistory 作为热缓存，DB 作为持久化冷存储
+    //   两者合并后按时间排序，确保重启后的上下文完整
+    try {
+      const { EntityContextManager } = await import('../app/entity/EntityContextManager.js');
+      const _ecm = new EntityContextManager();
+      const _startIndex = ctx._entityMeeting?.getMeetingStartHistoryIndex?.();
+      const _meetingUuid = ctx._entityMeeting?.getEntityUUID?.();
+      enrichedHistory = _ecm.getContextWindow(ctx.conversationHistory, _activeMeetingName, 40, _startIndex);
+      // Phase 2: DB 侧精准补充 — 如果 startIndex 未覆盖，从 conversations 表按 UUID 补
+      if (_meetingUuid && enrichedHistory.length < 10) {
+        try {
+          const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+          const _store = new EntityContextStore(ctx.storage.getSQLite());
+          const _dbTurns = _store.queryEntityContext(_meetingUuid, 40);
+          if (_dbTurns.length > enrichedHistory.length) {
+            enrichedHistory = _dbTurns;
+          }
+        } catch { /* DB 补充失败不阻塞 */ }
+      }
+    } catch {
+      enrichedHistory = ctx.conversationHistory.slice(-40);
+    }
+    // 🆕 V10.11: 会晤模式下多重增强 — 动态窗口 + isolateTurns + 压缩 + 摘要文本
+    if (_activeMeetingName && enrichedHistory.length > 0) {
+      try {
+        const { computeStrategy } = await import('../app/entity/EntityContextStrategy.js');
+        const { EntityContextManager: _ECM } = await import('../app/entity/EntityContextManager.js');
+        const { compressContext, buildCompressedText } = await import('../app/entity/EntityContextCompressor.js');
+        const _ecm2 = new _ECM();
+
+        // ① computeStrategy — 根据实体category+warmth动态窗口
+        const _meetingUuid2 = ctx._entityMeeting?.getEntityUUID?.();
+        let _maxTurns = 40;
+        if (_meetingUuid2) {
+          try {
+            const _ent = ctx.m4?.getFamilyGraph?.()?.getEntityByUUID?.(_meetingUuid2);
+            const _store2 = ctx.storage ? new (await import('../app/entity/EntityContextStore.js')).EntityContextStore(ctx.storage.getSQLite()) : null;
+            const _strategy = computeStrategy({
+              category: (_ent as any)?.category || 'G',
+              warmth: undefined, // edges warmth 需单独查，此处略过
+              interactionCount7d: _store2?.getEntityTurnCount(_meetingUuid2, 7) || 0,
+              lastInteraction: (_ent as any)?.last_interaction || '',
+            });
+            _maxTurns = _strategy.maxTurns;
+          } catch { /* 策略计算失败不阻塞 */ }
+        }
+
+        // ② isolateEntityTurns — 分离穿插的其他实体对话
+        const _isolated = _ecm2.isolateEntityTurns(enrichedHistory, _activeMeetingName);
+        const _anchorCount = _isolated.interspersed.length > 0 ? 8 : 10;
+
+        // ③ compressContext — 超窗口时压缩
+        if (_isolated.own.length > _maxTurns) {
+          const _compressed = compressContext(_isolated.own, _anchorCount, 30);
+          // 将 buildCompressedText 输出的摘要文本注入 finalKnowledgeText
+          const _ctxText = buildCompressedText(_compressed);
+          if (_ctxText && enrichedHistory.length > 40) {
+            // 摘要文本留给后续注入链（PFC/KnowledgeTextAssembler）使用
+            (ctx as any)._entityCompressedSummary = _ctxText;
+          }
+          enrichedHistory = _compressed.anchor;
+        } else {
+          enrichedHistory = _isolated.own;
+        }
+      } catch { /* 增强失败不阻塞 */ }
+    }
     let {
       isTopicShift, isFollowUp, hasContinuationMarkers, isCasualChat,
       isLimitedRetrieval, hasNewEntity, hasPersonEntity,
       emotionalMemories, memoryGate, memoryGateFillerUsed,
     } = await runRetrieval({
-      ctx, message, dna, p, enrichedHistory, memoryFragments, _bdVecCache,
+      ctx, message, dna, p, enrichedHistory, memoryFragments,
       _meetingEntityName: _activeMeetingName,
     });
 	    // P0-1: 仿生智脑 + 知识库 + VAD 并行执行（三者均为异步网络调用，互不依赖）
@@ -645,7 +708,19 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     // V4.0 会议退出检测
     if (ctx._entityMeeting?.isActive() && /^(?:散会|结束.*会议|会议.*结束|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见).*$/.test(message.trim())) {
+      const _exitUuid = ctx._entityMeeting.getEntityUUID();
       const exitResult = await ctx._entityMeeting.exit();
+      // 🆕 V10.11: 保存情感快照 — 下次进入同一实体会晤时恢复情感基调
+      if (_exitUuid) {
+        try {
+          const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+          const _store = new EntityContextStore(ctx.storage.getSQLite());
+          _store.saveEmotionSnapshot(_exitUuid, {
+            pleasure: p.pleasure ?? 0, arousal: p.arousal ?? 0, intimacy: p.intimacy ?? 0,
+            lastTopic: message.substring(0, 100),
+          });
+        } catch { /* 非致命 */ }
+      }
       if (exitResult?.minutes) {
         console.log('[EntityMeeting] 多人会议结束，纪要已自动归档');
       }
@@ -715,6 +790,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             recentConversations: recentConversations.length > 0 ? recentConversations : undefined,
           });
           _entityContextText = ecResult.systemText;
+
+          // 🆕 V10.11: 首轮恢复情感快照 — 延续上次会晤的情感基调
+          if (isFirstTurn) {
+            try {
+              const _muuid = ctx._entityMeeting?.getEntityUUID?.();
+              if (_muuid) {
+                const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+                const _store = new EntityContextStore(ctx.storage.getSQLite());
+                const _snap = _store.loadEmotionSnapshot(_muuid);
+                if (_snap) {
+                  _entityContextText += `\n\n【情感延续】你上次与鸿艺的对话基调是${_snap.pleasure > 0.3 ? '愉快' : _snap.pleasure < -0.2 ? '低落' : '平常'}的。你们上次聊到了"${_snap.lastTopic.substring(0, 30)}"。现在继续你们的对话。`;
+                }
+              }
+            } catch { /* 非致命 */ }
+          }
 
           // 🆕 V4.0: 知识库缓存 — 首轮缓存，后续轮次持续注入
           const cachedKB = _meetingKBCache.get(_meetingEntityName);
@@ -889,7 +979,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     const introMatch = message.match(/([一-龥]{2,4})是我(?:的)?([一-龥]{2,4})/);
 
-    if (introMatch) {
+    // 🛡️ V10.11: 会晤模式跳过全局人名新颖度检测（实体名已在 EntityContextBuilder 中）
+    if (introMatch && !_meetingEntityName) {
 
       const name = introMatch[1];
 
@@ -1482,8 +1573,9 @@ if (isFactualRecallQuery) {
         try {
 
         // 后续追问：将上一轮话题注入 finalKnowledgeText（作为系统层上下文，LLM 不会忽略）
+    // 🛡️ V10.11: 会晤模式跳过全局追问检测（会晤上下文由 EntityContextBuilder+MeetingPipeline 管理）
     let _prev: string | null = null;
-    if (/[那这]个|然后|还有|后来|可是|但是|而且|再|又|还|呢|吧|吗/.test(message) && message.length < 30) {
+    if (!_meetingEntityName && /[那这]个|然后|还有|后来|可是|但是|而且|再|又|还|呢|吧|吗/.test(message) && message.length < 30) {
       for (let _pi = ctx.conversationHistory.length - 1; _pi >= 0; _pi--) {
         if (ctx.conversationHistory[_pi].role === 'user') { _prev = ctx.conversationHistory[_pi].content; break; }
     // FIX-5: 话题切换时也获取上下文（工作消息不命中跟进正则时）
@@ -1507,6 +1599,12 @@ if (isFactualRecallQuery) {
         finalKnowledgeText = ctxBlock + '\n\n' + finalKnowledgeText;
       }
     } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }
+
+// 🆕 V10.11: 注入压缩摘要文本到 LLM 上下文
+const _compressedSummary = (ctx as any)._entityCompressedSummary as string | undefined;
+if (_compressedSummary) {
+  finalKnowledgeText = _compressedSummary + '\n\n' + (finalKnowledgeText || '');
+}
 
 // 规则引擎拦截：违规时跳过LLM生成，直接返回合规回复
 if (_ruleEngineBlocked && _ruleEngineReply) {

@@ -1094,6 +1094,21 @@ async function initPipeline(): Promise<void> {
   }, 5 * 60 * 1000));
   console.log('  DualHelix 失败重试已启动 ✓ (5min周期)');
 
+  // ── V11.0: n-gram索引存量回填（启动时检测，为空则自动构建）──
+  (async () => {
+    try {
+      const _si = storage.getSQLite();
+      if (_si?.rawDb) {
+        const { isIndexEmpty, rebuildAllIndexes } = await import('../m4/SearchIndexBuilder.js');
+        if (isIndexEmpty(_si.rawDb)) {
+          console.log('[SearchIndex] 首次启动，开始存量回填…');
+          const _report = rebuildAllIndexes(_si.rawDb);
+          console.log(`[SearchIndex] 回填完成: ${_report.total} 条文档 (砂金${_report.bySource.conversation || 0} 金库${_report.bySource.memory || 0} 黑钻${_report.bySource.black_diamond || 0} 知识库${_report.bySource.knowledge_base || 0})`);
+        }
+      }
+    } catch { /* 回填失败不阻塞启动 */ }
+  })();
+
   // 🛡️ V4.0: 音频文件清理（启动时 + 每 24h）
   cleanupOldAudioFiles();
   addTimer(setInterval(() => cleanupOldAudioFiles(), 24 * 3600_000));

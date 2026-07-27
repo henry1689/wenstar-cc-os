@@ -222,6 +222,19 @@ export class SQLiteAdapter {
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversations(is_compacted)"); } catch {}
     try { this.db.run("CREATE INDEX IF NOT EXISTS idx_kb_class ON knowledge_base(classification)"); } catch {}
 
+    // 🆕 V10.11: UUID实体归属索引 — 多角色超长上下文检索性能保障
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_conversations_belong_uuid ON conversations(belong_entity_uuid)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_memories_belong_uuid ON memories(belong_entity_uuid)"); } catch {}
+    try { this.db.run("CREATE INDEX IF NOT EXISTS idx_black_diamond_belong_uuid ON black_diamond(belong_entity_uuid)"); } catch {}
+
+    // 🆕 V10.11: 实体上下文快照表 — 跨会话情感连续性
+    try { this.db.run(
+      `CREATE TABLE IF NOT EXISTS entity_context_snapshots (
+        uuid TEXT PRIMARY KEY, pleasure REAL DEFAULT 0, arousal REAL DEFAULT 0,
+        intimacy REAL DEFAULT 0, last_topic TEXT DEFAULT '', saved_at TEXT NOT NULL
+      )`
+    ); } catch { /* 表已存在 */ }
+
     // S2-6: 知识库印象值 + 最近召回时间
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN impression_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN last_recalled_at TEXT"); } catch { /* 列已存在 */ }
@@ -597,7 +610,7 @@ export class SQLiteAdapter {
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
-          opts.locusPath, opts.leafZone, (opts.rawInput.length > 2000 ? (console.warn(`[SQLiteAdapter] raw_input 截断: ${opts.rawInput.length}→2000 seq=${opts.seqPos}`), opts.rawInput.substring(0, 2000)) : opts.rawInput),
+          opts.locusPath, opts.leafZone, (opts.rawInput.length > 4000 ? console.warn(`[SQLiteAdapter] raw_input 超长: ${opts.rawInput.length} seq=${opts.seqPos}`) : null, opts.rawInput),
           opts.memoryKind ?? 'episodic',
           opts.lifecycleState ?? (opts.calciumLevel >= 2 ? 'active' : 'candidate'),
           opts.confidenceScore ?? 0.55,

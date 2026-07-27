@@ -288,6 +288,16 @@ export class MemoryAssessor {
       const entries = autoPromoteCandidatesV2(sqlite, MEMORY_CONFIG.goldToDiamond.batchSize);
       if (entries.length > 0) {
         console.log(`[MemoryAssessor] 金库→黑钻: ${entries.length} 条`);
+        // V11.0: 增量n-gram索引写入
+        try {
+          const { indexDocument } = await import('../../m4/SearchIndexBuilder.js');
+          for (const entry of entries) {
+            const summary = entry?.summary || entry?.notes || '';
+            if (summary.length > 5) {
+              indexDocument(sqlite.rawDb || sqlite, 'black_diamond', String(entry.id || ''), summary);
+            }
+          }
+        } catch { /* 索引写入不阻塞 */ }
       }
     } catch (err) {
       console.warn('[MemoryAssessor] 金库→黑钻失败:', err);
