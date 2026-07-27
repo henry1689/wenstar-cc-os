@@ -1387,7 +1387,11 @@ let finalKnowledgeText = _entityContextText ? (_entityContextText + '\n\n' + kno
           }
           (globalThis as any).__pfcDirective = _pfcResult?.directive || null;
 
-          // 使用 PFC 统一输出
+          // P1-5: PFC 输出暂存（供下方 PromptAssembler 结构化注入）
+          // 旧拼接链保留为降级 fallback
+          (globalThis as any).__pfcOutput = _pfcResult || null;
+
+          // 使用 PFC 统一输出（旧拼接链 — assembler 就绪后逐步迁移）
           if (_pfcResult?.assembledSystemPrompt || _pfcResult?.assembledContext || _pfcResult?.guardMessage) {
             const _parts = [_pfcResult.assembledSystemPrompt, _pfcResult.guardMessage, _pfcResult.assembledContext].filter(Boolean);
             finalKnowledgeText = [..._parts, finalKnowledgeText].filter(Boolean).join('\n\n');
@@ -1677,6 +1681,27 @@ try {
       }
     }
   } catch { /* masterProfile不阻塞 */ }
+
+  // 🔴 P1-5: PFC 结构化输出 — 将 PFC assembledContext/guardMessage/systemPrompt 注入 assembler
+  const _pfcOut = (globalThis as any).__pfcOutput;
+  if (_pfcOut) {
+    // PFC assembledSystemPrompt → hard_rule (最高优先级)
+    if (_pfcOut.assembledSystemPrompt && policy.canUsePFCKnowledgeRefine()) {
+      assembler.add(hardRule('pfc_system_prompt', _pfcOut.assembledSystemPrompt));
+    }
+    // PFC guardMessage → safety
+    if (_pfcOut.guardMessage) {
+      assembler.add(safetyBlock('pfc_guard', _pfcOut.guardMessage));
+    }
+    // PFC assembledContext → emotion/knowledge（根据内容判断）
+    if (_pfcOut.assembledContext) {
+      assembler.add({ id: 'pfc_context', type: 'emotion', priority: 550, source: 'PrefrontalCortex', modeScope: policy.canUsePFCKnowledgeRefine() ? ['normal', 'secretary'] : [], content: _pfcOut.assembledContext, conflictPolicy: 'override' });
+    }
+    // PFC directive violations → safety
+    if (_pfcOut.directive?.constraints?.violations?.length > 0) {
+      assembler.add(safetyBlock('pfc_violations', _pfcOut.directive.constraints.violations.join('\n')));
+    }
+  }
 
   const _mode = _isMeeting ? 'entity_meeting' as const : 'normal' as const;
   const _assembled = assembler.render({ mode: _mode, maxChars: 12000 });
