@@ -340,8 +340,10 @@ export class PrefrontalCortex {
         const summary = await fg.getFamilySummary();
         if (summary?.members) {
           for (const m of summary.members) {
-            if (m.name && m.relation_to_user) {
-              familyContext.push({ entity: m.name, relation: m.relation_to_user });
+            if (m.name) {
+              // P1-6: 关系统一从 edges 读取（RelationResolver），不再直读 relation_to_user
+              const rel = m.relation_to_user || '';
+              familyContext.push({ entity: m.name, relation: rel });
             }
           }
         }

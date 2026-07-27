@@ -1155,6 +1155,8 @@ export async function handleObservabilityRoutes(
         coreMemory: !!(globalThis as any).__coreMemory,
       },
       pfcStatus: pfc ? pfc.getStatus() : null,
+      // P2-7: UUID 标注健康报告
+      uuidHealth: (globalThis as any).__uuidHealth || null,
     }));
     return true;
   }

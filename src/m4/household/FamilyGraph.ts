@@ -1627,6 +1627,19 @@ export class FamilyGraph implements FamilyGraphInterface {
   async addNode(node: GraphNode): Promise<void> {
     const aliases = [...new Set((node.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))];
 
+    // P1-7: 垃圾实体守卫 — person 节点写入前做最后一道垃圾过滤
+    if (node.type === 'person') {
+      try {
+        const { checkEntity } = await import('./GarbageEntityGuard.js');
+        const allNames = new Set((this.query("SELECT name FROM nodes WHERE type='person'") as Array<{name: string}>).map(r => r.name));
+        const result = checkEntity(node.name, allNames);
+        if (!result.allowed) {
+          console.warn('[FG Guard] 垃圾实体已拦截: "' + node.name + '" — ' + result.reason + ' (L' + result.grade + ')');
+          return;
+        }
+      } catch { /* guard不可用不阻塞——防御式降级 */ }
+    }
+
     // V3.2: person 节点自动分配户籍 UUID
     let uuid: string | null = null;
     let category: string | null = null;
