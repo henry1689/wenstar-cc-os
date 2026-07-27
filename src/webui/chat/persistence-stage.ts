@@ -63,25 +63,7 @@ function buildPerceptionJson(p: Perception24D): string {
 }
 
 /** 🔧 V10.5: 从 assistant 回复中检测说话者 UUID（自称匹配） */
-function _detectSpeakerUUID(reply: string, ctx: any): string | null {
-  try {
-    const sqlite = ctx.storage?.getSQLite?.();
-    if (!sqlite) return null;
-    const head = reply.substring(0, 60);
-    const selfMatch = head.match(/我是([一-龥]{2,4})|([一-龥]{2,4})来了|([一-龥]{2,4})在这/);
-    if (selfMatch) {
-      const name = selfMatch[1] || selfMatch[2] || selfMatch[3];
-      if (name && name.length >= 2) {
-        const ent = sqlite.queryAll("SELECT uuid FROM entities WHERE name=? AND type='person' LIMIT 1", [name]);
-        if (ent?.length && (ent[0] as any).uuid) {
-          console.log('[Persist] 自称检测: "' + name + '" → ' + (ent[0] as any).uuid);
-          return (ent[0] as any).uuid;
-        }
-      }
-    }
-  } catch {}
-  return null;
-}
+// P1-2: _detectSpeakerUUID 已废弃 — EntityOwnershipResolver.resolveOwnership(role='assistant') 覆盖全部自称检测模式
 
 /**
  * 三写持久化（每轮对话调用 1 次）
@@ -104,11 +86,14 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   }
 
   // ── Step 2: conversations.db（对话历史库） ──
-  // P0-4: 统一实体归属解析 — EntityOwnershipResolver 单一入口
+  // P0-4+P1-2: 统一实体归属解析 — EntityOwnershipResolver 单一入口
   const { resolveOwnership } = await import('../../app/entity/EntityOwnershipResolver.js');
   const _fg = input.ctx.m4?.getFamilyGraph?.();
   const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
   const belongUUID = _ownerResult.uuid;
+  // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）
+  const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant');
+  const asstUUID = _asstResult.uuid || belongUUID;
 
   try {
     input.ctx.conversationDB?.insertConversation('user', input.message, {
@@ -128,7 +113,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       dnaRootId: (input.dna as any).dna_root_id,
       globalUid: input.dna.global_uid || (input.dna as any).dna_root_id,
       locationFingerprint: input.dna.location_fingerprint || '',
-      belongEntityUuid: belongUUID || _detectSpeakerUUID(input.reply, input.ctx) || undefined,
+      belongEntityUuid: asstUUID || undefined,
     });
   } catch (e: any) {
     console.error('[Persist] ❌ conversations.db 写入失败:', e?.message);
@@ -184,7 +169,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       sourceConversationIds: [input.seqPos + 1],
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
-      belongEntityUuid: belongUUID || _detectSpeakerUUID(input.reply, input.ctx) || undefined,  // V10.5: 自称检测
+      belongEntityUuid: asstUUID || undefined,  // P1-2: 统一走 EntityOwnershipResolver
     })) {
       hadError = true;
     }
