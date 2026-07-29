@@ -61,6 +61,8 @@ export interface ConversationTurn {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string;  // ISO 8601 时间戳
+  /** V12.2: 实体归属UUID — 跨重启时保留对话归属信息 */
+  belongEntityUuid?: string;
 }
 
 export interface LLMProvider {

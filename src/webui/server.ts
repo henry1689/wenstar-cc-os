@@ -278,9 +278,17 @@ function safeConvWrite(op: () => void): void {
   _convWriteLock = true;
   try {
     op();
-    // 强制执行上限
+    // V12.2: 智能裁剪 — 优先保留有实体归属的轮次
     if (conversationHistory.length > MAX_SAVED_TURNS) {
-      conversationHistory.splice(0, conversationHistory.length - MAX_SAVED_TURNS);
+      const _excess = conversationHistory.length - MAX_SAVED_TURNS;
+      // ① 先尝试裁剪无 entityUUID 的消息
+      const _anonIdx = conversationHistory.findIndex((t: any) => !t.belongEntityUuid);
+      if (_anonIdx >= 0 && _anonIdx < _excess) {
+        conversationHistory.splice(_anonIdx, 1);
+      } else {
+        // ② 全部有归属 → 仍按 FIFO 裁剪（兜底）
+        conversationHistory.splice(0, _excess);
+      }
     }
   } finally {
     _convWriteLock = false;
@@ -296,7 +304,7 @@ function loadConversationHistory(): void {
       // V12.2: 启动时加载最近200条对话（原30条→修复跨重启上下文断裂）
       const recent = conversationDB.getRecentConversations(200);
       if (recent.length > 0) {
-        conversationHistory = recent.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
+        conversationHistory = recent.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp, belongEntityUuid: (r as any).belong_entity_uuid || undefined }));
         console.log('  从融合库加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
       }
     }
@@ -1374,6 +1382,12 @@ async function initPipeline(): Promise<void> {
               }
             }
             if (_prepended > 0) console.log(`  锚定上下文: ${_lastActive.name} 前置 ${_prepended} 轮对话`);
+          }
+          // V12.2: 加载压缩摘要 — 恢复上次会晤的语义压缩上下文
+          const _compressedSummary = _store.loadCompressedSummary(_lastActive.uuid);
+          if (_compressedSummary) {
+            (globalThis as any).__restoredCompressedSummary = `【上次会晤摘要·${_lastActive.name}】${_compressedSummary}`;
+            console.log(`  压缩摘要: ${_compressedSummary.length} 字符已恢复`);
           }
         }
       }

@@ -140,6 +140,33 @@ export class EntityContextStore {
     }
   }
 
+  /** V12.2: 保存压缩摘要（跨重启上下文连续性） */
+  saveCompressedSummary(uuid: string, summary: string): void {
+    try {
+      this._sqlite.writeRaw(
+        `INSERT OR REPLACE INTO entity_context_snapshots (uuid, pleasure, arousal, intimacy, last_topic, saved_at)
+         VALUES (?, 0, 0, 0, ?, ?)`,
+        [uuid, summary.substring(0, 500), new Date().toISOString()],
+      );
+    } catch { /* 非关键 */ }
+  }
+
+  /** V12.2: 加载压缩摘要 */
+  loadCompressedSummary(uuid: string): string | null {
+    try {
+      const rows = this._sqlite.queryAll(
+        `SELECT last_topic FROM entity_context_snapshots WHERE uuid = ?`,
+        [uuid],
+      );
+      if (!rows?.length) return null;
+      const topic = (rows[0] as any).last_topic;
+      // longer than 100 chars → likely a compressed summary, not just a topic
+      return topic?.length > 50 ? topic : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 确保快照表存在（幂等） */
   static ensureSchema(sqlite: any): void {
     try {

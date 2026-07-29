@@ -25,6 +25,8 @@ interface ConversationRow {
   seq_pos: number;
   perception_summary?: string;
   calcium_score?: number;
+  /** V12.2: 实体归属UUID — 跨重启保留对话归属 */
+  belong_entity_uuid?: string;
 }
 
 export class ConversationDB {
@@ -172,7 +174,7 @@ export class ConversationDB {
   getRecentConversations(limit = 100): ConversationRow[] {
     this.ensureReady();
     const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp, topic, is_summary FROM conversations WHERE is_compacted = 0 AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp DESC LIMIT ?`,
+      `SELECT id, role, content, timestamp, topic, is_summary, belong_entity_uuid FROM conversations WHERE is_compacted = 0 AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp DESC LIMIT ?`,
     );
     stmt.bind([limit]);
     const rows: ConversationRow[] = [];

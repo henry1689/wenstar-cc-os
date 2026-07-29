@@ -624,6 +624,17 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           if (_ctxText && enrichedHistory.length > 40) {
             // 摘要文本留给后续注入链（PFC/KnowledgeTextAssembler）使用
             (ctx as any)._entityCompressedSummary = _ctxText;
+            // V12.2: 持久化压缩摘要 — 跨重启上下文连续性
+            try {
+              const _uuid = ctx._entityMeeting?.getEntityUUID?.();
+              if (_uuid) {
+                const _si = ctx.storage?.getSQLite?.();
+                if (_si) {
+                  const { EntityContextStore: _ECS } = await import('../app/entity/EntityContextStore.js');
+                  new _ECS(_si).saveCompressedSummary(_uuid, _ctxText);
+                }
+              }
+            } catch { /* 非关键 */ }
           }
           enrichedHistory = _compressed.anchor;
         } else {
@@ -1601,10 +1612,15 @@ if (isFactualRecallQuery) {
       }
     } catch (_e: any) { console.error('[chat] error:', (_e as any)?.message); }
 
-// 🆕 V10.11: 注入压缩摘要文本到 LLM 上下文
-const _compressedSummary = (ctx as any)._entityCompressedSummary as string | undefined;
+// 🆕 V10.11: 注入压缩摘要文本到 LLM 上下文（运行时 + 跨重启恢复）
+const _compressedSummary = (ctx as any)._entityCompressedSummary as string | undefined
+  || (globalThis as any).__restoredCompressedSummary as string | undefined;
 if (_compressedSummary) {
   finalKnowledgeText = _compressedSummary + '\n\n' + (finalKnowledgeText || '');
+  // 仅使用一次 — 跨重启摘要消费后清除
+  if ((globalThis as any).__restoredCompressedSummary) {
+    delete (globalThis as any).__restoredCompressedSummary;
+  }
 }
 
 // ═══ V12.0 P0-1+P0-2: PromptAssembler + ChatPolicy 模式感知 ═══
