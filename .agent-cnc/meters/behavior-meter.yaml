@@ -1,0 +1,16 @@
+meter:
+  id: "behavior-meter"
+  title: "行为回归检查"
+  severity: "A"
+  description: "检查 Golden Case 文件是否存在，行为核验提示"
+  type: "static_golden_check"
+  check_golden_files:
+    - "golden/roleplay-exit.yaml"
+    - "golden/roleplay-ab-isolation.yaml"
+    - "golden/meeting-identity.yaml"
+    - "golden/reasoning-content-clean.yaml"
+  trigger_files:
+    - "src/webui/chat.ts"
+    - "src/app/role/"
+    - "src/app/persona/"
+    - "src/m4/household/EntityMeeting.ts"

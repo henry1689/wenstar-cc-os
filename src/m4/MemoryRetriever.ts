@@ -11,6 +11,7 @@ import type { MemorySummary } from './types/index.js';
 import { RETRIEVAL_THRESHOLDS, BATCH_SIZES, MIN_MATCHED_FOR_BREAK } from '../m2/retrieval-constants.js';
 import { LocalCache } from '../app/tools/LocalCache.js';
 import { HippocampalIndex } from '../engine/tianquan/temporal/HippocampalIndex.js';
+import type { MultiRankResult, RankedList, RankedItem } from './types/retrieval.js';
 
 // 关键词检索缓存：相同关键词 30 秒内复用结果
 const keywordCache = new LocalCache<string, DNA[]>({ ttlMs: 30_000, namespace: 'm4_keyword' });
@@ -413,6 +414,212 @@ export class MemoryRetriever {
     } catch (e) { /* 日志不可用不影响主流程 */ }
 
     return merged;
+  }
+
+  /**
+   * V12.0 四路独立召回 — 返回 MultiRankResult 而非合并的 DNA[]
+   * ==========================================================
+   * 把 retrieveMemories 中散落的四路召回逻辑抽取为统一返回接口。
+   * 四路各自输出 RankedList（路内已按 score 降序），由上层 UnifiedSearchEngine
+   * 做 RRF 融合 + MMR 多样性，不再在 MemoryRetriever 内部拼接。
+   *
+   * @returns 四路独立排名 + 海马体索引命中信息
+   */
+  async retrieveMultiRank(
+    locusPath: string,
+    entities: Array<{ name: string; type: string }>,
+    options?: { perception?: Perception24D; entityUuids?: string[]; sessionId?: string }
+  ): Promise<MultiRankResult> {
+    const sessionId = options?.sessionId ?? this._sessionId;
+    const lists: RankedList[] = [];
+
+    // ─── 🧠 0. 海马体稀疏索引查询 ───
+    let indexHit = false;
+    let indexedIds: string[] = [];
+    try {
+      const sqlite = (this.storage as any).getSQLite?.();
+      if (sqlite && options?.perception) {
+        const hIndex = new HippocampalIndex(sqlite);
+        const sig = hIndex.computeSignature(locusPath, entities, options.perception);
+        const locs = hIndex.lookup(sig);
+        if (locs && locs.length > 0) {
+          indexHit = true;
+          indexedIds = locs;
+        }
+      }
+    } catch { /* 索引查询失败不阻塞 */ }
+
+    // ─── 1. 情感/情绪路 (emotion) ───
+    const emotionItems: RankedItem[] = [];
+    const hasEmotionType = entities.some(e => e.type === 'emotion');
+    const hasMeaningfulEntity = entities.some(e => e.name.length > 0 && e.type !== 'self');
+    if (options?.perception && (hasEmotionType || hasMeaningfulEntity)) {
+      try {
+        const scored = this.storage.findByEmotionalSimilarity({
+          current_perception: options.perception,
+          entities: entities.filter(e => e.type === 'emotion').map(e => e.name),
+          similarity_mode: 'mood_congruent',
+          limit: 30,
+          excludeRoleplay: true,
+        });
+        for (const sm of scored) {
+          if (sm?.record) {
+            emotionItems.push({
+              id: sm.record.id ?? '',
+              text: (sm.record.raw_input ?? '').substring(0, 200),
+              score: sm.composite ?? sm.scores.emotional ?? 0.5,
+              source: 'emotion',
+              entityUuid: (sm.record as any)?.belong_entity_uuid ?? null,
+              calciumScore: sm.record.calcium_score ?? 0,
+              createdAt: sm.record.created_at ?? '',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (emotionItems.length > 0) {
+      emotionItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'emotion', items: emotionItems });
+    }
+
+    // ─── 2. 关键词/BM25路 (keyword) ───
+    const keywordItems: RankedItem[] = [];
+    const keywords = new Set<string>();
+    for (const e of entities) {
+      if (e.name && e.name.length > 0) keywords.add(e.name);
+    }
+    if (locusPath) {
+      const last = locusPath.split('.').pop();
+      if (last && last !== 'default' && last !== 'general') keywords.add(last);
+    }
+    if (keywords.size > 0) {
+      try {
+        const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200 });
+        const seen = new Set<string>();
+        for (const dna of recent) {
+          if (seen.has(dna.branch_id)) continue;
+          const kind = (dna as any).memory_kind;
+          if (kind === 'roleplay') continue;
+          let hitCount = 0;
+          for (const kw of keywords) {
+            if (dna.raw_input?.includes(kw)) hitCount++;
+          }
+          if (hitCount > 0) {
+            seen.add(dna.branch_id);
+            keywordItems.push({
+              id: dna.branch_id,
+              text: (dna.raw_input ?? '').substring(0, 200),
+              score: hitCount,
+              source: 'keyword',
+              entityUuid: (dna as any).belong_entity_uuid ?? null,
+              calciumScore: dna.calcium_score ?? 0,
+              createdAt: dna.created_at ?? '',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (keywordItems.length > 0) {
+      keywordItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'keyword', items: keywordItems });
+    }
+
+    // ─── 3. 双螺旋 state_spines 向量路 (spine) ───
+    const spineItems: RankedItem[] = [];
+    if (options?.perception) {
+      try {
+        const sqlite = (this.storage as any).getSQLite?.();
+        if (sqlite && typeof sqlite.queryAll === 'function') {
+          const p = options.perception;
+          const spineRows = sqlite.queryAll(
+            `SELECT s.global_uid, s.dimension_id, s.value, s.timestamp_ms
+             FROM state_spines s WHERE s.dimension_id IN (1,2,5,13)
+               AND s.timestamp_ms > ? ORDER BY s.timestamp_ms DESC LIMIT 200`,
+            [Date.now() - 30 * 86400000]
+          );
+          if (spineRows?.length) {
+            const spineMap = new Map<string, { dims: Map<number,number>; ts: number }>();
+            for (const row of spineRows) {
+              const uid = row.global_uid as string;
+              if (!spineMap.has(uid)) spineMap.set(uid, { dims: new Map(), ts: row.timestamp_ms as number });
+              spineMap.get(uid)!.dims.set(row.dimension_id as number, row.value as number);
+            }
+            const targetDims = [p.pleasure ?? 0, p.arousal ?? 0, p.intimacy ?? 0, p.intimacy ?? 0];
+            for (const [uid, entry] of spineMap) {
+              const vec = [entry.dims.get(1) ?? 0.5, entry.dims.get(2) ?? 0.5, entry.dims.get(5) ?? 0.5, entry.dims.get(13) ?? 0.5];
+              let dot = 0, nA = 0, nB = 0;
+              for (let i = 0; i < 4; i++) { dot += vec[i] * targetDims[i]; nA += vec[i] * vec[i]; nB += targetDims[i] * targetDims[i]; }
+              const sim = nA && nB ? (dot / Math.sqrt(nA * nB) + 1) / 2 : 0.5;
+              if (sim > 0.3) {
+                spineItems.push({
+                  id: uid, text: '', source: 'spine', entityUuid: null,
+                  score: sim, calciumScore: sim * 10, createdAt: new Date(entry.ts).toISOString(),
+                });
+              }
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (spineItems.length > 0) {
+      spineItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'spine', items: spineItems });
+    }
+
+    // ─── 4. 话题前缀路 (locus) ───
+    const locusItems: RankedItem[] = [];
+    try {
+      const byLocus = await this.storage.findByLocus(locusPath, { limit: 20 });
+      for (const dna of byLocus) {
+        const kind = (dna as any).memory_kind;
+        if (kind === 'roleplay') continue;
+        locusItems.push({
+          id: dna.branch_id,
+          text: (dna.raw_input ?? '').substring(0, 200),
+          score: dna.seq_pos ?? 0,
+          source: 'locus',
+          entityUuid: (dna as any).belong_entity_uuid ?? null,
+          calciumScore: dna.calcium_score ?? 0,
+          createdAt: dna.created_at ?? '',
+        });
+      }
+    } catch { /* skip */ }
+    if (locusItems.length > 0) {
+      locusItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'locus', items: locusItems });
+    }
+
+    // ─── 5. 实体归属路 (entity) ───
+    const entityItems: RankedItem[] = [];
+    const entityUuids = options?.entityUuids ?? [];
+    if (entityUuids.length > 0 && typeof (this.storage as any).findByEntityUuid === 'function') {
+      for (const uuid of entityUuids) {
+        try {
+          const entityMems = (this.storage as any).findByEntityUuid(uuid, 10);
+          if (entityMems?.length) {
+            for (const em of entityMems) {
+              if ((em as any).memory_type === 'rp_dialog') continue;
+              entityItems.push({
+                id: em.id ?? '', text: (em.raw_input ?? '').substring(0, 200),
+                score: em.seq_pos ?? 0, source: 'entity',
+                entityUuid: uuid, calciumScore: em.calcium_score ?? 0,
+                createdAt: em.created_at ?? '',
+              });
+            }
+          }
+        } catch { /* skip */ }
+      }
+    }
+    if (entityItems.length > 0) {
+      entityItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'entity', items: entityItems });
+    }
+
+    // 去重计数
+    const allIds = new Set<string>();
+    for (const list of lists) for (const item of list.items) allIds.add(item.id);
+
+    return { lists, totalCandidates: allIds.size, indexHit, indexedIds };
   }
 
   /** V3.1 记忆再巩固: 检索触发突触更新（人脑 reconsolidation 机制） */

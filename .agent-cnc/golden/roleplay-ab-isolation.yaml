@@ -1,0 +1,11 @@
+golden_case:
+  id: "roleplay-ab-isolation"
+  title: "角色扮演 A/B 隔离验证"
+  severity: "S"
+  description: "同时存在两个角色扮演时，数据不得交叉污染"
+  check_items:
+    - "角色 A 的 FG 分支数据不在角色 B 的查询结果中出现"
+    - "角色 A 的对话历史不被角色 B 读取"
+    - "角色切换时缓存全部清理，不留残留状态"
+    - "PersonaRegistry 查询时必须带角色 ID 过滤"
+    - "RoleClassifier 分类结果不跨角色共享"

@@ -1,0 +1,11 @@
+meter:
+  id: "trace-meter"
+  title: "调用链路追踪检查"
+  severity: "B"
+  description: "检查关键调用链路的完整性"
+  type: "static_grep"
+  check_keywords:
+    - "trace"
+    - "span_id"
+    - "trace_id"
+  optional: true

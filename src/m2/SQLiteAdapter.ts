@@ -208,6 +208,17 @@ export class SQLiteAdapter {
       console.warn('[SQLiteAdapter] Schema 迁移失败（首次运行正常）:', err);
     }
 
+    // 🔴 V13: 启动期数据完整性修复（global_uid / entity_uuid / null向量）
+    // 与 schema 迁移不同：每次启动都执行，幂等
+    try {
+      console.error('[SQLiteAdapter] 开始数据完整性修复...');
+      const { repairDataIntegrity } = await import('./MigrationManager.js');
+      const repairResult = repairDataIntegrity(this.db);
+      console.error('[SQLiteAdapter] 数据完整性修复结果:', JSON.stringify(repairResult));
+    } catch (err) {
+      console.error('[SQLiteAdapter] 数据完整性修复失败:', err);
+    }
+
     // 家族图谱别名表（模糊去重）
     try {
       this.db.run("CREATE TABLE IF NOT EXISTS person_aliases (name TEXT, alias TEXT, PRIMARY KEY(name, alias))");

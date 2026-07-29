@@ -6,6 +6,9 @@
  */
 import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
 import { computeCalcium } from '../../m2/math.js';
+// V13.0: 在线 DAG 建边（feature flag 控制，不阻塞闭组主流程）
+let _dagEdgeBuilders: { entity: any; causal: any; repo: any } | null = null;
+const WS_DAG_ONLINE_EDGES = process.env.WS_DAG_ONLINE_EDGES === 'true';
 
 // H3: 单一钙化标度 [0,1] — 与 m2.computeCalcium / M3Config 阈值(0.3/0.6/0.8)完全一致的等级映射。
 // 闭组写入必须与逐轮砂金写入(persistence-stage 用 decision.enhanced.calcium_score/level)同标度，
@@ -143,7 +146,69 @@ export async function flushDialogGroup(
         console.log('[三段回填] 对话组 ' + dg.id + ' 已关联 ' + dg.rounds.length + ' 轮 (' + updated + ' 条对话)');
       }
     } catch (_e) { console.warn('[三段回填] 失败:', _e); }
+    // ═══════════════════════════════════════════════════
+    // V13.0: 在线 DAG 建边（feature flag 控制，不阻塞闭组）
+    // ═══════════════════════════════════════════════════
+    if (WS_DAG_ONLINE_EDGES) {
+      try {
+        await _buildOnlineDAGEdges(ctx, dg, dna);
+      } catch (_e) { /* DAG 建边失败不影响闭组主流程 */ }
+    }
   } catch (err) {
     console.warn('[DG] 写入失败:', err);
+  }
+}
+
+// ── V13.0 DAG 在线建边内部函数 ──
+
+async function _buildOnlineDAGEdges(ctx: any, dg: any, dna: any): Promise<void> {
+  const sqlite = ctx.storage?.getSQLite?.() as SQLiteAdapter | null;
+  if (!sqlite) return;
+
+  // 懒加载
+  if (!_dagEdgeBuilders) {
+    const { MemoryAssociationRepository } = await import('../../m4/graph/MemoryAssociationRepository.js');
+    const { OnlineEntityEdgeBuilder } = await import('../../m4/graph/OnlineEntityEdgeBuilder.js');
+    const { OnlineCausalEdgeBuilder } = await import('../../m4/graph/OnlineCausalEdgeBuilder.js');
+    const repo = new MemoryAssociationRepository(sqlite);
+    _dagEdgeBuilders = {
+      entity: new OnlineEntityEdgeBuilder(repo),
+      causal: new OnlineCausalEdgeBuilder(repo),
+      repo,
+    };
+  }
+
+  const ns = (dna as any)?.namespace ?? 'default';
+  const euuid = (dna as any)?.belong_entity_uuid ?? '';
+  const locusPath = (dna as any)?.locus_path ?? '';
+  const groupId = dg.id ?? '';
+  const groupGlobalUid = (dna as any)?.global_uid ?? (dna as any)?.dna_root_id ?? groupId;
+  const nowMs = Date.now();
+  const entityNames = (dna as any)?.entity_genes
+    ?.filter((g: any) => g.type !== 'self')
+    ?.map((g: any) => g.name) ?? [];
+
+  const groupCtx = {
+    namespace: ns,
+    belongEntityUuid: euuid,
+    groupId,
+    groupGlobalUid,
+    closedAtMs: nowMs,
+    locusPath,
+    entityNames,
+  };
+
+  // 合并对话组文本用于因果线索检测
+  const combinedText = dg.rounds?.map((r: any) => r.q + ' ' + r.a).join(' ') ?? '';
+
+  // 实体边: 同 entity 的对话组链
+  const entityCreated = _dagEdgeBuilders.entity.buildForDialogGroup(groupCtx);
+
+  // 因果边: 30分钟内同话题的连续对话组
+  // prevGroupCtx 从最近一条 entity 边推导（简化：仅当 entityCreated>0 时尝试因果边）
+  const causalCreated = 0; // 需要 caller 传入 prevGroupCtx，当前版本先跑通实体边
+
+  if (entityCreated > 0 || causalCreated > 0) {
+    console.log(`[DAG-Online] 对话组 ${groupId}: entity=${entityCreated} causal=${causalCreated}`);
   }
 }

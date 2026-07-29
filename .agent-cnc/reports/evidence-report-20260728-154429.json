@@ -1,0 +1,829 @@
+{
+  "project": "WenStarOS",
+  "time": "2026-07-28T07:44:29.511Z",
+  "mode": "offline_deterministic_guard",
+  "result": "PASS",
+  "overallRisk": "high",
+  "changedFiles": [
+    {
+      "path": "package-lock.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "package.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m2/MigrationManager.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/M4Orchestrator.ts",
+      "risk": "medium",
+      "reason": "中风险区域文件"
+    },
+    {
+      "path": "src/m4/MemoryRetriever.ts",
+      "risk": "medium",
+      "reason": "中风险区域文件"
+    },
+    {
+      "path": "src/m4/UnifiedSearchEngine.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m5/DeepSeekLLMProvider.ts",
+      "risk": "high",
+      "reason": "LLM API 调用、提示词组装、reasoning_content 清洗"
+    },
+    {
+      "path": "src/m5/prompts/core-rules.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/webui/chat/dialog-group-stage.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/webui/chat/retrieval-stage.ts",
+      "risk": "medium",
+      "reason": "中风险区域文件"
+    },
+    {
+      "path": "tsconfig.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/PLAN_TEMPLATE.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/README.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/config.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/meeting-identity.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/persistence-restart.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/prompt-injection-order.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/python-globalbus.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/reasoning-content-clean.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/roleplay-ab-isolation.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/roleplay-exit.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/golden/uuid-ownership.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/harness.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/inspection-matrix.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/behavior-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/fg-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/llm-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/mode-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/persist-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/prompt-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/python-domain-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/trace-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/meters/uuid-meter.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/precision-spec.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/project-genome.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/chat-injection-points.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/fg-roleplay-redlines.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/llm-provider-rules.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/meeting-propagation-chain.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/python-three-domain-rules.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/sqlite-persistence-rules.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/redlines/uuid-ownership-rules.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/.gitkeep",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/current-plan.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/evidence-report-20260728-152831.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/evidence-report-20260728-152831.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/evidence-report-20260728-152911.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/evidence-report-20260728-152911.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/latest-result.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/latest-scan.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/reports/latest.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/risk-map.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/chat-ts-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/familygraph-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/high-risk-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/llm-provider-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/low-risk-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/medium-risk-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/meeting-mode-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/python-domain-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/roleplay-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/sqlite-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": ".agent-cnc/workflows/uuid-chain-change.yaml",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "\"docs/blueprint//345/217/230/346/233/264/345/217/260/350/264/246_2026-07-27_entity-context-manager.md\"",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "docs/postmortem-2026-07-28-search-test-failures.md",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/apply-migrations.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/build-dag-edges.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/comprehensive-audit.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/full-pipeline-run.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/search-xushiyu.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/atomic-fix-and-test.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/baselines/baseline-v2.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/direct-test-searchv13.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/e2e-search-v13.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/fix-and-retest.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/last-report.json",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "scripts/test-framework/ten-dimension-suite.mjs",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/__tests__/full-pipeline-xuziming.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/__tests__/real-search-xuziming.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/__tests__/search-v12.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/__tests__/search-v13-full-pipeline.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/agent-cnc/cli.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/command-runner.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/config.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/git.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/base.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/behavior-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/fg-integrity-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/index.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/llm-provider-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/meeting-mode-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/prompt-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/python-domain-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/roleplay-isolation-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/sqlite-persist-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/meters/uuid-ownership-meter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/report.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/risk-router.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/types.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/utils.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/validators.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/agent-cnc/workflow-router.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/EntityContextCompressor.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/EntityContextManager.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/EntityContextStore.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/EntityContextStrategy.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/EntityIndexMaintainer.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/app/entity/index.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m3/ForesightDetector.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m3/SurprisalGate.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m3/__tests__/ForesightDetector.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m3/__tests__/SurprisalGate.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m4/MMRDiversifier.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/RRFFusion.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/SearchConfig.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/__tests__/DAGClosureSearch.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m4/__tests__/MMRDiversifier.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m4/__tests__/RRFusion.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m4/__tests__/Sprint3Modules.test.ts",
+      "risk": "low",
+      "reason": "匹配模式: **/__tests__/**"
+    },
+    {
+      "path": "src/m4/filters/ForesightValidityFilter.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/CausalSkeletonPruner.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/DeltaGraphMaintenanceJob.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/MemoryAssociationRepository.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/MemoryAssociationTypes.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/MemoryClosureRetriever.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/OfflineEmotionEdgeBuilder.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/OfflineSemanticEdgeBuilder.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/OnlineCausalEdgeBuilder.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/graph/OnlineEntityEdgeBuilder.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/narrative/MemoryNarrativeAssembler.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/rerank/CrossEncoderReranker.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/rerank/NoopCrossEncoderReranker.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    },
+    {
+      "path": "src/m4/types/retrieval.ts",
+      "risk": "medium",
+      "reason": "未匹配任何风险规则，默认为中风险"
+    }
+  ],
+  "triggeredWorkflows": [
+    "chat_ts_change",
+    "sqlite_change",
+    "llm_provider_change"
+  ],
+  "commandResults": [
+    {
+      "command": "npx tsc --noEmit",
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "durationMs": 15512
+    }
+  ],
+  "meterResults": [
+    {
+      "id": "prompt-meter",
+      "title": "Prompt 注入完整性检查",
+      "severity": "S",
+      "status": "pass",
+      "score": 100,
+      "evidence": [
+        "找到 finalKnowledgeText，共 29 处引用",
+        "注入点 \"PFC\" 出现 26 次",
+        "注入点 \"roleHint\" 出现 5 次",
+        "注入点 \"memoryText\" 出现 10 次",
+        "注入点 \"familyConstraint\" 出现 7 次",
+        "注入点 \"M6\" 出现 11 次",
+        "注入点 \"EngineContext\" 出现 7 次",
+        "注入点 \"_meetingEntityName\" 出现 34 次",
+        "注入点 \"systemPrompt\" 出现 1 次",
+        "注入点覆盖: 8/9 个关键词"
+      ],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "meeting-mode-meter",
+      "title": "会晤模式隔离检查",
+      "severity": "S",
+      "status": "pass",
+      "score": 100,
+      "evidence": [
+        "chat.ts: _meetingEntityName 出现 34 次",
+        "EntityMeeting.ts: _meetingEntityName 出现 0 次",
+        "MeetingContextPipeline.ts: _meetingEntityName 出现 0 次",
+        "isEntityMeeting 出现 0 次",
+        "MeetingContextPipeline 引用 0 次",
+        "_meetingEntityName 总出现次数 34 >= 12，传播点完整"
+      ],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "behavior-meter",
+      "title": "行为回归检查",
+      "severity": "A",
+      "status": "pass",
+      "score": 100,
+      "evidence": [
+        "Golden Case 文件: 4/4 存在",
+        "✅ golden/roleplay-exit.yaml",
+        "✅ golden/roleplay-ab-isolation.yaml",
+        "✅ golden/meeting-identity.yaml",
+        "✅ golden/reasoning-content-clean.yaml"
+      ],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "persist-meter",
+      "title": "SQLite 持久化检查",
+      "severity": "S",
+      "status": "pass",
+      "score": 100,
+      "evidence": [
+        "SQLiteAdapter.ts: \"save()\" 出现 11 次",
+        "SQLiteAdapter.ts: \"save\" 出现 14 次",
+        "SQLiteAdapter.ts: \"scheduleFlush\" 出现 1 次",
+        "SQLiteAdapter.ts: \"export()\" 出现 4 次",
+        "SQLiteAdapter.ts: \"export\" 出现 10 次",
+        "FusionStorageAdapter.ts: \"scheduleFlush\" 出现 1 次",
+        "FusionStorageAdapter.ts: \"export\" 出现 2 次",
+        "persistence-stage.ts: \"save\" 出现 2 次",
+        "persistence-stage.ts: \"export\" 出现 2 次",
+        "关键持久化方法共出现 47 次",
+        "fusion_memory.db: 157724.0 KB",
+        "持久化规则见: .agent-cnc/redlines/sqlite-persistence-rules.yaml"
+      ],
+      "warnings": [
+        "⚠️ SQLite 持久化相关文件已修改，必须执行 停服→重启→查库 验证"
+      ],
+      "failures": []
+    },
+    {
+      "id": "uuid-meter",
+      "title": "UUID 归属检查",
+      "severity": "S",
+      "status": "warn",
+      "score": 100,
+      "evidence": [
+        "src/webui/chat/persistence-stage.ts: \"belong_entity_uuid\" 出现 2 次",
+        "src/m2/SQLiteAdapter.ts: \"belong_entity_uuid\" 出现 25 次",
+        "src/m2/SQLiteAdapter.ts: \"black_diamond\" 出现 18 次",
+        "src/app/knowledge/KnowledgeEngine.ts: \"belong_entity_uuid\" 出现 3 次",
+        "src/m4/household/UUIDGatekeeper.ts: \"UUIDGatekeeper\" 出现 3 次",
+        "src/webui/chat/MeetingContextPipeline.ts: \"belong_entity_uuid\" 出现 7 次",
+        "UUID 归属关键词共出现 58 次（结构完整）",
+        "memories: 0/1587 已标注 (0%)",
+        "conversations: 3092/4822 已标注 (64%)"
+      ],
+      "warnings": [
+        "Historical UUID annotation rate below target. This is a data-quality warning, not a structural chain failure.",
+        "memories 标注率 0% < 80%（历史数据债务）",
+        "Historical UUID annotation rate below target. This is a data-quality warning, not a structural chain failure.",
+        "conversations 标注率 64% < 80%（历史数据债务）"
+      ],
+      "failures": []
+    },
+    {
+      "id": "llm-meter",
+      "title": "LLM Provider 输出清洁性检查",
+      "severity": "S",
+      "status": "pass",
+      "score": 100,
+      "evidence": [
+        "\"reasoning_content\" 出现 5 次",
+        "reasoning_content 关键词存在，清洗逻辑已引用",
+        "重试相关关键词 \"maxRetries\" 存在"
+      ],
+      "warnings": [
+        "⚠️ LLM Provider 相关文件已修改，必须验证 reasoning_content 清洗 + prompt 拼装顺序"
+      ],
+      "failures": []
+    }
+  ],
+  "deviation": {
+    "prompt_injection_order_risk": 0,
+    "meeting_identity_leakage": 0,
+    "roleplay_fg_pollution": 0,
+    "role_state_residue": 0,
+    "uuid_misownership": 0,
+    "uuid_annotation_rate_drop": 0.5,
+    "familygraph_schema_drift": 0,
+    "sqlite_persistence_loss": 0,
+    "llm_reasoning_content_leak": 0,
+    "behavior_regression": 0,
+    "python_domain_isolation_break": 0,
+    "globalbus_protocol_violation": 0
+  },
+  "gateDecision": "PASS",
+  "requiredHumanReview": [],
+  "nextSteps": [
+    "Gate 已通过，可继续开发"
+  ]
+}

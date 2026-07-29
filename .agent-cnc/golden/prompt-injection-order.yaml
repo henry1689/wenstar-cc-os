@@ -1,0 +1,12 @@
+golden_case:
+  id: "prompt-injection-order"
+  title: "Prompt 注入顺序验证"
+  severity: "S"
+  description: "finalKnowledgeText 的 22 个注入点必须按正确顺序排列"
+  check_items:
+    - "PFC_unified_context 必须在 system_prompt 之后、user_message 之前"
+    - "persona_header → role_hint → meeting_identity 顺序不可变"
+    - "family_constraint 必须在 memory_context 之后"
+    - "m6_self_model 和 m8_annual_ring 必须在 user_message 之前"
+    - "safety_gate 必须在 final_assembled_context 之前"
+    - "token_budget_hint 不覆盖 safety_gate 的约束"

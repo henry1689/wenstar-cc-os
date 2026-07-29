@@ -1,0 +1,17 @@
+meter:
+  id: "meeting-mode-meter"
+  title: "会晤模式隔离检查"
+  severity: "S"
+  description: "检查 _meetingEntityName 的 12 个传播点是否完整"
+  type: "static_grep"
+  check_files:
+    - "src/webui/chat.ts"
+    - "src/m4/household/EntityMeeting.ts"
+    - "src/webui/chat/MeetingContextPipeline.ts"
+  check_keywords:
+    - "_meetingEntityName"
+    - "isEntityMeeting"
+    - "MeetingContextPipeline"
+  min_occurrences:
+    "_meetingEntityName": 12
+  golden_file: "golden/meeting-identity.yaml"

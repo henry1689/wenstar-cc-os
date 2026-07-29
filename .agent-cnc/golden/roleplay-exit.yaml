@@ -1,0 +1,11 @@
+golden_case:
+  id: "roleplay-exit"
+  title: "角色扮演退出清理验证"
+  severity: "S"
+  description: "退出角色扮演时必须清理 _currentRoleplay、_currentRPBranch、FG override"
+  check_items:
+    - "_currentRoleplay 置为 null"
+    - "_currentRPBranch 置为 null"
+    - "FG override 恢复为 _realFg"
+    - "角色扮演中新增的 FG 节点不被持久化到主 FG"
+    - "角色扮演中的对话不与主身份混淆"

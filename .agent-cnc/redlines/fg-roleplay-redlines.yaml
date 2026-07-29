@@ -1,0 +1,15 @@
+redlines:
+  id: "fg-roleplay-redlines"
+  severity: "S"
+  rules:
+    - "角色扮演禁止向主 FG 写入"
+    - "分支数据隔离，不查主 FG"
+    - "FG 真人绝不可被角色扮演"
+    - "角色切换必须彻底清理"
+    - "两套 FG 读写不能搞反"
+    - "relationToLabel 映射不能改坏"
+    - "退出时三清：_currentRoleplay、_currentRPBranch、FG override"
+    - "_realFg vs _fgX 分叉不能混用"
+    - "新旧角色扮演管线规则必须同步"
+    - "FamilyGraph 新增方法后 RoleBranch 必须同步"
+    - "PersonaRegistry 与 RoleClassifier 双体系必须同步"

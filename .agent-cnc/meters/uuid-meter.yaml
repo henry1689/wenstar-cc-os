@@ -1,0 +1,25 @@
+meter:
+  id: "uuid-meter"
+  title: "UUID 归属检查"
+  severity: "S"
+  description: "检查 belong_entity_uuid 的读写路径和数据库标注率"
+  type: "static_grep + sqlite_query"
+  check_files:
+    - "src/webui/chat/persistence-stage.ts"
+    - "src/m2/SQLiteAdapter.ts"
+    - "src/app/knowledge/KnowledgeEngine.ts"
+    - "src/m4/household/UUIDGatekeeper.ts"
+    - "src/webui/chat/MeetingContextPipeline.ts"
+  check_keywords:
+    - "belong_entity_uuid"
+    - "UUIDGatekeeper"
+    - "resolveBelongUUID"
+    - "black_diamond"
+  database_check:
+    db_path: "data/webui/fusion_memory.db"
+    queries:
+      - "SELECT COUNT(*) FROM memories"
+      - "SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''"
+      - "SELECT COUNT(*) FROM conversations"
+      - "SELECT COUNT(*) FROM conversations WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''"
+  golden_file: "golden/uuid-ownership.yaml"

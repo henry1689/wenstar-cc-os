@@ -1,0 +1,13 @@
+workflow:
+  id: "low-risk-change"
+  title: "低风险变更工作流"
+  risk_level: "low"
+  require_plan: false
+  required_redlines: []
+  required_meters: []
+  required_commands:
+    - "typecheck"
+  required_evidence:
+    - "tsc_compile_pass"
+  gate:
+    block_on_fail: false

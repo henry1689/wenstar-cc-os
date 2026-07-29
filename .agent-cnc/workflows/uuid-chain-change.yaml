@@ -1,0 +1,21 @@
+workflow:
+  id: "uuid-chain-change"
+  title: "UUID 归属链变更工作流"
+  risk_level: "high"
+  require_plan: true
+  required_redlines:
+    - "uuid-ownership-rules"
+  required_meters:
+    - "uuid-meter"
+    - "persist-meter"
+  required_commands:
+    - "typecheck"
+  required_evidence:
+    - "tsc_compile_pass"
+    - "change_plan_exists"
+    - "uuid_ownership_meter_pass"
+    - "annotation_rate_not_dropped"
+    - "4_write_paths_verified"
+    - "4_read_paths_verified"
+  gate:
+    block_on_fail: true

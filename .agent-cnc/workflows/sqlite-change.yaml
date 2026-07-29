@@ -1,0 +1,21 @@
+workflow:
+  id: "sqlite-change"
+  title: "SQLite 持久化变更工作流"
+  risk_level: "high"
+  require_plan: true
+  required_redlines:
+    - "sqlite-persistence-rules"
+    - "uuid-ownership-rules"
+  required_meters:
+    - "persist-meter"
+    - "uuid-meter"
+  required_commands:
+    - "typecheck"
+  required_evidence:
+    - "tsc_compile_pass"
+    - "change_plan_exists"
+    - "persist_meter_pass"
+    - "restart_verification_completed"
+    - "annotation_rate_not_dropped"
+  gate:
+    block_on_fail: true

@@ -1,0 +1,19 @@
+meter:
+  id: "fg-meter"
+  title: "FamilyGraph 完整性检查"
+  severity: "S"
+  description: "检查 FamilyGraph.ts 的 nodes/edges/properties/dossier/relationToLabel 结构"
+  type: "static_grep"
+  check_files:
+    - "src/m4/household/FamilyGraph.ts"
+    - "src/m4/household/FamilyGraphRoleBranch.ts"
+  check_keywords:
+    - "nodes"
+    - "edges"
+    - "properties"
+    - "dossier"
+    - "relationToLabel"
+    - "uuid"
+    - "_realFg"
+    - "_fgX"
+  golden_file: null

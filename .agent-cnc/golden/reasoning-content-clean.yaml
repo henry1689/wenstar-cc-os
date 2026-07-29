@@ -1,0 +1,11 @@
+golden_case:
+  id: "reasoning-content-clean"
+  title: "LLM reasoning_content 清洗验证"
+  severity: "S"
+  description: "LLM 返回的 reasoning_content 不得泄露给最终用户"
+  check_items:
+    - "reasoning_content 在 Stream 模式下被拦截和丢弃"
+    - "reasoning_content 在非 Stream 模式下被过滤"
+    - "最终输出不含 'thinking' 或 'chain_of_thought' 标记"
+    - "MockLLMProvider 的行为与 DeepSeekLLMProvider 一致"
+    - "流式输出中止时残留的 reasoning_content 标记被清理"

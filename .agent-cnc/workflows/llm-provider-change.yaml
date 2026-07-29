@@ -1,0 +1,21 @@
+workflow:
+  id: "llm-provider-change"
+  title: "LLM Provider 变更工作流"
+  risk_level: "high"
+  require_plan: true
+  required_redlines:
+    - "llm-provider-rules"
+  required_meters:
+    - "llm-meter"
+    - "prompt-meter"
+  required_commands:
+    - "typecheck"
+  required_evidence:
+    - "tsc_compile_pass"
+    - "change_plan_exists"
+    - "llm_meter_pass"
+    - "reasoning_content_clean_verified"
+    - "retry_logic_intact"
+    - "prompt_assembly_order_verified"
+  gate:
+    block_on_fail: true

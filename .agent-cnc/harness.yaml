@@ -1,0 +1,136 @@
+agent_cnc_harness:
+  version: "0.1"
+  project: "WenStarOS"
+
+  commands:
+    typecheck: "npx tsc --noEmit"
+    test_all: "npx vitest run"
+    health_check: "npx tsx src/cli/health-check.ts"
+    sandbox: "npx tsx src/cli/sandbox.ts"
+
+  trigger_workflows:
+    - id: "chat_ts_change"
+      when_any_changed:
+        - "src/webui/chat.ts"
+        - "src/webui/chat/**"
+        - "src/m5/prompts/core-rules.ts"
+        - "src/engine/tianquan/prefrontal/PrefrontalCortex.ts"
+      workflow: "workflows/chat-ts-change.yaml"
+      meters:
+        - "prompt-meter"
+        - "meeting-mode-meter"
+        - "behavior-meter"
+
+    - id: "familygraph_change"
+      when_any_changed:
+        - "src/m4/household/FamilyGraph.ts"
+        - "src/m4/household/FamilyGraphRoleBranch.ts"
+        - "src/m4/household/EntityContextBuilder.ts"
+        - "src/m4/household/ProfileAcquisitionEngine.ts"
+      workflow: "workflows/familygraph-change.yaml"
+      meters:
+        - "fg-meter"
+        - "roleplay-isolation-meter"
+        - "uuid-meter"
+
+    - id: "uuid_chain_change"
+      when_any_changed:
+        - "src/webui/chat/persistence-stage.ts"
+        - "src/m2/SQLiteAdapter.ts"
+        - "scripts/safe-backfill.cjs"
+        - "src/app/knowledge/KnowledgeEngine.ts"
+        - "src/webui/chat/MeetingContextPipeline.ts"
+        - "src/m4/household/UUIDGatekeeper.ts"
+      workflow: "workflows/uuid-chain-change.yaml"
+      meters:
+        - "uuid-meter"
+        - "persist-meter"
+
+    - id: "meeting_mode_change"
+      when_any_changed:
+        - "src/m4/household/EntityMeeting.ts"
+        - "src/m4/household/EntityContextBuilder.ts"
+        - "src/webui/chat/MeetingContextPipeline.ts"
+        - "src/webui/chat.ts"
+      workflow: "workflows/meeting-mode-change.yaml"
+      meters:
+        - "meeting-mode-meter"
+        - "uuid-meter"
+        - "behavior-meter"
+
+    - id: "roleplay_change"
+      when_any_changed:
+        - "src/app/role/**"
+        - "src/app/persona/**"
+        - "src/m4/household/FamilyGraphRoleBranch.ts"
+        - "src/**/RoleplayPromptBuilder.ts"
+        - "src/**/PromptAssembler.ts"
+      workflow: "workflows/roleplay-change.yaml"
+      meters:
+        - "roleplay-isolation-meter"
+        - "fg-meter"
+        - "behavior-meter"
+
+    - id: "sqlite_change"
+      when_any_changed:
+        - "src/m2/SQLiteAdapter.ts"
+        - "src/m2/FusionStorageAdapter.ts"
+        - "src/**/ConversationDB.ts"
+        - "src/webui/chat/persistence-stage.ts"
+        - "scripts/**"
+      workflow: "workflows/sqlite-change.yaml"
+      meters:
+        - "persist-meter"
+        - "uuid-meter"
+
+    - id: "llm_provider_change"
+      when_any_changed:
+        - "src/m5/DeepSeekLLMProvider.ts"
+        - "src/m5/MockLLMProvider.ts"
+        - "src/m5/M5Orchestrator.ts"
+        - "src/m5/CognitionAssembler.ts"
+        - "src/m5/StrategySelector.ts"
+        - "src/m5/prompts/**"
+      workflow: "workflows/llm-provider-change.yaml"
+      meters:
+        - "llm-meter"
+        - "prompt-meter"
+
+    - id: "python_domain_change"
+      when_any_changed:
+        - "domain_tianquan/**"
+        - "domain_yaoling/**"
+        - "domain_yaoguang/**"
+        - "global_bus_main.py"
+      workflow: "workflows/python-domain-change.yaml"
+      meters:
+        - "python-domain-meter"
+
+  gates:
+    block_on:
+      - "schema_invalid"
+      - "s_severity_meter_failed"
+      - "missing_required_evidence"
+      - "high_risk_without_plan"
+      - "database_change_without_restart_audit"
+      - "chat_change_without_prompt_meter"
+      - "fg_change_without_roleplay_redline_check"
+      - "uuid_change_without_ownership_meter"
+
+  autonomy:
+    default_level: "A2"
+    max_level: "A4"
+    allow_auto_patch_for:
+      - "docs"
+      - "tests"
+      - "types"
+      - "config"
+      - "low_risk_logging"
+    require_human_approval_for:
+      - "chat_ts_change"
+      - "familygraph_change"
+      - "sqlite_change"
+      - "uuid_chain_change"
+      - "roleplay_policy_change"
+      - "meeting_mode_change"
+      - "python_cross_domain_policy_change"

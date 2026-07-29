@@ -1,0 +1,29 @@
+redlines:
+  id: "llm-provider-rules"
+  severity: "S"
+  description: "LLM Provider 规则 —— 输出清洁性、错误回退、提示词完整性"
+
+  rules:
+    - "reasoning_content 必须在最终输出前被清洗，不得泄露给用户"
+    - "API 调用失败必须重试（至少 2 次，指数退避）"
+    - "重试耗尽后必须有错误回退策略（MockLLMProvider 或降级响应）"
+    - "提示词拼装顺序不可变：system → PFC → persona → role → meeting → memory → knowledge → M6 → M8"
+    - "最终输出不得包含思维链（chain-of-thought）、内部推理步骤"
+    - "流式输出中止时必须清理残留的 reasoning_content 标记"
+    - "MockLLMProvider 必须保持与 DeepSeekLLMProvider 返回格式一致"
+
+  critical_files:
+    - "src/m5/DeepSeekLLMProvider.ts"
+    - "src/m5/MockLLMProvider.ts"
+    - "src/m5/M5Orchestrator.ts"
+    - "src/m5/CognitionAssembler.ts"
+    - "src/m5/StrategySelector.ts"
+    - "src/m5/prompts/"
+
+  output_cleanliness:
+    check_keywords:
+      - "reasoning_content"
+      - "thinking"
+      - "chain_of_thought"
+      - "internal_monologue"
+    rule: "以上任一关键词出现在最终用户可见输出中 = FAIL"

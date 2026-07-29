@@ -232,12 +232,14 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
   } catch (err) { console.warn('[EmotionContagion] 检索失败:', err); }
 
   // ── V11.0: 统一语义搜索 — n-gram初筛 + 自有32D向量精排（替代旧LIKE黑钻检索） ──
+  // ── V13.0: WS_SEARCH_V13=true 时走七层仿生管线 ──
+  const WS_SEARCH_V13 = true; // 硬编码开启，绕过 env 加载问题
+  console.error('[RETRIEVAL-STAGE-V13] ENTERED runRetrieval, WS_SEARCH_V13=' + WS_SEARCH_V13 + ' m4=' + !!ctx.m4 + ' retrieveFn=' + !!(ctx.m4?.retrieveMultiRankForSearch));
   try {
     if (message.trim().length > 1) {
       const _sqlite = ctx.storage.getSQLite();
       if (_sqlite && typeof _sqlite.queryAll === 'function') {
-        const { search: unifiedSearch } = await import('../../m4/UnifiedSearchEngine.js');
-        // 收集当前活跃的实体UUID（用于实体隔离过滤）
+        // 收集当前活跃的实体UUID
         const _activeUuids: string[] = [];
         try {
           if (ctx.m4?.getFamilyGraph) {
@@ -254,27 +256,91 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           }
         } catch { /* entity UUID收集不阻塞 */ }
 
-        const _dbResult = unifiedSearch(_sqlite.rawDb || _sqlite, message, p, {
-          mode: isTopicShift ? 'full' : 'balanced',
-          entityUuids: _activeUuids.length > 0 ? _activeUuids : undefined,
-          limit: isTopicShift ? 6 : 3,
-          includeKnowledgeBase: true,
-        });
+        let _v13Result: any = null;
+        let _dbResult: any = null;
 
-        // 注入搜索结果到 memoryFragments
-        for (const _item of _dbResult.items) {
-          if (!memoryFragments.some(f => f.includes(_item.substring(0, 40)))) {
-            memoryFragments.push(_item.startsWith('💎') ? `【珍藏记忆】${_item.substring(1).trim()}` : _item);
+        // ── V13 七层仿生管线 ──
+        if (WS_SEARCH_V13 && ctx.m4?.retrieveMultiRankForSearch) {
+          try {
+            const { searchV13: v13Search } = await import('../../m4/UnifiedSearchEngine.js');
+            const { MemoryAssociationRepository } = await import('../../m4/graph/MemoryAssociationRepository.js');
+
+            const _locusPath = (dna as any).locus_path || 'default';
+            const _entities = dna.entity_genes.map((g: any) => ({ name: g.name, type: g.type }));
+            const _personUuids = _entities.filter((e: any) => e.type === 'person' && e.name !== '我')
+              .map((e: any) => { try { return ctx.m4?.getFamilyGraph?.()?.getUUIDByName?.(e.name); } catch { return null; } })
+              .filter(Boolean) as string[];
+
+            const _multiRank = await ctx.m4.retrieveMultiRankForSearch(_locusPath, _entities, {
+              perception: p,
+              entityUuids: _personUuids.length > 0 ? _personUuids : _activeUuids,
+              sessionId: ctx.sessionId,
+            });
+
+            // 🔴 DAG Repo 必须用 SQLiteAdapter 实例（有 queryAll 方法），不能用 rawDb
+            const _dagRepo = new MemoryAssociationRepository(_sqlite);
+
+            _v13Result = await v13Search(
+              _sqlite.rawDb || _sqlite, _multiRank, message, p,
+              {
+                mode: isTopicShift ? 'full' : 'balanced',
+                entityUuids: _activeUuids.length > 0 ? _activeUuids : undefined,
+                limit: isTopicShift ? 6 : 3,
+                includeKnowledgeBase: true,
+              },
+              {
+                enableRRF: true,
+                enableDAGClosure: true,
+                enableCrossEncoder: true,
+                enableForesightFilter: true,
+                enableMMR: true,
+                enableNarrativeAssembler: true,
+              },
+              _dagRepo,
+            );
+
+            // 注入 V13 叙事或普通结果到 memoryFragments
+            if (_v13Result.narrative?.compactText) {
+              memoryFragments.push(_v13Result.narrative.compactText);
+            }
+            for (const _item of _v13Result.items) {
+              if (!memoryFragments.some(f => f.includes(_item.substring(0, 40)))) {
+                memoryFragments.push(_item.startsWith('💎') ? `【珍藏记忆】${_item.substring(1).trim()}` : _item);
+              }
+            }
+            if (_v13Result.items.length > 0) {
+              console.log(`[searchV13] 七层管线 → ${_v13Result.totalCandidates}候选 → ${_v13Result.items.length}条 | layers: ${JSON.stringify(_v13Result.layerLatency)}`);
+            }
+          } catch (_v13Err) {
+            console.warn('[searchV13] 七层管线异常, 降级到 V11:', (_v13Err as Error)?.message);
+            // V13 失败 → 自动回退到 V11
           }
         }
-        if (_dbResult.items.length > 0) {
-          console.log(`[UnifiedSearch] n-gram→${_dbResult.totalCandidates}候选→向量精排${_dbResult.raw.length}条→注入${_dbResult.items.length}条 | ${JSON.stringify(_dbResult.hitsBySource)}`);
+
+        // ── V11 旧管线（默认 / V13 失败降级） ──
+        if (!WS_SEARCH_V13 || !ctx.m4?.retrieveMultiRankForSearch) {
+          const { search: unifiedSearch } = await import('../../m4/UnifiedSearchEngine.js');
+          _dbResult = unifiedSearch(_sqlite.rawDb || _sqlite, message, p, {
+            mode: isTopicShift ? 'full' : 'balanced',
+            entityUuids: _activeUuids.length > 0 ? _activeUuids : undefined,
+            limit: isTopicShift ? 6 : 3,
+            includeKnowledgeBase: true,
+          });
+
+          for (const _item of _dbResult.items) {
+            if (!memoryFragments.some(f => f.includes(_item.substring(0, 40)))) {
+              memoryFragments.push(_item.startsWith('💎') ? `【珍藏记忆】${_item.substring(1).trim()}` : _item);
+            }
+          }
+          if (_dbResult.items.length > 0) {
+            console.log(`[UnifiedSearch] n-gram→${_dbResult.totalCandidates}候选→向量精排${_dbResult.raw.length}条→注入${_dbResult.items.length}条 | ${JSON.stringify(_dbResult.hitsBySource)}`);
+          }
         }
 
-        // 更新召回计数
-        for (const _r of _dbResult.raw.slice(0, 3)) {
+        // 更新召回计数（V13/V11 共用）
+        for (const _r of (_v13Result?.raw || _dbResult?.raw || []).slice(0, 3)) {
           try {
-            if (_r.item.source === 'black_diamond') {
+            if (_r.item?.source === 'black_diamond') {
               _sqlite.writeRaw?.('UPDATE black_diamond SET recall_count = recall_count + 1, updated_at = ? WHERE id = ?',
                 [new Date().toISOString(), _r.item.id]);
             }

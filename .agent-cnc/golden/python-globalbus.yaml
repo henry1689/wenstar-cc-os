@@ -1,0 +1,13 @@
+golden_case:
+  id: "python-globalbus"
+  title: "Python GlobalBus 协议完整性验证"
+  severity: "A"
+  description: "Python 三域间通信必须符合 GlobalBus TCP JSON-line 协议"
+  check_items:
+    - "req_id 在请求-响应对中正确匹配"
+    - "TTL 初始值为 3 且在每次跨域递减"
+    - "域不能消费自己发布的消息"
+    - "RouteStamp CRC 校验通过才算有效消息"
+    - "MH-1 天权不允许被跨域直接调用"
+    - "MH-4 BIOS 核心不响应 LLM 写入请求"
+    - "瑶灵 guard DENY 不可被绕过"

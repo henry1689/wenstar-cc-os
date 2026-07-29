@@ -11,7 +11,13 @@
     "sandbox": "npx tsx src/cli/sandbox.ts",
     "stress-test": "npx tsx test/run-all-stress.ts",
     "webui": "node start.cjs",
-    "health": "npx tsx src/cli/health-check.ts"
+    "health": "npx tsx src/cli/health-check.ts",
+    "agent-cnc": "tsx src/agent-cnc/cli.ts",
+    "agent-cnc:doctor": "tsx src/agent-cnc/cli.ts doctor",
+    "agent-cnc:scan": "tsx src/agent-cnc/cli.ts scan",
+    "agent-cnc:validate": "tsx src/agent-cnc/cli.ts validate",
+    "agent-cnc:guard": "tsx src/agent-cnc/cli.ts guard",
+    "agent-cnc:report": "tsx src/agent-cnc/cli.ts report"
   },
   "devDependencies": {
     "@types/busboy": "^1.5.4",
@@ -21,7 +27,8 @@
     "tsx": "^4.22.4",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "yaml": "^2.9.0"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

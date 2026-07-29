@@ -1,0 +1,71 @@
+redlines:
+  id: "chat-injection-points"
+  severity: "S"
+  description: "finalKnowledgeText 22 个注入点，按顺序排列"
+  injection_points:
+    - order: 1
+      key: "PFC_unified_context"
+      description: "前额叶统一上下文门控结果"
+    - order: 2
+      key: "system_prompt"
+      description: "系统提示词基础框架"
+    - order: 3
+      key: "persona_header"
+      description: "人设头部（身份+性格+语气）"
+    - order: 4
+      key: "role_hint"
+      description: "角色扮演提示（_currentRoleplay 注入）"
+    - order: 5
+      key: "meeting_identity"
+      description: "会晤模式身份（_meetingEntityName）"
+    - order: 6
+      key: "dna_identity_block"
+      description: "M1 DNA 身份编码块"
+    - order: 7
+      key: "memory_context"
+      description: "M2 记忆检索注入"
+    - order: 8
+      key: "family_constraint"
+      description: "FG 家族图谱约束（血缘/婚姻/社交）"
+    - order: 9
+      key: "knowledge_context"
+      description: "M4 知识引擎上下文"
+    - order: 10
+      key: "m6_self_model"
+      description: "M6 自我模型注入"
+    - order: 11
+      key: "m8_annual_ring"
+      description: "M8 年轮引擎上下文"
+    - order: 12
+      key: "engine_context"
+      description: "EngineContext 通用上下文"
+    - order: 13
+      key: "perception_snapshot"
+      description: "M3 感知快照（当前话题/情绪）"
+    - order: 14
+      key: "strategy_instruction"
+      description: "M5 策略选择器指令"
+    - order: 15
+      key: "cognition_assembled"
+      description: "M5 认知组装结果"
+    - order: 16
+      key: "user_message"
+      description: "用户消息（原始+预处理后）"
+    - order: 17
+      key: "chat_history"
+      description: "最近对话历史摘要"
+    - order: 18
+      key: "tool_call_context"
+      description: "工具调用上下文（如果需要）"
+    - order: 19
+      key: "response_format_hint"
+      description: "输出格式约束"
+    - order: 20
+      key: "safety_gate"
+      description: "安全门控（拒绝/允许/改写）"
+    - order: 21
+      key: "token_budget_hint"
+      description: "Token 预算提示"
+    - order: 22
+      key: "final_assembled_context"
+      description: "最终组装的完整上下文"

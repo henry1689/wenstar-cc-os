@@ -1,0 +1,83 @@
+project_genome:
+  schema_version: "0.1"
+
+  project:
+    name: "WenStarOS"
+    category: "AI companion operating system"
+    stage: "prototype"
+    description: >
+      WenStarOS 是一个面向长期记忆、人格一致性、会晤模式、
+      家族图谱、角色隔离、SQLite 持久化和未来 Python 三域后端的 AI 伴侣操作系统。
+
+  architecture:
+    dual_projects:
+      - id: "wenstar_cc"
+        language: "typescript"
+        runtime: "Node.js 22"
+        port: 3000
+        description: "当前运行态主程序"
+      - id: "wenstar_os"
+        language: "python"
+        runtime: "Python 3.13"
+        port: 9100
+        description: "未来三域后端"
+
+    core_pipelines:
+      - "M1 DNA编码"
+      - "M2 记忆存储"
+      - "M3 24D感知"
+      - "M4 知识融合 / FamilyGraph"
+      - "M5 表达生成 / LLM"
+      - "M6 自我模型"
+      - "M7 梦境引擎"
+      - "M8 年轮引擎"
+      - "M9 工作记忆"
+
+  critical_assets:
+    - id: "identity_consistency"
+      name: "身份一致性"
+      severity: "S"
+    - id: "memory_ownership"
+      name: "记忆归属正确性"
+      severity: "S"
+    - id: "family_graph_integrity"
+      name: "FamilyGraph 户籍完整性"
+      severity: "S"
+    - id: "roleplay_isolation"
+      name: "角色扮演隔离"
+      severity: "S"
+    - id: "meeting_mode_isolation"
+      name: "会晤模式隔离"
+      severity: "S"
+    - id: "sqlite_persistence"
+      name: "SQLite 持久化可靠性"
+      severity: "S"
+    - id: "prompt_integrity"
+      name: "Prompt 注入完整性"
+      severity: "S"
+    - id: "llm_output_cleanliness"
+      name: "LLM 输出清洁性"
+      severity: "S"
+    - id: "python_domain_isolation"
+      name: "Python 三域隔离"
+      severity: "A"
+
+  intolerable_failures:
+    - id: "identity_conflict"
+      severity: "S"
+      block_release: true
+    - id: "uuid_misownership"
+      severity: "S"
+      block_release: true
+    - id: "fg_pollution"
+      severity: "S"
+      block_release: true
+    - id: "role_state_residue"
+      severity: "S"
+      block_release: true
+    - id: "sqlite_restart_loss"
+      severity: "S"
+      block_release: true
+    - id: "reasoning_content_leak"
+      severity: "S"
+      block_release: true

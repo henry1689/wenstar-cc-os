@@ -1,0 +1,47 @@
+redlines:
+  id: "uuid-ownership-rules"
+  severity: "S"
+  description: "UUID 归属规则 —— 所有数据必须带有正确的 belong_entity_uuid"
+
+  write_paths:
+    - path: "chat.ts persistence-stage → saveConversation"
+      fields: ["belong_entity_uuid", "entity_uuid", "conversation_id"]
+    - path: "KnowledgeEngine.ts → ingestKnowledge"
+      fields: ["belong_entity_uuid", "knowledge_id"]
+    - path: "SQLiteAdapter.ts → save"
+      fields: ["belong_entity_uuid", "memory_id"]
+    - path: "FamilyGraph.ts → addNode/addEdge"
+      fields: ["entity_uuid", "owner_uuid"]
+
+  read_paths:
+    - path: "MemoryRetriever.ts → query"
+      fields: ["belong_entity_uuid"]
+    - path: "KnowledgeContextBuilder.ts → buildContext"
+      fields: ["belong_entity_uuid"]
+    - path: "UUIDGatekeeper.ts → resolveBelongUUID"
+      fields: ["belong_entity_uuid"]
+    - path: "FamilyGraph.ts → getNode/getEdges"
+      fields: ["entity_uuid"]
+
+  database_fields:
+    - table: "memories"
+      fields: ["belong_entity_uuid", "entity_uuid", "memory_id"]
+    - table: "conversations"
+      fields: ["belong_entity_uuid", "entity_uuid", "conversation_id"]
+    - table: "knowledge"
+      fields: ["belong_entity_uuid", "knowledge_id"]
+
+  garbage_uuid_blacklist:
+    - "black_diamond"
+    - "00000000-0000-0000-0000-000000000000"
+    - "unknown"
+    - "undefined"
+    - ""
+    - "null"
+
+  annotation_rate_check:
+    target_table: "memories"
+    query_non_null: "SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''"
+    query_total: "SELECT COUNT(*) FROM memories"
+    threshold_warn: 0.95
+    threshold_fail: 0.80

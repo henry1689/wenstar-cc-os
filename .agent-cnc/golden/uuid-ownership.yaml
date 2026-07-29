@@ -1,0 +1,11 @@
+golden_case:
+  id: "uuid-ownership"
+  title: "UUID 归属正确性验证"
+  severity: "S"
+  description: "所有数据记录的 belong_entity_uuid 必须正确且非空"
+  check_items:
+    - "memories 表的 belong_entity_uuid 标注率 ≥ 95%"
+    - "conversations 表的 belong_entity_uuid 标注率 ≥ 95%"
+    - "UUIDGatekeeper 正确解析所有 4 条写入路径的 belong_entity_uuid"
+    - "垃圾 UUID（black_diamond、全零、空字符串）不出现在 belong_entity_uuid 字段"
+    - "标注率异常下降不超过 5%"

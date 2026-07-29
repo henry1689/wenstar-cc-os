@@ -1,0 +1,20 @@
+meter:
+  id: "python-domain-meter"
+  title: "Python 三域隔离检查"
+  severity: "A"
+  description: "检查 Python 三域的 GlobalBus 协议和跨域隔离"
+  type: "static_grep"
+  check_files:
+    - "domain_tianquan/"
+    - "domain_yaoling/"
+    - "domain_yaoguang/"
+    - "global_bus_main.py"
+  check_keywords:
+    - "TTL"
+    - "req_id"
+    - "allow_cross_domain"
+    - "RouteStamp"
+    - "MH-1"
+    - "MH-4"
+    - "guard DENY"
+  golden_file: "golden/python-globalbus.yaml"

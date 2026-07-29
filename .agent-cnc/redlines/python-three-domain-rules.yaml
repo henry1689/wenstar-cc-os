@@ -1,0 +1,32 @@
+redlines:
+  id: "python-three-domain-rules"
+  severity: "A"
+  description: "Python 三域（天权/瑶灵/瑶光）隔离与通信规则"
+
+  rules:
+    - "GlobalBus TCP JSON-line 协议：所有跨域通信必须通过 GlobalBus"
+    - "req_id 必须唯一且可匹配请求-响应对"
+    - "TTL=3：每条消息最多跨 3 个域，超限丢弃"
+    - "域不能收到自己发布的消息（发者不消费自己的消息）"
+    - "MH-1 天权（domain_tianquan）：不允许被跨域直接调用，只能通过 GlobalBus 订阅"
+    - "MH-4 BIOS 核心：拒绝 LLM 写入，只能读取 BIOS 状态"
+    - "瑶灵 guard DENY 不可绕过：瑶灵（domain_yaoling）的安全门控不可被任何域绕过"
+    - "瑶光不混入主观情绪：瑶光（domain_yaoguang）输出必须是客观分析，不含情绪标注"
+    - "RouteStamp CRC：每次跨域消息必须带 RouteStamp，校验 CRC 完整性"
+
+  critical_files:
+    - "domain_tianquan/"
+    - "domain_yaoling/"
+    - "domain_yaoguang/"
+    - "global_bus_main.py"
+
+  cross_domain_check:
+    check_keywords:
+      - "TTL"
+      - "req_id"
+      - "allow_cross_domain"
+      - "RouteStamp"
+      - "MH-1"
+      - "MH-4"
+      - "guard DENY"
+    rule: "跨域通信必须包含 TTL、req_id、RouteStamp 三个字段"

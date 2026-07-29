@@ -1,0 +1,11 @@
+golden_case:
+  id: "persistence-restart"
+  title: "SQLite 持久化重启验证"
+  severity: "S"
+  description: "停服→重启后，所有数据必须完整可恢复"
+  check_items:
+    - "停止服务前记录 fusion_memory.db 的文件大小和记录数"
+    - "重启服务后 memories 表记录数不减少"
+    - "重启服务后 conversations 表记录数不减少"
+    - "scheduleFlush 防抖落盘在停服时触发最终 flush"
+    - "export() 导出格式与 save() 写入格式一致"

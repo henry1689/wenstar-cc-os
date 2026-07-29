@@ -1,0 +1,16 @@
+meter:
+  id: "persist-meter"
+  title: "SQLite 持久化检查"
+  severity: "S"
+  description: "检查 SQLiteAdapter 的 save/scheduleFlush/export 方法"
+  type: "static_grep"
+  check_files:
+    - "src/m2/SQLiteAdapter.ts"
+    - "src/m2/FusionStorageAdapter.ts"
+    - "src/webui/chat/persistence-stage.ts"
+  check_keywords:
+    - "save()"
+    - "scheduleFlush"
+    - "export()"
+    - "single_instance"
+  golden_file: "golden/persistence-restart.yaml"

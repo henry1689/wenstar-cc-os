@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-07-28T03:39:23.446Z",
+  "searchIndexCount": 676571,
+  "edgeCount": 673,
+  "memCount": 1587,
+  "globalUidFill": 1,
+  "entityUuidFill": 0.3440453686200378,
+  "edgeTypes": {
+    "causal": 12,
+    "emotion": 76,
+    "entity": 519,
+    "semantic": 66
+  },
+  "dbSizeMB": 79.390625
+}

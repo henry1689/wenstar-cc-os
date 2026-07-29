@@ -1,0 +1,11 @@
+golden_case:
+  id: "meeting-identity"
+  title: "会晤模式身份隔离验证"
+  severity: "S"
+  description: "会晤模式下 _meetingEntityName 必须在 12 个传播点正确传递"
+  check_items:
+    - "chat.ts finalKnowledgeText 中包含正确的 _meetingEntityName"
+    - "PFC 上下文门控使用正确的会晤实体名过滤"
+    - "SSE 事件流中的身份与会晤实体一致"
+    - "持久化时的 belong_entity_uuid 与会晤实体一致"
+    - "会晤结束后的消息不属于会晤实体"

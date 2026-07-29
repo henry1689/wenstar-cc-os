@@ -1,0 +1,18 @@
+workflow:
+  id: "python-domain-change"
+  title: "Python 三域变更工作流"
+  risk_level: "high"
+  require_plan: true
+  required_redlines:
+    - "python-three-domain-rules"
+  required_meters:
+    - "python-domain-meter"
+  required_commands: []
+  required_evidence:
+    - "change_plan_exists"
+    - "python_domain_meter_pass"
+    - "globalbus_protocol_intact"
+    - "TTL_req_id_RouteStamp_verified"
+    - "cross_domain_isolation_verified"
+  gate:
+    block_on_fail: true

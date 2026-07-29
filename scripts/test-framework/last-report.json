@@ -1,0 +1,708 @@
+{
+  "timestamp": "2026-07-28T07:26:34.980Z",
+  "elapsed": "0.3",
+  "scores": {
+    "D1": 78.57142857142857,
+    "D2": 55.161982243172346,
+    "D3": 100,
+    "D4": 90.9090909090909,
+    "D5": 100,
+    "D6": 85.71428571428571,
+    "D7": 25,
+    "D8": 100,
+    "D9": 100,
+    "D10": 75
+  },
+  "weightedScore": 69.52426179455932,
+  "grade": "🟡 C",
+  "results": {
+    "D1": [
+      {
+        "label": "表 memories 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 conversations 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 knowledge_base 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 search_index 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 memory_associations 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 state_spines 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 atom_address_timeline 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "表 entity_relations 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "search_index > 200000 条",
+        "pass": true,
+        "detail": "684449 条"
+      },
+      {
+        "label": "global_uid 填充率 > 95%",
+        "pass": false,
+        "detail": "0%"
+      },
+      {
+        "label": "belong_entity_uuid 填充率 > 30%",
+        "pass": false,
+        "detail": "0%"
+      },
+      {
+        "label": "memory_associations > 200 条边",
+        "pass": true,
+        "detail": "1509 条"
+      },
+      {
+        "label": "无孤儿边 (source/target 都在 memories 中)",
+        "pass": false,
+        "detail": "1509 条孤儿边"
+      },
+      {
+        "label": "无重复 DAG 边",
+        "pass": true,
+        "detail": "0 组重复"
+      }
+    ],
+    "D2": {
+      "checks": [
+        {
+          "id": "ZM-01",
+          "label": "熊梓铭学术研究",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-ziming"
+          }
+        },
+        {
+          "id": "ZM-02",
+          "label": "纪实小说写书",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-ziming"
+          }
+        },
+        {
+          "id": "ZM-03",
+          "label": "认知科学",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-ziming"
+          }
+        },
+        {
+          "id": "SY-02",
+          "label": "诗韵回家计划",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-shirley"
+          }
+        },
+        {
+          "id": "SY-03",
+          "label": "诗韵工作状态",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-shirley"
+          }
+        },
+        {
+          "id": "YY-01",
+          "label": "玉瑶亲密",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-yaoyao"
+          }
+        },
+        {
+          "id": "YY-02",
+          "label": "玉瑶幸福时刻",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-yaoyao"
+          }
+        },
+        {
+          "id": "HY-01",
+          "label": "鸿艺建议",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-hongyi"
+          }
+        },
+        {
+          "id": "XSY-01",
+          "label": "徐诗雨浴缸",
+          "pass": false,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": "uuid-shiyu"
+          }
+        },
+        {
+          "id": "CROSS-01",
+          "label": "情感关系",
+          "pass": true,
+          "detail": "召回17条, 命中17条, 多样性0.78",
+          "metrics": {
+            "recall": 17,
+            "relevant": 17,
+            "diversity": 0.7760772738318797,
+            "entity": null
+          }
+        },
+        {
+          "id": "CROSS-02",
+          "label": "家庭相关",
+          "pass": true,
+          "detail": "召回40条, 命中39条, 多样性0.89",
+          "metrics": {
+            "recall": 40,
+            "relevant": 39,
+            "diversity": 0.8927464835117729,
+            "entity": null
+          }
+        },
+        {
+          "id": "NEG-01",
+          "label": "不相关查询应少结果",
+          "pass": true,
+          "detail": "召回12条, 命中0条, 多样性0.99",
+          "metrics": {
+            "recall": 12,
+            "relevant": 0,
+            "diversity": 0.9864647007183683,
+            "entity": null
+          }
+        },
+        {
+          "id": "NEG-02",
+          "label": "域外查询应少结果",
+          "pass": true,
+          "detail": "召回0条, 命中0条, 多样性1.00",
+          "metrics": {
+            "recall": 0,
+            "relevant": 0,
+            "diversity": 1,
+            "entity": null
+          }
+        }
+      ],
+      "avgDiversity": 0.9734837275432325,
+      "avgRelevant": 4.3076923076923075
+    },
+    "D4": [
+      {
+        "label": "零逆时边",
+        "pass": true,
+        "detail": "0 条"
+      },
+      {
+        "label": "零自环",
+        "pass": true,
+        "detail": "0 条"
+      },
+      {
+        "label": "边类型 entity 存在",
+        "pass": true,
+        "detail": "1348 条"
+      },
+      {
+        "label": "边类型 semantic 存在",
+        "pass": true,
+        "detail": "66 条"
+      },
+      {
+        "label": "边类型 emotion 存在",
+        "pass": true,
+        "detail": "76 条"
+      },
+      {
+        "label": "边类型 causal 存在",
+        "pass": true,
+        "detail": "19 条"
+      },
+      {
+        "label": "低密度实体 < 30%",
+        "pass": true,
+        "detail": "8/27 个实体边<5条"
+      },
+      {
+        "label": "平均置信度 > 0.6",
+        "pass": true,
+        "detail": "0.817"
+      },
+      {
+        "label": "有记忆实体中有边的比例 > 50%",
+        "pass": false,
+        "detail": "0% (0/0)"
+      },
+      {
+        "label": "无边权重为负",
+        "pass": true,
+        "detail": "0 条"
+      },
+      {
+        "label": "因果边数量合理",
+        "pass": true,
+        "detail": "19 条因果边"
+      }
+    ],
+    "D5": [
+      {
+        "label": "列 memories.is_foresight 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "列 memories.valid_start_ms 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "列 memories.valid_until_ms 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "列 memories.foresight_status 存在",
+        "pass": true,
+        "detail": ""
+      },
+      {
+        "label": "存在 foresight 标记的记忆",
+        "pass": true,
+        "detail": "0 条"
+      },
+      {
+        "label": "foresight_status 值合法",
+        "pass": true,
+        "detail": "无foresight记忆"
+      },
+      {
+        "label": "Foresight 时间窗口合法 (start < until)",
+        "pass": true,
+        "detail": "0 条异常"
+      },
+      {
+        "label": "存在过期 foresight",
+        "pass": true,
+        "detail": "0 条已过期"
+      },
+      {
+        "label": "存在未来 foresight",
+        "pass": true,
+        "detail": "0 条未来"
+      }
+    ],
+    "D6": {
+      "checks": [
+        {
+          "label": "perception_json 填充率 > 80%",
+          "pass": true,
+          "detail": "100%"
+        },
+        {
+          "label": "零向量比例 ≤ 80% (存量数据限制)",
+          "pass": false,
+          "detail": "97% (1539/1587)"
+        },
+        {
+          "label": "向量维度 = 24",
+          "pass": true,
+          "detail": "47 OK / 0 异常"
+        },
+        {
+          "label": "无 NaN/null 向量 (非零向量中)",
+          "pass": true,
+          "detail": "0 个 NaN/null"
+        },
+        {
+          "label": "活跃维度 ≥ 6 (M3稀疏向量特征)",
+          "pass": true,
+          "detail": "6 活跃 / 18 稀疏"
+        },
+        {
+          "label": "向量值范围合理 [-1,1]",
+          "pass": true,
+          "detail": "range check"
+        },
+        {
+          "label": "情绪子空间活跃度 > 80%",
+          "pass": true,
+          "detail": "94%"
+        }
+      ],
+      "dimStats": [
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0.5,
+          "max": 0.55,
+          "mean": 0.5042553191489362
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0.2,
+          "max": 0.2,
+          "mean": 0.19999999999999998
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0.5,
+          "max": 0.5,
+          "mean": 0.5
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": -1,
+          "max": 0.15,
+          "mean": -0.04787234042553192
+        },
+        {
+          "min": 0,
+          "max": 0.15,
+          "mean": 0.01276595744680851
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0.3333333333333333,
+          "mean": 0.0070921985815602835
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0.2,
+          "mean": 0.012765957446808512
+        },
+        {
+          "min": 0,
+          "max": 0.3333333333333333,
+          "mean": 0.0070921985815602835
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        {
+          "min": 0.5,
+          "max": 0.5,
+          "mean": 0.5
+        }
+      ],
+      "zeroVecCount": 1539,
+      "zeroPct": 0.9697542533081286,
+      "nanVecs": 0,
+      "activeDims": 6
+    },
+    "D7": [
+      {
+        "label": "E2E: \"熊梓铭 学术 研究\"",
+        "pass": false,
+        "detail": "0条结果, 多样性N/A",
+        "metrics": {
+          "count": 0,
+          "diversity": 1
+        }
+      },
+      {
+        "label": "E2E: \"诗韵 妈妈 身体\"",
+        "pass": false,
+        "detail": "0条结果, 多样性N/A",
+        "metrics": {
+          "count": 0,
+          "diversity": 1
+        }
+      },
+      {
+        "label": "E2E: \"玉瑶 爱 想你\"",
+        "pass": false,
+        "detail": "0条结果, 多样性N/A",
+        "metrics": {
+          "count": 0,
+          "diversity": 1
+        }
+      },
+      {
+        "label": "E2E: \"情感 关系\"",
+        "pass": true,
+        "detail": "17条结果, 多样性0.78",
+        "metrics": {
+          "count": 17,
+          "diversity": 0.7760772738318797
+        }
+      }
+    ],
+    "D8": [
+      {
+        "label": "边角: \"空查询\"",
+        "pass": true,
+        "detail": "0 条结果"
+      },
+      {
+        "label": "边角: \"单字符查询\"",
+        "pass": true,
+        "detail": "0 条结果"
+      },
+      {
+        "label": "边角: \"纯 Emoji 查询\"",
+        "pass": true,
+        "detail": "0 条结果"
+      },
+      {
+        "label": "边角: \"超长查询 (200字符)\"",
+        "pass": true,
+        "detail": "0 条结果"
+      },
+      {
+        "label": "边角: \"SQL 注入尝试\"",
+        "pass": true,
+        "detail": "4 条结果"
+      },
+      {
+        "label": "边角: \"纯空格查询\"",
+        "pass": true,
+        "detail": "0 条结果"
+      },
+      {
+        "label": "边角: \"重复关键词查询\"",
+        "pass": true,
+        "detail": "48 条结果"
+      },
+      {
+        "label": "边角: \"控制字符查询\"",
+        "pass": true,
+        "detail": "10 条结果"
+      },
+      {
+        "label": "边角: \"布尔运算符查询\"",
+        "pass": true,
+        "detail": "47 条结果"
+      },
+      {
+        "label": "边角: \"全角百分号\"",
+        "pass": true,
+        "detail": "36 条结果"
+      },
+      {
+        "label": "边角: \"日文字符\"",
+        "pass": true,
+        "detail": "16 条结果"
+      },
+      {
+        "label": "边角: \"英文查询\"",
+        "pass": true,
+        "detail": "3 条结果"
+      }
+    ],
+    "D9": {
+      "checks": [
+        {
+          "label": "n-gram 检索 < 50ms",
+          "pass": true,
+          "detail": "1ms"
+        },
+        {
+          "label": "DAG 边查询 < 30ms",
+          "pass": true,
+          "detail": "1ms"
+        },
+        {
+          "label": "闭包展开 < 100ms",
+          "pass": true,
+          "detail": "无种子节点，跳过"
+        },
+        {
+          "label": "DB 文件 < 200MB",
+          "pass": true,
+          "detail": "154MB"
+        },
+        {
+          "label": "LIKE 搜索 < 100ms",
+          "pass": true,
+          "detail": "1ms"
+        },
+        {
+          "label": "数据规模合理",
+          "pass": true,
+          "detail": "memories:1587, conversations:4820"
+        }
+      ],
+      "ngramLatency": 1,
+      "dbSizeMB": 154.015625,
+      "totalMems": 1587,
+      "totalConvs": 4820
+    },
+    "D10": {
+      "snapshot": {
+        "timestamp": "2026-07-28T07:26:34.970Z",
+        "searchIndexCount": 684449,
+        "edgeCount": 1509,
+        "memCount": 1587,
+        "globalUidFill": 0,
+        "entityUuidFill": 0,
+        "edgeTypes": {
+          "causal": 19,
+          "emotion": 76,
+          "entity": 1348,
+          "semantic": 66
+        },
+        "dbSizeMB": 154.015625
+      },
+      "baseline": {
+        "timestamp": "2026-07-28T03:39:23.446Z",
+        "searchIndexCount": 676571,
+        "edgeCount": 673,
+        "memCount": 1587,
+        "globalUidFill": 1,
+        "entityUuidFill": 0.3440453686200378,
+        "edgeTypes": {
+          "causal": 12,
+          "emotion": 76,
+          "entity": 519,
+          "semantic": 66
+        },
+        "dbSizeMB": 79.390625
+      },
+      "hasBaseline": true,
+      "regressions": 1
+    }
+  },
+  "weights": {
+    "D1": 0.1,
+    "D2": 0.25,
+    "D3": 0.15,
+    "D4": 0.1,
+    "D5": 0.05,
+    "D6": 0.05,
+    "D7": 0.2,
+    "D8": 0.05,
+    "D9": 0.03,
+    "D10": 0.02
+  },
+  "dbPath": "D:\\tools\\wenstar-cc\\data\\webui\\fusion_memory.db"
+}

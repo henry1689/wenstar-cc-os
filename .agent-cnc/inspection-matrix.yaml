@@ -1,0 +1,22 @@
+inspection_matrix:
+  version: "0.1"
+  project: "WenStarOS"
+  rows:
+    - spec: "identity_consistency"
+      meters: ["meeting-mode-meter", "behavior-meter", "prompt-meter"]
+    - spec: "memory_ownership"
+      meters: ["uuid-meter", "persist-meter"]
+    - spec: "family_graph_integrity"
+      meters: ["fg-meter", "roleplay-isolation-meter", "uuid-meter"]
+    - spec: "roleplay_isolation"
+      meters: ["roleplay-isolation-meter", "fg-meter", "behavior-meter"]
+    - spec: "meeting_mode_isolation"
+      meters: ["meeting-mode-meter", "uuid-meter", "behavior-meter"]
+    - spec: "sqlite_persistence"
+      meters: ["persist-meter", "uuid-meter"]
+    - spec: "prompt_integrity"
+      meters: ["prompt-meter", "meeting-mode-meter"]
+    - spec: "llm_output_cleanliness"
+      meters: ["llm-meter"]
+    - spec: "python_domain_isolation"
+      meters: ["python-domain-meter"]

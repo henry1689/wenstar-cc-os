@@ -1,0 +1,30 @@
+agent_cnc:
+  version: "0.1"
+  project: "WenStarOS"
+  runtime:
+    mode: "auto"
+    offline_deterministic_guard: true
+    online_llm_enhanced: true
+    fallback_to_offline: true
+
+  llm:
+    enabled: false
+    user_managed_api_key: true
+    providers:
+      - id: "custom-openai-compatible"
+        type: "openai_compatible"
+        base_url_env: "AGENT_CNC_LLM_BASE_URL"
+        api_key_env: "AGENT_CNC_LLM_API_KEY"
+        model_env: "AGENT_CNC_LLM_MODEL"
+    policy:
+      allow_source_code_upload: false
+      allow_docs_upload: true
+      redact_secrets_before_send: true
+      max_tokens_per_run: 200000
+
+  privacy:
+    level: "strict"
+    allow_network: false
+    allow_source_code_upload: false
+    allow_docs_upload: true
+    redact_secrets: true

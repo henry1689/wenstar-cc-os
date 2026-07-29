@@ -1,0 +1,20 @@
+meter:
+  id: "llm-meter"
+  title: "LLM Provider 输出清洁性检查"
+  severity: "S"
+  description: "检查 reasoning_content 清洗逻辑和 retry 机制"
+  type: "static_grep"
+  check_files:
+    - "src/m5/DeepSeekLLMProvider.ts"
+    - "src/m5/MockLLMProvider.ts"
+    - "src/m5/M5Orchestrator.ts"
+  check_keywords:
+    - "reasoning_content"
+    - "retry"
+    - "fallback"
+    - "clean"
+  must_not_leak:
+    - "reasoning_content"
+    - "thinking"
+    - "chain_of_thought"
+  golden_file: "golden/reasoning-content-clean.yaml"

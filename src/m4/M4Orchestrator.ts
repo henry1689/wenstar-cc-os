@@ -14,6 +14,7 @@ import type { M4Context, MemorySummary } from './types/index.js';
 import type { DNA } from "../m1/types/dna.js";
 import type { ScoredMemory } from '../m2/types/index.js';
 import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
+import type { MultiRankResult } from './types/retrieval.js';
 import { getCorrectedRelation } from './household/shared/RelationLabels.js';
 import { MemoryRetriever } from './MemoryRetriever.js';
 import { FamilyGraph } from './household/FamilyGraph.js';
@@ -422,5 +423,19 @@ export class M4Orchestrator {
       console.warn('[M4] retrieveAsSnapshot 失败:', err);
       return null;
     }
+  }
+
+  /** V13: 为七层检索管线提供五路独立排名结果 */
+  async retrieveMultiRankForSearch(
+    locusPath: string,
+    entities: Array<{ name: string; type: string }>,
+    opts?: { perception?: Perception24D; entityUuids?: string[]; sessionId?: string },
+  ): Promise<MultiRankResult> {
+    return this.memoryRetriever.retrieveMultiRank(locusPath, entities, opts);
+  }
+
+  /** V13: 获取底层 SQLite 实例供 DAG 闭包检索使用 */
+  getSQLite(): any {
+    return (this.memoryRetriever as any).storage?.getSQLite?.();
   }
 }

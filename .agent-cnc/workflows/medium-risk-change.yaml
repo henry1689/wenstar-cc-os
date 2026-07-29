@@ -1,0 +1,14 @@
+workflow:
+  id: "medium-risk-change"
+  title: "中风险变更工作流"
+  risk_level: "medium"
+  require_plan: "recommended"
+  required_redlines: []
+  required_meters: []
+  required_commands:
+    - "typecheck"
+  required_evidence:
+    - "tsc_compile_pass"
+    - "plan_recommended"
+  gate:
+    block_on_fail: false

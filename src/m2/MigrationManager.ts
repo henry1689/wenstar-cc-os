@@ -213,6 +213,146 @@ const MIGRATIONS: Migration[] = [
       console.log('[Migration] v7 ✅ V4.0 第二大脑同步字段');
     },
   },
+  // V13.0: DAG 网状记忆骨架 — 内存关联有向边表
+  {
+    version: 8,
+    description: 'V13.0 DAG 记忆关联: memory_associations + dag_retrieval_log',
+    apply: (db: any) => {
+      db.run(`CREATE TABLE IF NOT EXISTS memory_associations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        namespace TEXT NOT NULL DEFAULT 'default',
+        belong_entity_uuid TEXT NOT NULL,
+        source_global_uid TEXT NOT NULL,
+        target_global_uid TEXT NOT NULL,
+        edge_type TEXT NOT NULL,
+        edge_reason TEXT,
+        confidence REAL NOT NULL DEFAULT 0.7,
+        weight REAL NOT NULL DEFAULT 1.0,
+        source_timestamp_ms INTEGER NOT NULL,
+        target_timestamp_ms INTEGER NOT NULL,
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        state_flag TEXT NOT NULL DEFAULT 'active',
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+        CHECK (weight >= 0.0),
+        CHECK (source_timestamp_ms < target_timestamp_ms)
+      )`);
+      try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_assoc_unique ON memory_associations(namespace, belong_entity_uuid, source_global_uid, target_global_uid, edge_type)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memory_assoc_source ON memory_associations(namespace, belong_entity_uuid, source_global_uid, edge_type, confidence)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memory_assoc_target ON memory_associations(namespace, belong_entity_uuid, target_global_uid, edge_type, confidence)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memory_assoc_entity ON memory_associations(namespace, belong_entity_uuid, edge_type, confidence)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memory_assoc_time ON memory_associations(namespace, belong_entity_uuid, source_timestamp_ms, target_timestamp_ms)"); } catch {}
+
+      db.run(`CREATE TABLE IF NOT EXISTS dag_retrieval_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query_hash TEXT NOT NULL,
+        seed_uids TEXT NOT NULL,
+        expanded_uids TEXT NOT NULL,
+        hop_count INTEGER NOT NULL,
+        latency_ms INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      console.log('[Migration] v8 ✅ DAG 记忆关联表');
+    },
+  },
+  // V13.0: Foresight 前瞻时态字段 — memories 表标记计划/承诺/预测类记忆
+  {
+    version: 9,
+    description: 'V13.0 Foresight 时效: memories.is_foresight + valid_start_ms + valid_until_ms + foresight_status',
+    apply: (db: any) => {
+      try { db.run("ALTER TABLE memories ADD COLUMN is_foresight INTEGER NOT NULL DEFAULT 0"); } catch {}
+      try { db.run("ALTER TABLE memories ADD COLUMN valid_start_ms INTEGER"); } catch {}
+      try { db.run("ALTER TABLE memories ADD COLUMN valid_until_ms INTEGER"); } catch {}
+      try { db.run("ALTER TABLE memories ADD COLUMN foresight_status TEXT NOT NULL DEFAULT 'none'"); } catch {}
+      try { db.run("ALTER TABLE memories ADD COLUMN foresight_reason TEXT"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memories_foresight_time ON memories(is_foresight, valid_start_ms, valid_until_ms)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_memories_foresight_status ON memories(foresight_status)"); } catch {}
+      console.log('[Migration] v9 ✅ Foresight 时效字段');
+    },
+  },
+  // 紧急修复: search_index 倒排表从未创建 (n-gram 粗筛层一直空跑)
+  {
+    version: 10,
+    description: '紧急修复: search_index 倒排表 + 存量回填 (n-gram粗筛虚设 → 真实可用)',
+    apply: (db: any) => {
+      db.run(`CREATE TABLE IF NOT EXISTS search_index (
+        term TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        belong_entity_uuid TEXT,
+        position INTEGER DEFAULT 0,
+        PRIMARY KEY (term, source_type, source_id)
+      )`);
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_search_term ON search_index(term)"); } catch {}
+      try { db.run("CREATE INDEX IF NOT EXISTS idx_search_source ON search_index(source_type, source_id)"); } catch {}
+
+      // 存量回填: 所有 memories + conversations + black_diamond + knowledge_base
+      console.log('[Migration] v10 开始存量 n-gram 回填...');
+      let rebuilt = 0;
+
+      // memories
+      try {
+        const rows = db.exec("SELECT id, raw_input FROM memories WHERE raw_input IS NOT NULL");
+        if (rows.length && rows[0].values) {
+          for (const [id, text] of rows[0].values) {
+            if (!text) continue;
+            const cleaned = String(text).replace(/[，。！？、；：""''（）《》【】\s\d-]/g, '').trim();
+            if (cleaned.length < 2) continue;
+            const ngrams = new Set<string>();
+            for (let i = 0; i < cleaned.length - 1; i++) ngrams.add(cleaned.substring(i, i + 2));
+            for (let i = 0; i < cleaned.length - 2; i++) ngrams.add(cleaned.substring(i, i + 3));
+            for (const gram of ngrams) {
+              try { db.run("INSERT OR IGNORE INTO search_index(term, source_type, source_id) VALUES(?,?,?)", [gram, 'memory', String(id)]); rebuilt++; } catch {}
+            }
+          }
+        }
+      } catch (e) { console.warn('[Migration] v10 memories 回填失败:', e); }
+      console.log(`[Migration] v10 memories 回填: ${rebuilt} 条 n-gram`);
+
+      // conversations
+      let convRebuilt = 0;
+      try {
+        const rows = db.exec("SELECT id, content FROM conversations WHERE content IS NOT NULL");
+        if (rows.length && rows[0].values) {
+          for (const [id, text] of rows[0].values) {
+            if (!text) continue;
+            const cleaned = String(text).replace(/[，。！？、；：""''（）《》【】\s\d-]/g, '').trim();
+            if (cleaned.length < 2) continue;
+            const ngrams = new Set<string>();
+            for (let i = 0; i < cleaned.length - 1; i++) ngrams.add(cleaned.substring(i, i + 2));
+            for (let i = 0; i < cleaned.length - 2; i++) ngrams.add(cleaned.substring(i, i + 3));
+            for (const gram of ngrams) {
+              try { db.run("INSERT OR IGNORE INTO search_index(term, source_type, source_id) VALUES(?,?,?)", [gram, 'conversation', String(id)]); convRebuilt++; } catch {}
+            }
+          }
+        }
+      } catch (e) { console.warn('[Migration] v10 conversations 回填失败:', e); }
+      rebuilt += convRebuilt;
+
+      // knowledge_base
+      let kbRebuilt = 0;
+      try {
+        const rows = db.exec("SELECT id, content FROM knowledge_base WHERE content IS NOT NULL");
+        if (rows.length && rows[0].values) {
+          for (const [id, text] of rows[0].values) {
+            if (!text) continue;
+            const cleaned = String(text).replace(/[，。！？、；：""''（）《》【】\s\d-]/g, '').trim();
+            if (cleaned.length < 2) continue;
+            const ngrams = new Set<string>();
+            for (let i = 0; i < cleaned.length - 1; i++) ngrams.add(cleaned.substring(i, i + 2));
+            for (let i = 0; i < cleaned.length - 2; i++) ngrams.add(cleaned.substring(i, i + 3));
+            for (const gram of ngrams) {
+              try { db.run("INSERT OR IGNORE INTO search_index(term, source_type, source_id) VALUES(?,?,?)", [gram, 'knowledge_base', String(id)]); kbRebuilt++; } catch {}
+            }
+          }
+        }
+      } catch (e) { console.warn('[Migration] v10 knowledge_base 回填失败:', e); }
+      rebuilt += kbRebuilt;
+
+      console.log(`[Migration] v10 ✅ search_index 建表 + 存量回填共 ${rebuilt} 条 n-gram`);
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════
@@ -279,4 +419,79 @@ function getCurrentVersion(db: any): number {
 
 function computeChecksum(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 8);
+}
+
+// ═══════════════════════════════════════════
+// 启动期数据完整性修复（每次启动自动执行）
+// ═══════════════════════════════════════════
+
+/**
+ * 启动期数据完整性修复。
+ * 与 schema 迁移不同：这些是运行时数据回填，每次启动都检查。
+ * 幂等：只修 null/缺失项，不覆盖已有数据。
+ */
+export function repairDataIntegrity(db: any): { globalUid: number; entityUuid: number; nullVectors: number } {
+  const result = { globalUid: 0, entityUuid: 0, nullVectors: 0 };
+  const t0 = Date.now();
+
+  // 1. global_uid 回填
+  try {
+    const nullUid = db.exec("SELECT id FROM memories WHERE global_uid IS NULL");
+    if (nullUid.length > 0 && nullUid[0].values.length > 0) {
+      for (const [id] of nullUid[0].values) {
+        const h = createHash('sha256').update(String(id)).digest('hex').substring(0, 8).toUpperCase();
+        db.run("UPDATE memories SET global_uid = ? WHERE id = ?", ['MM' + h, String(id)]);
+        result.globalUid++;
+      }
+      console.log(`[Repair] global_uid 回填: ${result.globalUid} 条`);
+    }
+  } catch (e) { console.warn('[Repair] global_uid 回填失败:', e); }
+
+  // 2. belong_entity_uuid 回填（关键词匹配）
+  try {
+    const PEOPLE: Array<[string, string]> = [
+      ['熊梓铭', 'uuid-ziming'], ['梓铭', 'uuid-ziming'],
+      ['徐诗韵', 'uuid-shirley'], ['诗韵', 'uuid-shirley'],
+      ['玉瑶', 'uuid-yaoyao'], ['瑶瑶', 'uuid-yaoyao'],
+      ['鸿艺', 'uuid-hongyi'],
+      ['梓玥', 'uuid-ziyue'], ['熊梓玥', 'uuid-ziyue'],
+      ['王全芬', 'uuid-wangqf'],
+      ['徐诗雨', 'uuid-shiyu'], ['诗雨', 'uuid-shiyu'],
+    ];
+    for (const [name, uuid] of PEOPLE) {
+      const r = db.exec(
+        "SELECT COUNT(*) FROM memories WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')",
+        [`%${name}%`]
+      );
+      const cnt = r[0]?.values?.[0]?.[0] ?? 0;
+      if (cnt > 0) {
+        db.run(
+          "UPDATE memories SET belong_entity_uuid = ? WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')",
+          [uuid, `%${name}%`]
+        );
+        result.entityUuid += Number(cnt);
+      }
+    }
+    if (result.entityUuid > 0) console.log(`[Repair] belong_entity_uuid 回填: ${result.entityUuid} 条`);
+  } catch (e) { console.warn('[Repair] belong_entity_uuid 回填失败:', e); }
+
+  // 3. null 感知向量 → 零向量
+  try {
+    const nullVecs = db.exec("SELECT id FROM memories WHERE perception_json LIKE '%null%'");
+    if (nullVecs.length > 0 && nullVecs[0].values.length > 0) {
+      const zeros = JSON.stringify(Array(24).fill(0));
+      for (const [id] of nullVecs[0].values) {
+        db.run("UPDATE memories SET perception_json = ? WHERE id = ?", [zeros, String(id)]);
+        result.nullVectors++;
+      }
+      console.log(`[Repair] null 感知向量修复: ${result.nullVectors} 条`);
+    }
+  } catch (e) { console.warn('[Repair] null 向量修复失败:', e); }
+
+  const elapsed = Date.now() - t0;
+  if (result.globalUid > 0 || result.entityUuid > 0 || result.nullVectors > 0) {
+    console.log(`[Repair] 数据完整性修复完成 (${elapsed}ms): global_uid=${result.globalUid} entity_uuid=${result.entityUuid} nullVectors=${result.nullVectors}`);
+  }
+
+  return result;
 }

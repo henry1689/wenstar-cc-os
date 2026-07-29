@@ -1,0 +1,36 @@
+precision_spec:
+  version: "0.1"
+  project: "WenStarOS"
+  specs:
+    - id: "identity_consistency"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "meeting-mode-meter"
+        - "behavior-meter"
+    - id: "memory_ownership"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "uuid-meter"
+    - id: "family_graph_integrity"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "fg-meter"
+        - "roleplay-isolation-meter"
+    - id: "sqlite_persistence"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "persist-meter"
+    - id: "prompt_integrity"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "prompt-meter"
+    - id: "llm_output_cleanliness"
+      severity: "S"
+      block_on_fail: true
+      required_meters:
+        - "llm-meter"

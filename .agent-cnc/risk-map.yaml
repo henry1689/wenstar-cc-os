@@ -1,0 +1,53 @@
+risk_map:
+  version: "0.1"
+
+  high_risk:
+    severity: "S"
+    require_plan: true
+    require_human_approval: true
+    files:
+      - path: "src/webui/chat.ts"
+        reason: "聊天处理中枢，finalKnowledgeText 22 个注入点，跨 M1-M9 管线"
+      - path: "src/m4/household/FamilyGraph.ts"
+        reason: "FamilyGraph 户籍唯一源，nodes/edges/properties 三层结构"
+      - path: "src/webui/server.ts"
+        reason: "HTTP/WS 路由与服务启动中枢"
+      - path: "src/m2/SQLiteAdapter.ts"
+        reason: "SQLite 写入唯一通道，save 防抖落盘"
+      - path: "src/m5/DeepSeekLLMProvider.ts"
+        reason: "LLM API 调用、提示词组装、reasoning_content 清洗"
+      - path: "src/engine/tianquan/prefrontal/PrefrontalCortex.ts"
+        reason: "PFC 统一上下文门控，影响所有 LLM 注入内容"
+
+  medium_risk:
+    severity: "A"
+    require_plan: "recommended"
+    files:
+      - "src/webui/server-observability-routes.ts"
+      - "src/app/knowledge/KnowledgeEngine.ts"
+      - "src/m4/household/ProfileAcquisitionEngine.ts"
+      - "src/m3/PerceptionAnalyzer.ts"
+      - "src/app/vault/VaultManager.ts"
+      - "src/m4/household/EntityMeeting.ts"
+      - "src/app/alignment/VectorAlignmentGuard.ts"
+      - "src/m4/MemoryRetriever.ts"
+      - "src/m7/M7Orchestrator.ts"
+      - "src/app/knowledge/KnowledgeContextBuilder.ts"
+      - "src/m2/FusionStorageAdapter.ts"
+      - "src/webui/chat/retrieval-stage.ts"
+      - "src/m8/M8FusionAdapter.ts"
+      - "src/m4/M4Orchestrator.ts"
+      - "src/m4/household/UUIDGatekeeper.ts"
+      - "src/app/somatic/SomaticMemory.ts"
+
+  low_risk:
+    severity: "B"
+    allow_direct_patch: true
+    path_patterns:
+      - "**/__tests__/**"
+      - "src/config/**"
+      - "src/types/**"
+      - "src/**/types/**"
+      - "src/cli/**"
+      - "src/adapter/**"
+      - "src/common/**"

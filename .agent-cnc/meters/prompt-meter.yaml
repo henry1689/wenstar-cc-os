@@ -1,0 +1,19 @@
+meter:
+  id: "prompt-meter"
+  title: "Prompt 注入完整性检查"
+  severity: "S"
+  description: "检查 chat.ts 中 finalKnowledgeText 的 22 个注入点是否保持正确顺序"
+  type: "static_grep"
+  check_files:
+    - "src/webui/chat.ts"
+  check_keywords:
+    - "finalKnowledgeText"
+    - "PFC"
+    - "roleHint"
+    - "memoryText"
+    - "familyConstraint"
+    - "M6"
+    - "EngineContext"
+    - "_meetingEntityName"
+    - "_currentRoleplay"
+  golden_file: "golden/prompt-injection-order.yaml"
