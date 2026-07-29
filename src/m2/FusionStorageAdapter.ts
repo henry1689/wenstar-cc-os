@@ -79,14 +79,24 @@ export class FusionStorageAdapter {
     // P0-4: 钙化分边界强制校验
     const clampedScore = Math.max(0, Math.min(10, calcium.score));
 
-    // P0-1: 提取FG实体名列表
+    // P0-1: 提取FG实体名列表 + V13: 解析归属UUID
     let fgNames: string | undefined;
+    let belongEntityUuid: string | null = null;
     if (this.familyGraph) {
       try {
         const personNames = (dna.entity_genes || [])
           .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1)
           .map((g: any) => g.name);
-        if (personNames.length > 0) fgNames = personNames.join(',');
+        if (personNames.length > 0) {
+          fgNames = personNames.join(',');
+          // V13: 取第一个有UUID的实体作为归属
+          for (const name of personNames) {
+            try {
+              const uuid = this.familyGraph.getUUIDByName(name);
+              if (uuid) { belongEntityUuid = uuid; break; }
+            } catch {}
+          }
+        }
       } catch { /* FG 不可用时不阻塞写入 */ }
     }
 
@@ -126,6 +136,8 @@ export class FusionStorageAdapter {
       landmarked_at: null,
       // P0-1: 时空标签（由 chat.ts 每轮通过 setTemporalContext 注入）
       fg_entity_names: fgNames,
+      // V13: 实体归属
+      belongEntityUuid,
       time_period: this.temporalContext.period,
       season: this.temporalContext.season,
       lunar_term: this.temporalContext.lunarTerm,
@@ -157,29 +169,27 @@ export class FusionStorageAdapter {
 
   async findByLocus(locusPath: string, options?: QueryOptions): Promise<DNA[]> {
     this.ensureReady();
-    // 默认过滤低强度记忆（strength < 0.05 的不返回）
-    const records = this.sqlite.findByLocusWithStrength(locusPath, options?.limit ?? 20, 0.05);
+    const records = this.sqlite.findByLocusWithStrength(locusPath, options?.limit ?? 20, 0.05, options?.entityUuids);
     return records.map(r => this.toDNA(r));
   }
 
   async findBySeqPosRange(start: number, end: number, options?: QueryOptions): Promise<DNA[]> {
     this.ensureReady();
-    // 默认衰减门控：strength < 0.05 的不返回，按 (strength * calcium) 排序
-    const records = this.sqlite.findBySeqPosRangeWithStrength(start, end, options?.limit ?? 50, 0.05);
+    const records = this.sqlite.findBySeqPosRangeWithStrength(start, end, options?.limit ?? 50, 0.05, options?.entityUuids);
     return records.map(r => this.toDNA(r));
   }
 
   /** 带衰减门控的范围检索 */
   async findBySeqPosRangeFiltered(start: number, end: number, options?: QueryOptions & { minStrength?: number }): Promise<DNA[]> {
     this.ensureReady();
-    const records = this.sqlite.findBySeqPosRangeWithStrength(start, end, options?.limit ?? 50, options?.minStrength ?? 0.05);
+    const records = this.sqlite.findBySeqPosRangeWithStrength(start, end, options?.limit ?? 50, options?.minStrength ?? 0.05, options?.entityUuids);
     return records.map(r => this.toDNA(r));
   }
 
   /** 带衰减门控的话题检索 */
   async findByLocusFiltered(locusPath: string, options?: QueryOptions & { minStrength?: number }): Promise<DNA[]> {
     this.ensureReady();
-    const records = this.sqlite.findByLocusWithStrength(locusPath, options?.limit ?? 20, options?.minStrength ?? 0.05);
+    const records = this.sqlite.findByLocusWithStrength(locusPath, options?.limit ?? 20, options?.minStrength ?? 0.05, options?.entityUuids);
     return records.map(r => this.toDNA(r));
   }
 
@@ -370,6 +380,25 @@ export class FusionStorageAdapter {
    */
   setFamilyGraph(fg: any): void {
     this.familyGraph = fg;
+    // V12.1: FG 就位后，同步 entities 表 UUID
+    try {
+      const names = fg.getAllPersonNames?.() || [];
+      for (const name of names) {
+        if (name.length < 2 || name === '我') continue;
+        const uuid = fg.getUUIDByName?.(name);
+        if (uuid) {
+          this.sqlite.writeRaw(
+            "UPDATE entities SET uuid = ? WHERE name = ? AND type = 'person' AND (uuid IS NULL OR uuid = '')",
+            uuid, name
+          );
+          this.sqlite.writeRaw(
+            "INSERT OR IGNORE INTO entities (name, type, uuid) VALUES (?, 'person', ?)",
+            name, uuid
+          );
+        }
+      }
+      console.log('[FusionStorage] entities 已与 FG 同步');
+    } catch { /* 非关键 */ }
   }
 
   getFamilyGraph(): any | null {

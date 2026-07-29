@@ -72,7 +72,12 @@ CREATE TABLE IF NOT EXISTS memories (
     source_type TEXT DEFAULT 'conversation',
 
     -- V10.4: 实体归属标注 (TXS-ID，关联 entities 表 UUID)
-    belong_entity_uuid TEXT
+    belong_entity_uuid TEXT,
+
+    -- V13: Foresight 前瞻时态标记（计划/承诺/预测的时效管理）
+    is_foresight INTEGER DEFAULT 0,
+    valid_until_ms REAL,
+    foresight_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_calcium ON memories(calcium_score DESC);
@@ -215,7 +220,11 @@ CREATE TABLE IF NOT EXISTS black_diamond (
     entry_reason TEXT,
     stabilization_score REAL DEFAULT 1.0,
     manual_quota_consumed INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'active'
+    status TEXT DEFAULT 'active',
+    -- V12.1: 实体归属标注
+    belong_entity_uuid TEXT,
+    dna_root_id TEXT,
+    dna_full_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_black_diamond_emotion ON black_diamond(emotion_tag);
 CREATE INDEX IF NOT EXISTS idx_black_diamond_created ON black_diamond(created_at DESC);

@@ -33,6 +33,7 @@ import type { RetrievalWeights } from './math.js';
 import { MEMORY_CONFIG } from '../config/MemoryConfig.js';
 import { encodeEmotionVector, computeL2Norm } from './EmotionVectorCodec.js';
 import { migrateSchema } from './MigrationManager.js';
+import { createHash } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -174,6 +175,10 @@ export class SQLiteAdapter {
 
     // P1-1: 黑钻库 emotion_vector 列迁移
     try { this.db.run("ALTER TABLE black_diamond ADD COLUMN emotion_vector TEXT DEFAULT NULL"); } catch { /* 列已存在 */ }
+    // V12.1: 黑钻库实体归属列 — 此前DDL缺失，必须补列
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN belong_entity_uuid TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN dna_root_id TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE black_diamond ADD COLUMN dna_full_code TEXT"); } catch { /* 列已存在 */ }
     // S5: l2_norm 预计算字段
     try { this.db.run("ALTER TABLE black_diamond ADD COLUMN l2_norm REAL DEFAULT NULL"); } catch { /* 列已存在 */ }
 
@@ -208,16 +213,50 @@ export class SQLiteAdapter {
       console.warn('[SQLiteAdapter] Schema 迁移失败（首次运行正常）:', err);
     }
 
+    // V13: Foresight 前瞻时态列
+    try { this.db.run("ALTER TABLE memories ADD COLUMN is_foresight INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN valid_until_ms REAL"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN foresight_status TEXT"); } catch { /* 列已存在 */ }
+
     // 🔴 V13: 启动期数据完整性修复（global_uid / entity_uuid / null向量）
     // 与 schema 迁移不同：每次启动都执行，幂等
     try {
       console.error('[SQLiteAdapter] 开始数据完整性修复...');
       const { repairDataIntegrity } = await import('./MigrationManager.js');
-      const repairResult = repairDataIntegrity(this.db);
+      const fgPath = join(dirname(this.dbPath), 'knowledge', 'family_graph.db');
+      const repairResult = await repairDataIntegrity(this.db, fgPath);
       console.error('[SQLiteAdapter] 数据完整性修复结果:', JSON.stringify(repairResult));
+      // 🔴 修复后立即强制落盘：repairDataIntegrity 直接操作 sql.js db.run()，绕过了 _dirtyCount 计数
+      // flushNow() 依赖 _dirtyCount>0 才执行 export，所以这里直接 export+write
+      if (repairResult.entityUuid > 0 || repairResult.globalUid > 0) {
+        try {
+          const data = (this.db as any).export();
+          writeFileSync(this.dbPath, Buffer.from(data));
+          console.error('[SQLiteAdapter] 修复数据已直接 export 落盘 (' + (repairResult.entityUuid + repairResult.globalUid) + ' 条变更)');
+        } catch (e) { console.error('[SQLiteAdapter] 修复落盘失败:', e); }
+      }
     } catch (err) {
       console.error('[SQLiteAdapter] 数据完整性修复失败:', err);
     }
+
+    // V13: write() 路径完整性自检 — 检查 global_uid 是否全部填充
+    try {
+      const missing = this.db.exec("SELECT COUNT(*) FROM memories WHERE (global_uid IS NULL OR global_uid = '') AND leaf_zone != 'assistant'");
+      const missingCount = missing.length > 0 && missing[0]?.values?.[0] ? missing[0].values[0][0] as number : 0;
+      if (missingCount > 0) {
+        console.warn(`[WritePath] ⚠️ global_uid 缺失: ${missingCount} 条 — 自动回填中...`);
+        const nullRows = this.db.exec("SELECT id FROM memories WHERE (global_uid IS NULL OR global_uid = '') AND leaf_zone != 'assistant'");
+        if (nullRows.length > 0 && nullRows[0].values) {
+          for (const [id] of nullRows[0].values) {
+            const h = createHash('sha256').update(String(id)).digest('hex').substring(0, 8).toUpperCase();
+            this.db.run("UPDATE memories SET global_uid = ? WHERE id = ?", ['MM' + h, String(id)]);
+          }
+        }
+        console.log(`[WritePath] ✅ global_uid 回填完成: ${missingCount} 条`);
+      } else {
+        console.log('[WritePath] ✅ global_uid 完整性验证通过: 0 条缺失');
+      }
+    } catch (e) { console.warn('[WritePath] 自检失败:', e); }
 
     // 家族图谱别名表（模糊去重）
     try {
@@ -528,6 +567,8 @@ export class SQLiteAdapter {
        dna_root_id,
        entity_genes,
        fg_entity_names, time_period, season, lunar_term, namespace,
+       global_uid, belong_entity_uuid, location_fingerprint,
+       is_foresight, valid_until_ms, foresight_status,
        l2_norm)
       VALUES (?, ?, ?, ?,
               ?, ?,
@@ -544,7 +585,8 @@ export class SQLiteAdapter {
               ?,
               ?,
               ?, ?, ?, ?, ?,
-              ?)`,
+              ?, ?, ?,
+              ?, ?, ?, ?)`,
       [
         record.id, record.seq_pos, record.created_at, pJson,
         cs, cl,
@@ -574,6 +616,12 @@ export class SQLiteAdapter {
         record.season ?? null,
         record.lunar_term ?? null,
         record.namespace ?? 'default',
+        record.global_uid || ('MM' + createHash('sha256').update(record.id).digest('hex').substring(0, 8).toUpperCase()),
+        record.belongEntityUuid ?? null,
+        record.location_fingerprint ?? null,
+        record.isForesight ? 1 : 0,
+        record.validUntilMs ?? null,
+        record.foresightStatus ?? null,
         l2,
       ],
     );
@@ -611,6 +659,9 @@ export class SQLiteAdapter {
     sourceConversationIds?: number[] | null;
     dialogGroupId?: string | null; topicLabel?: string | null;
     belongEntityUuid?: string | null;  // V10.4: 实体归属标注
+    isForesight?: boolean;            // V13: 前瞻时态标记
+    validUntilMs?: number | null;     // V13: 有效截止时间(ms)
+    foresightStatus?: string | null;  // V13: 前瞻状态
   }): boolean {
     this.ensureReady();
     try {
@@ -621,8 +672,9 @@ export class SQLiteAdapter {
          confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
-	         global_uid, location_fingerprint, belong_entity_uuid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?)`,
+	         global_uid, location_fingerprint, belong_entity_uuid,
+		         is_foresight, valid_until_ms, foresight_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
@@ -637,8 +689,9 @@ export class SQLiteAdapter {
           opts.createdAt,
           opts.primaryEmotion, opts.memoryType || 'dialog',
           opts.dialogGroupId ?? null, opts.topicLabel ?? null,
-          opts.globalUid ?? null, opts.locationFingerprint ?? null,
+          opts.globalUid || ('MM' + createHash('sha256').update(opts.id).digest('hex').substring(0, 8).toUpperCase()), opts.locationFingerprint ?? null,
 	          opts.belongEntityUuid ?? null,
+          opts.isForesight ? 1 : 0, opts.validUntilMs ?? null, opts.foresightStatus ?? null,
         ],
       );
       this.save();
@@ -665,6 +718,18 @@ export class SQLiteAdapter {
     }
   }
 
+  /** V13: 构建 entityUuid SQL 过滤子句（占位符返回到主 SQL 中拼接） */
+  private _entityUuidClause(entityUuids?: string[]): { clause: string; params: string[] } {
+    if (!entityUuids || entityUuids.length === 0) {
+      return { clause: '', params: [] };
+    }
+    const phs = entityUuids.map(() => '?').join(',');
+    return {
+      clause: ` AND (belong_entity_uuid IN (${phs}) OR belong_entity_uuid IS NULL)`,
+      params: entityUuids,
+    };
+  }
+
   // ─── 读取 ───
 
   /** 按 seq_pos 范围读取 */
@@ -679,13 +744,14 @@ export class SQLiteAdapter {
   }
 
   /** 带衰减门控的检索 — 过滤低强度记忆，按 (strength * calcium) 排序 */
-  findBySeqPosRangeWithStrength(start: number, end: number, limit = 50, minStrength = 0.05): EmotionalMemoryRecord[] {
+  findBySeqPosRangeWithStrength(start: number, end: number, limit = 50, minStrength = 0.05, entityUuids?: string[]): EmotionalMemoryRecord[] {
     this.ensureReady();
+    const euClause = this._entityUuidClause(entityUuids);
     // 先拉取较多候选，再在应用层排序
     const res = this.execSql(
-      `SELECT * FROM memories WHERE seq_pos >= ? AND seq_pos <= ?
+      `SELECT * FROM memories WHERE seq_pos >= ? AND seq_pos <= ?${euClause.clause}
        ORDER BY seq_pos DESC LIMIT ?`,
-      [start, end, Math.min(limit * 3, 200)],
+      [start, end, ...euClause.params, Math.min(limit * 3, 200)],
     );
     const records = this.rowsToRecords(res);
     // 过滤 + 排序（按 strength * calcium 综合分降序）
@@ -696,12 +762,13 @@ export class SQLiteAdapter {
   }
 
   /** 按 strength 过滤的 findByLocus */
-  findByLocusWithStrength(locusPath: string, limit = 20, minStrength = 0.05): EmotionalMemoryRecord[] {
+  findByLocusWithStrength(locusPath: string, limit = 20, minStrength = 0.05, entityUuids?: string[]): EmotionalMemoryRecord[] {
     this.ensureReady();
+    const euClause = this._entityUuidClause(entityUuids);
     const res = this.execSql(
-      `SELECT * FROM memories WHERE locus_path LIKE ?
+      `SELECT * FROM memories WHERE locus_path LIKE ?${euClause.clause}
        ORDER BY seq_pos DESC LIMIT ?`,
-      [`${locusPath}%`, limit * 2],
+      [`${locusPath}%`, ...euClause.params, limit * 2],
     );
     return this.rowsToRecords(res)
       .filter(r => r.effective_strength >= minStrength)
@@ -795,8 +862,11 @@ export class SQLiteAdapter {
     const rpExclude = query.excludeRoleplay
       ? " AND (memory_kind IS NULL OR (memory_kind != 'roleplay' AND memory_type != 'rp_dialog'))"
       : "";
+    // V13: entityUuid 过滤 — 限定检索到特定人物
+    const euClause = this._entityUuidClause(query.entityUuids);
     const landmarkRows = this.execSql(
-      `SELECT * FROM memories WHERE is_landmark = 1${rpExclude} ORDER BY calcium_score DESC LIMIT 20`,
+      `SELECT * FROM memories WHERE is_landmark = 1${rpExclude}${euClause.clause} ORDER BY calcium_score DESC LIMIT 20`,
+      euClause.params,
     );
     let landmarkRecords = this.rowsToRecords(landmarkRows)
       .filter(r => r.effective_strength >= 0.05);
@@ -814,7 +884,8 @@ export class SQLiteAdapter {
     // If not enough results from landmarks, do Tier 2: recent memory scan
     if (allScored.length < query.limit) {
       const all = this.execSql(
-        `SELECT * FROM memories WHERE 1=1${rpExclude} ORDER BY created_at DESC LIMIT 200`,
+        `SELECT * FROM memories WHERE 1=1${rpExclude}${euClause.clause} ORDER BY created_at DESC LIMIT 200`,
+        euClause.params,
       );
       const records = this.rowsToRecords(all)
         .filter(r => r.effective_strength >= 0.05 && !landmarkIds.has(r.id));
@@ -1560,9 +1631,26 @@ export class SQLiteAdapter {
       obj = row as Record<string, any>;
     }
 
-    const pArr: number[] = typeof obj.perception_json === 'string'
+    // V13: 兼容两种感知向量格式（数组 [0.5,...] 和旧对象 {pleasure:0.5,...}）
+    const rawP = typeof obj.perception_json === 'string'
       ? JSON.parse(obj.perception_json)
       : obj.perception_json ?? Array(24).fill(0.5);
+    const pArr: number[] = Array.isArray(rawP)
+      ? rawP
+      : [
+          (rawP as any).pleasure ?? 0, (rawP as any).arousal ?? 0,
+          (rawP as any).dominance ?? 0, (rawP as any).aggression ?? 0,
+          (rawP as any).sincerity ?? 0, (rawP as any).humor ?? 0,
+          (rawP as any).factual ?? 0, (rawP as any).logical ?? 0,
+          (rawP as any).certainty ?? 0, (rawP as any).abstract ?? 0,
+          (rawP as any).temporal_focus ?? 0, (rawP as any).self_ref ?? 0,
+          (rawP as any).intimacy ?? 0, (rawP as any).power_diff ?? 0,
+          (rawP as any).dependency ?? 0, (rawP as any).moral_judgment ?? 0,
+          (rawP as any).etiquette ?? 0, (rawP as any).belonging ?? 0,
+          (rawP as any).sexual_attraction ?? 0, (rawP as any).sensory_craving ?? 0,
+          (rawP as any).energy_merge ?? 0, (rawP as any).possessiveness ?? 0,
+          (rawP as any).ecstasy ?? 0, (rawP as any).safety ?? 0,
+        ];
 
     const perception: Perception24D = {
       pleasure: pArr[0], arousal: pArr[1], dominance: pArr[2],
@@ -1618,6 +1706,11 @@ export class SQLiteAdapter {
       primary_emotion: obj.primary_emotion ?? undefined,
       secondary_emotions: obj.secondary_emotions ? JSON.parse(obj.secondary_emotions) : undefined,
       promoted_to_diamond: obj.promoted_to_diamond === 1 || obj.promoted_to_diamond === true,
+      // V13: Foresight 前瞻时态
+      isForesight: obj.is_foresight === 1 || obj.is_foresight === true,
+      validStartMs: obj.valid_start_ms ?? null,
+      validUntilMs: obj.valid_until_ms ?? null,
+      foresightStatus: obj.foresight_status ?? null,
     };
   }
 

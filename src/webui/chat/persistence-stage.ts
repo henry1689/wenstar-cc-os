@@ -14,7 +14,9 @@
  */
 import type { DNA } from '../../m1/types/dna.js';
 import type { Perception24D } from '../../m3/types/perception.js';
+import { encodeEmotionVector, encodeEmotionVectorWithFingerprint } from '../../m2/EmotionVectorCodec.js';
 import type { M3Decision } from '../../m3/types/perception.js';
+import { detectForesight } from '../../m3/ForesightDetector.js';
 import type { ChatContext } from '../chat.js';
 
 export interface PersistInput {
@@ -44,22 +46,10 @@ function detectTopic(message: string): string {
   return '';
 }
 
-function buildPerceptionJson(p: Perception24D): string {
-  const vec: Record<string, number> = {
-    pleasure: (p as any).pleasure ?? 0, arousal: (p as any).arousal ?? 0,
-    intimacy: (p as any).intimacy ?? 0, sexual_attraction: (p as any).sexual_attraction ?? 0,
-    sensory_craving: (p as any).sensory_craving ?? 0, energy_merge: (p as any).energy_merge ?? 0,
-    possessiveness: (p as any).possessiveness ?? 0, ecstasy: (p as any).ecstasy ?? 0,
-    sincerity: (p as any).sincerity ?? 0, aggression: (p as any).aggression ?? 0,
-    dominance: (p as any).dominance ?? 0, humor: (p as any).humor ?? 0,
-    factual: (p as any).factual ?? 0, logical: (p as any).logical ?? 0,
-    certainty: (p as any).certainty ?? 0, abstract: (p as any).abstract ?? 0,
-    temporal_focus: (p as any).temporal_focus ?? 0, self_ref: (p as any).self_ref ?? 0,
-    power_diff: (p as any).power_diff ?? 0, dependency: (p as any).dependency ?? 0,
-    moral_judgment: (p as any).moral_judgment ?? 0, etiquette: (p as any).etiquette ?? 0,
-    belonging: (p as any).belonging ?? 0, safety: (p as any).safety ?? 0,
-  };
-  return JSON.stringify(vec);
+/** V13: 使用文本指纹编码，确保中性文本也有微量可区分的向量基线 */
+function buildPerceptionJson(p: Perception24D, text?: string): string {
+  if (text) return encodeEmotionVectorWithFingerprint(p, text);
+  return encodeEmotionVector(p);
 }
 
 /** 🔧 V10.5: 从 assistant 回复中检测说话者 UUID（自称匹配） */
@@ -123,12 +113,15 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   // ── Step 3: 砂金库 memories 表（fusion_memory.db）使用公共 API 写入 ──
   try {
     const sqlite = input.ctx.storage.getSQLite();
-    const pJson = buildPerceptionJson(input.p);
+    const pJson = buildPerceptionJson(input.p, input.message);
     const calciumScore = input.decision.enhanced.calcium_score ?? 0.5;
     const calciumLevel = input.decision.enhanced.calcium_level ?? 1;
     const locusPath = (input.dna as any).locus_path || 'chat';
     const now = new Date().toISOString();
     const primaryEmotion = topic || 'chat';
+
+    // V13: Foresight 前瞻时态检测
+    const foresight = detectForesight({ content: input.message, timestampMs: Date.now() });
 
     // 写用户消息 — 改造②：使用 SQLiteAdapter.writeMemory() 公共 API
     const idUser = `mem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -146,6 +139,9 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
       belongEntityUuid: belongUUID || undefined,  // V10.4: 实体归属标注
+      isForesight: foresight.isForesight,         // V13: 前瞻标记
+      validUntilMs: foresight.validUntilMs ?? null,
+      foresightStatus: foresight.status,
     })) {
       hadError = true;
     }
@@ -156,9 +152,10 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     //     存储时剥离括号场景描写，只保留语义内容（"我记得那次你说…我姐…"）。
     const idAssist = `mem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const cleanReply = input.reply.replace(/（[^）]*）/g, '').trim();
+    const asstPJson = buildPerceptionJson(input.p, cleanReply);
     if (!sqlite.writeMemory({
       id: idAssist, seqPos: input.seqPos + 1, createdAt: now,
-      perceptionJson: pJson, calciumScore, calciumLevel,
+      perceptionJson: asstPJson, calciumScore, calciumLevel,
       locusPath, leafZone: 'assistant', rawInput: cleanReply,
       primaryEmotion, memoryType: 'dialog',
       memoryKind: 'episodic',
@@ -298,4 +295,16 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       }
     }
   } catch { /* 索引写入不阻塞主流程 */ }
+
+  // ── V12.1: 新实体即时UUID回填（写入时 belongUUID 为 null → FG 可能刚创建节点 → 重试）──
+  if (!belongUUID && input.dna.entity_genes?.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2)) {
+    try {
+      const _fg = input.ctx.m4?.getFamilyGraph?.();
+      const _si = input.ctx.storage?.getSQLite?.();
+      if (_fg && _si?.rawDb) {
+        const { backfillAllEntities } = await import('../../m4/household/EntityUUIDBackfill.js');
+        backfillAllEntities(_si.rawDb, _fg);
+      }
+    } catch { /* 即时回填不阻塞 */ }
+  }
 }

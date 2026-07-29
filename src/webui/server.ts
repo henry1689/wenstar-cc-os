@@ -1104,6 +1104,16 @@ async function initPipeline(): Promise<void> {
           console.log('[SearchIndex] 首次启动，开始存量回填…');
           const _report = rebuildAllIndexes(_si.rawDb);
           console.log(`[SearchIndex] 回填完成: ${_report.total} 条文档 (砂金${_report.bySource.conversation || 0} 金库${_report.bySource.memory || 0} 黑钻${_report.bySource.black_diamond || 0} 知识库${_report.bySource.knowledge_base || 0})`);
+        } else {
+          // V12.1: 检查各 source_type 索引是否缺失，缺失则增量补建
+          try {
+            const _bdCnt = _si.rawDb.exec("SELECT COUNT(*) as cnt FROM search_index WHERE source_type='black_diamond'");
+            if (_bdCnt[0]?.values[0]?.[0] === 0) {
+              console.log('[SearchIndex] 黑钻索引缺失，增量补建…');
+              const _report = rebuildAllIndexes(_si.rawDb);
+              console.log(`[SearchIndex] 黑钻增量: ${_report.bySource.black_diamond || 0} 条`);
+            }
+          } catch { /* 非关键 */ }
         }
       }
     } catch { /* 回填失败不阻塞启动 */ }
