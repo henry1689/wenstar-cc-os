@@ -46,4 +46,7 @@ export interface KnowledgeItem {
   impression_score?: number;
   /** S2-6: 最后一次被召回的时间 */
   last_recalled_at?: string;
+
+  /** V12.1: 实体归属UUID（对应 FamilyGraph nodes.uuid），用于跨实体知识隔离 */
+  belong_entity_uuid?: string | null;
 }

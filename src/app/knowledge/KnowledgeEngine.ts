@@ -141,6 +141,7 @@ function rowToEntry(r: Record<string, any>): KnowledgeItem {
     tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags ?? []),
     created_at: r.created_at as string,
     updated_at: r.updated_at as string,
+    belong_entity_uuid: (r.belong_entity_uuid as string) || null,
     locked: r.locked === 1 || r.locked === true,
     classification: r.classification as string | undefined,
     classification_pending: r.classification_pending === 1 || r.classification_pending === true,

@@ -86,6 +86,21 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
 
   const hasPersonEntity = dna.entity_genes.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1);
 
+  // V13: 提前收集当前活跃实体 UUID（供所有检索路径共用）
+  const _activeEntityUuids: string[] = [];
+  try {
+    if (hasPersonEntity && ctx.m4?.getFamilyGraph) {
+      const _fg = ctx.m4.getFamilyGraph();
+      const _personNames = dna.entity_genes.filter((g: any) => g.type === 'person').map((g: any) => g.name);
+      for (const _pn of _personNames.slice(0, 3)) {
+        try {
+          const _uuid = _fg.getUUIDByName?.(_pn);
+          if (_uuid) _activeEntityUuids.push(_uuid);
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* 不阻塞 */ }
+
   const hasContinuationMarkers = /嗯|对|好|行|是|是的|没错|就是|[那这]样/.test(message) && message.length < 20;
 
   // 日常闲聊检测 — 短消息/日常问候 → 不触发记忆检索
@@ -111,6 +126,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         let limMemories = ctx.storage.findByEmotionalSimilarity({
           current_perception: p, similarity_mode: limMode,
           entities: currentEntityNames, limit: _memLimit + 3,
+          entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined,
         });
         limMemories = rerank(limMemories, message);
         // P0-2: 情感阈值过滤
@@ -130,6 +146,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           const _scan = ctx.storage.findByEmotionalSimilarity({
             current_perception: p, similarity_mode: _scanMode,
             entities: [], limit: 8,
+            entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined,
           });
           const _reranked = rerank(_scan, message);
           emotionalMemories = _reranked
@@ -186,6 +203,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           let memories = ctx.storage.findByEmotionalSimilarity({
             current_perception: p, similarity_mode: mode,
             entities: uniqueExpanded, limit: _memLimit + 3,
+            entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined,
           });
           memories = rerank(memories, q);
 
@@ -218,7 +236,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       const recentHistoryRaw = enrichedHistory.slice(-4).map((t: any) => t.content).join('');
       let freshMemories = emotionalMemories.filter((m: any) => !recentHistoryRaw.includes(m.record.id));
       if (freshMemories.length < 2 && !hasContinuationMarkers) {
-        const fallback = ctx.storage.findByEmotionalSimilarity({ current_perception: p, similarity_mode: 'balanced', limit: 2 });
+        const fallback = ctx.storage.findByEmotionalSimilarity({ current_perception: p, similarity_mode: 'balanced', limit: 2, entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined });
         freshMemories = fallback.filter((m: any) =>
           (m.scores.emotional > 0.3 || m.scores.calcium > 0.3) && m.record.id !== dna.branch_id && !recentHistoryRaw.includes(m.record.id)
         );
@@ -239,23 +257,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     if (message.trim().length > 1) {
       const _sqlite = ctx.storage.getSQLite();
       if (_sqlite && typeof _sqlite.queryAll === 'function') {
-        // 收集当前活跃的实体UUID
-        const _activeUuids: string[] = [];
-        try {
-          if (ctx.m4?.getFamilyGraph) {
-            const _fg = ctx.m4.getFamilyGraph();
-            const _personNames = hasPersonEntity
-              ? dna.entity_genes.filter((g: any) => g.type === 'person').map((g: any) => g.name)
-              : [];
-            for (const _pn of _personNames.slice(0, 3)) {
-              try {
-                const _e = _fg.getEntityByUUID ? _fg.getEntityByUUID(_pn) : null;
-                if (_e?.uuid) _activeUuids.push(_e.uuid);
-              } catch { /* skip */ }
-            }
-          }
-        } catch { /* entity UUID收集不阻塞 */ }
-
+        // V13: 使用顶层 _activeEntityUuids（已提前收集）
         let _v13Result: any = null;
         let _dbResult: any = null;
 
@@ -273,7 +275,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
 
             const _multiRank = await ctx.m4.retrieveMultiRankForSearch(_locusPath, _entities, {
               perception: p,
-              entityUuids: _personUuids.length > 0 ? _personUuids : _activeUuids,
+              entityUuids: _personUuids.length > 0 ? _personUuids : _activeEntityUuids,
               sessionId: ctx.sessionId,
             });
 
@@ -284,7 +286,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
               _sqlite.rawDb || _sqlite, _multiRank, message, p,
               {
                 mode: isTopicShift ? 'full' : 'balanced',
-                entityUuids: _activeUuids.length > 0 ? _activeUuids : undefined,
+                entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined,
                 limit: isTopicShift ? 6 : 3,
                 includeKnowledgeBase: true,
               },
@@ -322,7 +324,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           const { search: unifiedSearch } = await import('../../m4/UnifiedSearchEngine.js');
           _dbResult = unifiedSearch(_sqlite.rawDb || _sqlite, message, p, {
             mode: isTopicShift ? 'full' : 'balanced',
-            entityUuids: _activeUuids.length > 0 ? _activeUuids : undefined,
+            entityUuids: _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined,
             limit: isTopicShift ? 6 : 3,
             includeKnowledgeBase: true,
           });
@@ -351,11 +353,15 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
   } catch (err) { console.warn('[UnifiedSearch] 检索失败:', (err as Error)?.message); }
 
   // ── 知识库直接接入检索链路（V11.0：不再依赖LLM路由触发）──
+  // V12.1: 追加 belongEntityUuid 过滤，防止跨实体知识泄漏
   try {
     if (message.trim().length > 3 && ctx.knowledgeBase) {
-      const _kbHits = await ctx.knowledgeBase.search(message, 3);
+      const _kbHits = await ctx.knowledgeBase.search(message, 5); // 多搜2条留裁减空间
       if (_kbHits.length > 0) {
         for (const _kb of _kbHits) {
+          const _kbUUID = _kb.belong_entity_uuid || null;
+          // 实体过滤：结果无UUID(通用) 或 UUID 匹配活跃实体 → 放行
+          if (_activeEntityUuids.length > 0 && _kbUUID && !_activeEntityUuids.includes(_kbUUID)) continue;
           const _text = (_kb.title || '') + ': ' + (_kb.content || '').substring(0, 200);
           if (_text.length > 10 && !memoryFragments.some(f => f.includes(_text.substring(0, 30)))) {
             memoryFragments.push('📖 ' + _text);
@@ -399,9 +405,15 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     const _sLimit = isTopicShift ? 3 : 1;
     const _sqlite = ctx.storage.getSQLite();
     if (_sqlite && typeof _sqlite.queryAll === 'function') {
-      const _sandRows = _sqlite.queryAll(
-        "SELECT raw_input, calcium_level FROM memories WHERE leaf_zone='user' AND calcium_level >= 2 ORDER BY calcium_score DESC LIMIT 10"
-      ) || [];
+      // V13: 加上 entity UUID 过滤，不跨人物泄露重要记忆
+      let _sandQuery = "SELECT raw_input, calcium_level FROM memories WHERE leaf_zone='user' AND calcium_level >= 2";
+      const _sandParams: any[] = [];
+      if (_activeEntityUuids.length > 0) {
+        _sandQuery += ` AND (belong_entity_uuid IN (${_activeEntityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`;
+        _sandParams.push(..._activeEntityUuids);
+      }
+      _sandQuery += ' ORDER BY calcium_score DESC LIMIT 10';
+      const _sandRows = _sqlite.queryAll(_sandQuery, _sandParams) || [];
       for (const _sr of _sandRows.slice(0, _sLimit)) {
         const _t = (_sr.raw_input || '').substring(0, 80);
         if (_t.length > 4 && !memoryFragments.some(f => f.includes(_t.substring(0, 20)))) {

@@ -31,6 +31,8 @@ export interface InjectOptions {
   maxChars: number;
   /** 🆕 V10.1: 会晤模式下保留记忆片段的结构标签（【我的档案】【过去的对话记忆】等），不剥离 */
   preserveLabels?: boolean;
+  /** V12.1: 当前活跃的实体名列表 — 用于在记忆上下文中标注归属 */
+  entityNames?: string[];
 }
 
 /**
@@ -129,12 +131,16 @@ export function injectMemories(opts: InjectOptions): string {
   // ── 组装 ──
   const parts: string[] = [];
   if (memParts.length > 0) {
+    // V12.1: 标注实体归属 — 当有明确实体时，提示 LLM 区分记忆来源
+    const _entityPrefix = opts.entityNames && opts.entityNames.length > 0
+      ? '【关于 ' + opts.entityNames.join('、') + ' 的记忆】\n'
+      : '';
     const _notes: string[] = [];
     _notes.push('🔴 共情指南：');
     _notes.push('1）这些记忆片段记录了鸿艺过去的情绪和经历。如果他现在说的事情与某个记忆中的情绪相似（比如都是疲惫、都是焦虑），用那段记忆来理解他此刻的感受——不要只是"引用"，而是"共鸣"。');
     _notes.push('2）表达公式：你当下感受 + 记忆中类似经历 → "是不是又像上次那样……""我懂这种感觉，你之前……的时候也是这样"');
     _notes.push('3）记忆中没有的细节不要自己编造。');
-    parts.push('【相关记忆】\n' + memParts.join('\n') +
+    parts.push(_entityPrefix + '【相关记忆】\n' + memParts.join('\n') +
       '\n（' + _notes.join(' ') + '）');
   }
   if (kbText) {

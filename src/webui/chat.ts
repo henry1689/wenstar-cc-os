@@ -1299,6 +1299,8 @@ try {
     vaultHits: _vaultHits,
     maxChars: 8000,
     preserveLabels: !!_meetingEntityName,
+    // V12.1: 实体感知 — 标注当前活跃实体名，LLM 可区分记忆归属
+    entityNames: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2).map((g: any) => g.name).slice(0, 3),
   });
 } catch (_miErr) {
   // 降级: MemoryInjector 不可用时保留旧行为
