@@ -293,8 +293,8 @@ function safeConvWrite(op: () => void): void {
 function loadConversationHistory(): void {
   try {
     if (conversationDB) {
-      // 尝试从独立的 conversations.db 加载
-      const recent = conversationDB.getRecentConversations(30);
+      // V12.2: 启动时加载最近200条对话（原30条→修复跨重启上下文断裂）
+      const recent = conversationDB.getRecentConversations(200);
       if (recent.length > 0) {
         conversationHistory = recent.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
         console.log('  从融合库加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
@@ -1355,6 +1355,27 @@ async function initPipeline(): Promise<void> {
         }
         conversationHistory.sort((a: any, b: any) => (a.timestamp || '').localeCompare(b.timestamp || ''));
         if (_totalTurns > 0) console.log(`  跨会话上下文重建: ${_rebuilt.size}实体/+${_totalTurns}轮对话 ✓`);
+
+        // V12.2: 锚定最后活跃实体 — 重启后恢复会话连续性
+        const _lastActive = _store.getLastActiveEntity();
+        if (_lastActive) {
+          console.log(`  最后活跃实体: ${_lastActive.name}(${_lastActive.uuid}) 于 ${_lastActive.savedAt}`);
+          // 将最后活跃实体的对话历史前置到 conversationHistory 头部
+          const _lastTurns = _store.queryEntityContext(_lastActive.uuid, 50);
+          if (_lastTurns.length > 0) {
+            const _existingKeys = new Set(conversationHistory.map((t: any) => t.timestamp + (t as any).content?.substring(0, 20)));
+            let _prepended = 0;
+            for (const t of _lastTurns.reverse()) {
+              const _key = (t as any).timestamp + (t.content || '').substring(0, 20);
+              if (!_existingKeys.has(_key)) {
+                conversationHistory.unshift(t as any);
+                _existingKeys.add(_key);
+                _prepended++;
+              }
+            }
+            if (_prepended > 0) console.log(`  锚定上下文: ${_lastActive.name} 前置 ${_prepended} 轮对话`);
+          }
+        }
       }
     } catch (_err) { console.warn('[server] 上下文重建失败:', (_err as Error)?.message); }
   } catch (_) { /* 非致命 */ }

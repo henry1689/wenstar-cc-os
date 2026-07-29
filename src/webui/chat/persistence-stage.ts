@@ -307,4 +307,16 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       }
     } catch { /* 即时回填不阻塞 */ }
   }
+
+  // ── V12.2: 记录最后活跃实体 — 供跨重启上下文锚定 ──
+  if (belongUUID && _ownerResult.entityName) {
+    try {
+      const _si = input.ctx.storage?.getSQLite?.();
+      if (_si) {
+        const { EntityContextStore } = await import('../../app/entity/EntityContextStore.js');
+        const _store = new EntityContextStore(_si);
+        _store.saveLastActiveEntity(belongUUID, _ownerResult.entityName);
+      }
+    } catch { /* 非关键 */ }
+  }
 }

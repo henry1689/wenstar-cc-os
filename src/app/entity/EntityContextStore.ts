@@ -115,6 +115,31 @@ export class EntityContextStore {
     }
   }
 
+  /** V12.2: 记录最后活跃实体（供跨重启上下文锚定） */
+  saveLastActiveEntity(uuid: string, name: string): void {
+    try {
+      this._sqlite.writeRaw(
+        `INSERT OR REPLACE INTO entity_context_snapshots (uuid, pleasure, arousal, intimacy, last_topic, saved_at)
+         VALUES (?, 0, 0, 0, ?, ?)`,
+        [uuid, name, new Date().toISOString()],
+      );
+    } catch { /* 非关键 */ }
+  }
+
+  /** V12.2: 获取最后活跃实体（启动时锚定上下文） */
+  getLastActiveEntity(): { uuid: string; name: string; savedAt: string } | null {
+    try {
+      const rows = this._sqlite.queryAll(
+        `SELECT uuid, last_topic as name, saved_at FROM entity_context_snapshots ORDER BY saved_at DESC LIMIT 1`,
+      );
+      if (!rows?.length) return null;
+      const r = rows[0] as any;
+      return { uuid: r.uuid, name: r.name, savedAt: r.saved_at };
+    } catch {
+      return null;
+    }
+  }
+
   /** 确保快照表存在（幂等） */
   static ensureSchema(sqlite: any): void {
     try {
