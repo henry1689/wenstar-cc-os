@@ -95,7 +95,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
    * 供提取类、分析类任务使用（如 ProfileAcquisitionEngine）
    */
   async rawCall(messages: DeepSeekMessage[], maxTokens: number, temperature: number): Promise<string> {
-    const result = await this.callDeepSeekApi(messages, maxTokens, temperature, {});
+    const result = await this.callDeepSeekApi(messages, maxTokens, temperature, { timeoutMs: 45_000 });
     return result.text;
   }
 
@@ -103,14 +103,16 @@ export class DeepSeekLLMProvider implements LLMProvider {
    * 调用 DeepSeek API（带超时+重试，5s~30s→降级）
    * 返回 { text, usage } 或抛出错误
    */
-  private async callDeepSeekApi(messages: DeepSeekMessage[], maxTokens: number, temperature: number, extraParams: { frequency_penalty?: number; presence_penalty?: number; reasoning_effort?: string; level?: number } = {}): Promise<{ text: string; usage?: { prompt: number; completion: number } }> {
+  private async callDeepSeekApi(messages: DeepSeekMessage[], maxTokens: number, temperature: number, extraParams: { frequency_penalty?: number; presence_penalty?: number; reasoning_effort?: string; level?: number; timeoutMs?: number } = {}): Promise<{ text: string; usage?: { prompt: number; completion: number } }> {
     const lastError: string[] = [];
     const maxRetries = 2;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const _dl = (extraParams as any).level ?? 0;
-        const _timeoutMs = _dl >= 2 ? 30000 : _dl <= -2 ? 20000 : 20000;
+        // 优先使用场景配置传入的超时，否则按亲密等级降级
+        const _timeoutMs = (extraParams as any).timeoutMs
+          || (_dl >= 2 ? 30000 : _dl <= -2 ? 20000 : 30000);
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), _timeoutMs);
 
@@ -136,10 +138,10 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
         if (!response.ok) {
           const errText = await response.text();
-          // 429 = 限流，503 = 临时不可用 — 这两种值得重试
+          // 429=限流 500/502/503/504=服务端临时故障 — 值得重试
           const status = response.status;
-          if ((status === 429 || status === 503) && attempt < maxRetries) {
-            const waitMs = (attempt + 1) * 2000;
+          if ((status === 429 || status === 500 || status === 502 || status === 503 || status === 504) && attempt < maxRetries) {
+            const waitMs = (attempt + 1) * 3000;
             lastError.push(`${status} (尝试 ${attempt + 1}/${maxRetries + 1})`);
             await new Promise(r => setTimeout(r, waitMs));
             continue;
@@ -180,13 +182,13 @@ export class DeepSeekLLMProvider implements LLMProvider {
         if (err.name === 'AbortError') {
           lastError.push('Timeout');
           if (attempt < maxRetries) {
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 3000));
             continue;
           }
         }
         if (attempt < maxRetries) {
           lastError.push(err.message || String(err));
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
           continue;
         }
         throw err; // 最后一次尝试失败，向上抛
@@ -446,6 +448,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
       : selectLLMConfig(level, rawInput, params.role);
     const maxTokens = Math.max(_llmCfg.maxTokens, spec.wordCountMin);
     const temperature = _llmCfg.temperature;
+    const _timeoutMs = _llmCfg.timeoutMs;
     const _reasoningEffort = _isScenario ? 'max' : _llmCfg.reasoningEffort;
     const frequencyPenalty = _llmCfg.frequencyPenalty;
     const presencePenalty = _llmCfg.presencePenalty;
@@ -455,6 +458,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
         frequency_penalty: frequencyPenalty,
         presence_penalty: presencePenalty,
         level: level,
+        timeoutMs: _timeoutMs,
         reasoning_effort: _reasoningEffort,
       } as any);
     } catch (err) {

@@ -27,7 +27,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   daily: {
     temperature: 0.9,
     maxTokens: 2000,
-    timeoutMs: 15_000,
+    timeoutMs: 45_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
   },
@@ -36,7 +36,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   recall: {
     temperature: 1.0,
     maxTokens: 1500,
-    timeoutMs: 10_000,
+    timeoutMs: 45_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
   },
@@ -45,7 +45,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   intimate: {
     temperature: 1.0,
     maxTokens: 2500,
-    timeoutMs: 20_000,
+    timeoutMs: 60_000,
     frequencyPenalty: 0.0,
     presencePenalty: 0.2,
   },
@@ -54,7 +54,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   roleplay: {
     temperature: 0.7,
     maxTokens: 3000,
-    timeoutMs: 20_000,
+    timeoutMs: 60_000,
     frequencyPenalty: 0.1,
     presencePenalty: 0.5,
   },
@@ -63,7 +63,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   short_mode: {
     temperature: 0.4,
     maxTokens: 600,
-    timeoutMs: 10_000,
+    timeoutMs: 30_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
   },
