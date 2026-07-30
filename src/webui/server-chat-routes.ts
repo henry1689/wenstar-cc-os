@@ -40,6 +40,7 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
 
   // ── 聊天 ──
   if (req.method === 'POST' && url.pathname === '/api/chat') {
+    try {
     const { rawBody, text: bodyText } = await readBodyWithBytes(req);
     // 🔧 V10.1: 字节级会晤触发——在 JSON 解析前用原始字节匹配人名
     if (deps.entityMeeting && !deps.entityMeeting.isActive()) {
@@ -62,8 +63,15 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
         if (fs.existsSync(_fp)) { audio_url = '/audio/' + _fn; }
       } catch { /* TTS optional */ }
     }
+    // 安全序列化：防止循环引用导致 JSON.stringify 抛异常
+    const safeResult = _sanitizeForJSON(result);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ...result, audio_url }));
+    res.end(JSON.stringify({ ...safeResult, audio_url }));
+    } catch (err) {
+      console.error('[ChatRoute] /api/chat 异常:', (err as Error)?.message || err);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ reply: '抱歉，出了一点小问题，请再说一次好吗？', turn_count: 0, error: 'chat_route_error' }));
+    }
     return true;
   }
 
@@ -196,6 +204,20 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
   }
 
   return false;
+}
+
+/** 安全序列化：防止循环引用 / BigInt / undefined 等导致 JSON.stringify 抛异常 */
+function _sanitizeForJSON(obj: unknown): unknown {
+  const seen = new WeakSet();
+  return JSON.parse(JSON.stringify(obj, (key, value) => {
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'undefined') return null;
+    if (value && typeof value === 'object') {
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+    }
+    return value;
+  }));
 }
 
 function readBody(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Promise<string> {

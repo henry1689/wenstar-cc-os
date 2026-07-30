@@ -248,7 +248,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
       messages.push({ role: 'user', content: sanitize(rawInput) });
       try {
         const _rpCfg = getScenarioConfig('roleplay');
-      return await this.callDeepSeekApi(messages, _rpCfg.maxTokens, _rpCfg.temperature, { frequency_penalty: _rpCfg.frequencyPenalty, presence_penalty: _rpCfg.presencePenalty, reasoning_effort: _rpCfg.reasoningEffort });
+      return await this.callDeepSeekApi(messages, _rpCfg.maxTokens, _rpCfg.temperature, { frequency_penalty: _rpCfg.frequencyPenalty, presence_penalty: _rpCfg.presencePenalty, reasoning_effort: _rpCfg.reasoningEffort, timeoutMs: _rpCfg.timeoutMs });
       } catch (err) {
         console.error('[Roleplay]', err instanceof Error ? err.message : err);
         return { text: '…' };
