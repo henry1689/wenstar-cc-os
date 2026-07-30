@@ -23,6 +23,13 @@ if (fs.existsSync(envPath)) {
   console.log('[Start] .env 已加载');
 }
 
+// 启动前补丁
+const { execSync } = require('child_process');
+try {
+  console.log('[Start] 应用启动前补丁...');
+  execSync('npx tsx scripts/prestart-patch.ts', { cwd: __dirname, stdio: 'inherit' });
+} catch (e) { console.warn('[Start] 补丁应用失败（不影响启动）:', e.message); }
+
 // 启动 server.ts
 const memLimit = process.env.TIANQUAN_LITE === 'true' ? '--max-old-space-size=10240' : '--max-old-space-size=12288';
 const child = spawn('npx', ['tsx', 'src/webui/server.ts'], { shell: true,
