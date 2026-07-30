@@ -674,7 +674,7 @@ export class SQLiteAdapter {
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
 	         global_uid, location_fingerprint, belong_entity_uuid,
 		         is_foresight, valid_until_ms, foresight_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
