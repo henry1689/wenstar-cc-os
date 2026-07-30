@@ -619,17 +619,10 @@ export class EntityMeeting {
     if (!name || name === '我') return null;
     try {
       const uuid = (this.familyGraph as any).getUUIDByName?.(name);
-      if (!uuid) return null;
-      const node = (this.familyGraph as any).query?.(
-        "SELECT name, uuid, category FROM nodes WHERE uuid = ?",
-        [uuid]
-      );
-      if (!node || node.length === 0) return null;
-      return {
-        name: node[0].name || name,
-        uuid: node[0].uuid || uuid,
-        category: node[0].category || 'G',
-      };
+      if (!uuid) { console.warn('[EntityMeeting] _resolveEntity uid miss: ' + name); return null; }
+      let category = 'G';
+      try { const entity = (this.familyGraph as any).getEntityByUUID?.(uuid); if (entity) category = entity.category || 'G'; } catch { /* non-critical */ }
+      return { name, uuid, category };
     } catch {
       return null;
     }
