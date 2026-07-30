@@ -32,3 +32,31 @@ s = s.replace(
 
 writeFileSync(f, s, 'utf-8');
 console.log('[Patch] ✅ EntityContextBuilder 时间+学生身份注入完成');
+
+// ── Patch 2: EntityMeeting._resolveEntity 修复 ──
+const f2 = 'src/m4/household/EntityMeeting.ts';
+let s2 = readFileSync(f2, 'utf-8');
+const OLD_RESOLVE = `  private _resolveEntity(name: string): EntityInfo | null {\n    if (!name || name === '我') return null;\n    try {\n      const uuid = (this.familyGraph as any).getUUIDByName?.(name);\n      if (!uuid) return null;\n      const node = (this.familyGraph as any).query?.(\n        "SELECT name, uuid, category FROM nodes WHERE uuid = ?",\n        [uuid]\n      );\n      if (!node || node.length === 0) return null;\n      return {\n        name: node[0].name || name,\n        uuid: node[0].uuid || uuid,\n        category: node[0].category || 'G',\n      };\n    } catch {\n      return null;\n    }\n  }`;
+
+const NEW_RESOLVE = `  private _resolveEntity(name: string): EntityInfo | null {
+    if (!name || name === '我') return null;
+    try {
+      const uuid = (this.familyGraph as any).getUUIDByName?.(name);
+      if (!uuid) { console.warn('[EntityMeeting] _resolveEntity uid miss: ' + name); return null; }
+      let category = 'G';
+      try { const entity = (this.familyGraph as any).getEntityByUUID?.(uuid); if (entity) category = entity.category || 'G'; } catch { /* non-critical */ }
+      return { name, uuid, category };
+    } catch {
+      return null;
+    }
+  }`;
+
+if (s2.includes(OLD_RESOLVE)) {
+  s2 = s2.replace(OLD_RESOLVE, NEW_RESOLVE);
+  writeFileSync(f2, s2, 'utf-8');
+  console.log('[Patch] ✅ EntityMeeting._resolveEntity 已修复');
+} else if (s2.includes('getEntityByUUID')) {
+  console.log('[Patch] ⏭️  EntityMeeting 已打过补丁');
+} else {
+  console.log('[Patch] ⚠️  EntityMeeting 未匹配，可能已变更');
+}
