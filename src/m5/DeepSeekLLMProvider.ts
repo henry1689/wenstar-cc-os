@@ -51,6 +51,11 @@ interface DeepSeekResponse {
 }
 
 /** 运行时获取 API Key（多 Provider 兼容） */
+/** 清理 lone surrogate — JSON.stringify 遇到未配对代理字符会产生非法 hex 转义，API 400 拒收 */
+function sanitizeUTF16(text: string): string {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�');
+}
+
 function resolveApiKey(): string | undefined {
   const fromEnv = process.env['DEEPSEEK_API_KEY'] || process.env['LLM_API_KEY'] || process.env['DOUBAO_API_KEY'] || undefined;
   const fromStore = getKeyValue('DEEPSEEK_API_KEY') || getKeyValue('LLM_API_KEY') || getKeyValue('DOUBAO_API_KEY') || undefined;
@@ -126,7 +131,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
           body: JSON.stringify({
             model: this.model,
             max_tokens: maxTokens,
-            messages,
+            messages: messages.map(m => ({ ...m, content: sanitizeUTF16(m.content) })),
             temperature,
             top_p: 0.95,
             frequency_penalty: extraParams.frequency_penalty ?? 0.0,
