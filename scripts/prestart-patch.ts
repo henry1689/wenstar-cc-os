@@ -7,9 +7,9 @@ import { readFileSync, writeFileSync } from 'fs';
 const f = 'src/m4/household/EntityContextBuilder.ts';
 let s = readFileSync(f, 'utf-8');
 
-if (s.includes('_nbj')) { console.log('[Patch] ⏭️ already patched'); process.exit(0); }
-
-// 锚点: parts.push(`## 你的身份`);
+const _alreadyPatched1 = s.includes('_nbj');
+if (!_alreadyPatched1) {
+  // 锚点: parts.push(`## 你的身份`);
 const ANCHOR = 'parts.push(`## 你的身份`);';
 if (!s.includes(ANCHOR)) { console.log('[Patch] ⚠️ anchor not found'); process.exit(0); }
 
@@ -32,6 +32,9 @@ s = s.replace(
 
 writeFileSync(f, s, 'utf-8');
 console.log('[Patch] ✅ EntityContextBuilder 时间+学生身份注入完成');
+} else {
+	console.log('[Patch] ⏭️ EntityContextBuilder 已打过补丁');
+}
 
 // ── Patch 2: EntityMeeting._resolveEntity 修复 ──
 const f2 = 'src/m4/household/EntityMeeting.ts';
