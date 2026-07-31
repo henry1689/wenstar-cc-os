@@ -1458,6 +1458,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
   if (entityMeeting && !entityMeeting.isActive()) {
     const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
     let found: string | null = null;
+    console.log("[processChat] HC.len=" + HC.length + " sample=" + HC.slice(0,3).join(",") + " msgLen=" + message.length + " hasIntent=" + hasMeetingIntent);
 
     // 路径A: "找XX聊聊/谈谈/了解一下" | "想找XX" | "想和XX聊" | "叫XX来" | "让XX过来"
     const hasMeetingIntent = true;
@@ -1465,6 +1466,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
     for (const n of HC) {
       const short = n.length >= 3 ? n.slice(-2) : null;
       if (message.includes(n) || (short && message.includes(short))) {
+        console.log("[processChat] name=" + n + " found in msg");
         if (hasMeetingIntent || message.length <= 6 || /^你是|^你叫/.test(message)) {
           found = n; break;
         }
