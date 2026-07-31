@@ -220,9 +220,13 @@ let s8 = readFileSync(f8, 'utf-8');
 if (s8.includes('V10.5')) {
   console.log('[Patch] ⏭️ server-chat-routes 已打过补丁');
 } else if (s8.includes('_triggerMeetingFromBytes')) {
-  // 替换整个函数为文本优先匹配版本
-  const _oldFn8 = s8.match(/function _triggerMeetingFromBytes[\s\S]*?\n  \}/);
-  if (_oldFn8) {
+  // 🔧 更灵活的匹配：找到函数签名到下一个顶层函数/EOF
+  const _fnStart = s8.indexOf('function _triggerMeetingFromBytes');
+  // 找到函数闭包：匹配 "}\n}" (函数 + 模块闭包) 或仅 "  }" (独立函数)
+  let _fnEnd = s8.indexOf('\n}\n', _fnStart + 30);
+  if (_fnEnd < 0) _fnEnd = s8.indexOf('\n  }', _fnStart + 30);
+  if (_fnStart >= 0 && _fnEnd > _fnStart) {
+    const _oldFn8 = s8.substring(_fnStart, _fnEnd + 4);
     const _newFn8 = `function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
   if (entityMeeting?.isActive?.()) return;
   const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
@@ -234,18 +238,18 @@ if (s8.includes('V10.5')) {
       if (_msg.includes(n)) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') from text match'); return; }
       if (n.length >= 3 && _msg.includes(n.slice(-2))) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') from short text match'); return; }
     }
-  } catch {}
+  } catch (_e) {}
   for (const n of HC) {
     const nameBuf = Buffer.from(n, 'utf-8');
     if (rawBody.indexOf(nameBuf) >= 0) { entityMeeting.enter(n, 0); console.log('[V10.1] enter(' + n + ') bytes'); return; }
     if (n.length >= 3) { const shortBuf = Buffer.from(n.slice(-2), 'utf-8'); if (rawBody.indexOf(shortBuf) >= 0) { entityMeeting.enter(n, 0); console.log('[V10.1] enter(' + n + ') short bytes'); return; } }
   }
-}`;
-    s8 = s8.replace(_oldFn8[0], _newFn8);
+  }`;
+    s8 = s8.replace(_oldFn8, _newFn8);
     writeFileSync(f8, s8, 'utf-8');
     console.log('[Patch] ✅ _triggerMeetingFromBytes 文本匹配降级已注入');
   } else {
-    console.log('[Patch] ⚠️ _triggerMeetingFromBytes regex 未匹配');
+    console.log('[Patch] ⚠️ _triggerMeetingFromBytes 边界未找到');
   }
 } else {
   console.log('[Patch] ⚠️ server-chat-routes 未找到 _triggerMeetingFromBytes');
