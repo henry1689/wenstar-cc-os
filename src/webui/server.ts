@@ -1453,6 +1453,7 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 
 
 async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
+  console.log("[processChat] called, entityMeeting=" + !!entityMeeting + " isActive=" + (entityMeeting?.isActive?.() ?? false) + " msg=" + message.substring(0,30));
   // 🔥 V10.0: 自然语言会晤触发 — 支持"我想找XX聊聊""瑶瑶，找XX来"等句式
   if (entityMeeting && !entityMeeting.isActive()) {
     const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
