@@ -200,48 +200,10 @@ if (!s4.includes('_meetingEntityUuid')) {
   console.log('[Patch] ⏭️  KnowledgeContextBuilder _meetingEntityUuid 已存在');
 }
 
-// ── Patch 6: chat.ts — KB 缓存顺序修复（移到 buildPreM4Context 之后） ──
+// ── Patch 6: chat.ts — KB 缓存顺序已通过 git commit 修复，此 Patch 跳过 ──
+// ── Patch 7: chat.ts — 传入 _meetingEntityUuid 给 buildPreM4Context ──
 const f6 = 'src/webui/chat.ts';
 let s6 = readFileSync(f6, 'utf-8');
-const KBCACHE_ANCHOR = '// 🆕 V4.0: 知识库缓存 — 首轮缓存，后续轮次持续注入';
-if (s6.includes(KBCACHE_ANCHOR)) {
-  // 删除旧的 KB 缓存块（line ~820-832）
-  const _oldKbBlock = s6.match(/\/\/ 🆕 V4\.0: 知识库缓存[\s\S]*?\n          \}/);
-  if (_oldKbBlock) {
-    s6 = s6.replace(_oldKbBlock[0], '// KB 缓存已移至 buildPreM4Context 之后（Patch 6）');
-  }
-
-  // 在 buildPreM4Context 之后插入新的 KB 缓存
-  const _postAnchor = 'clueReply = _preM4.clueReply;';
-  if (s6.includes(_postAnchor) && !s6.includes('V5.3: KB 缓存注入')) {
-    const _newKbCache = `    clueReply = _preM4.clueReply;
-
-    // 🔧 V5.3: KB 缓存注入——在 buildPreM4Context 填充 knowledgeBaseText 后执行
-    if (_meetingEntityName && _entityContextText) {
-      const _cachedKB = _meetingKBCache.get(_meetingEntityName);
-      if (ctx._entityMeeting?.isFirstTurn?.()) {
-        const _kbForCache = knowledgeBaseText?.substring(0, 3000) || '';
-        if (_kbForCache.length > 20) {
-          _meetingKBCache.set(_meetingEntityName, _kbForCache);
-          _entityContextText += '\\n\\n【关于你的知识库档案】\\n以下是你的知识库档案内容，你需要了解这些：\\n' + _kbForCache;
-        }
-      } else if (_cachedKB) {
-        _entityContextText += '\\n\\n【关于你的知识库档案】\\n以下是之前查到的你的知识库档案，继续基于这些信息回复：\\n' + _cachedKB;
-      }
-    }`;
-    s6 = s6.replace(_postAnchor, _newKbCache);
-    writeFileSync(f6, s6, 'utf-8');
-    console.log('[Patch] ✅ chat.ts KB 缓存顺序已修复');
-  } else if (s6.includes('V5.3: KB 缓存注入')) {
-    console.log('[Patch] ⏭️  chat.ts KB 缓存已打过补丁');
-  } else {
-    console.log('[Patch] ⚠️  chat.ts 锚点 cluReply 未找到');
-  }
-} else {
-  console.log('[Patch] ⏭️  chat.ts KB 缓存锚点已变更');
-}
-
-// ── Patch 7: chat.ts — 传入 _meetingEntityUuid 给 buildPreM4Context ──
 if (s6.includes('_meetingEntityName,') && !s6.includes('_meetingEntityUuid,')) {
   // 在 _meetingEntityName 后添加 _meetingEntityUuid
   s6 = s6.replace(
