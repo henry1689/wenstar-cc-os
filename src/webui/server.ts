@@ -1459,7 +1459,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
     let found: string | null = null;
 
     // 路径A: "找XX聊聊/谈谈/了解一下" | "想找XX" | "想和XX聊" | "叫XX来" | "让XX过来"
-    const hasMeetingIntent = /找.*聊聊|找.*谈谈|找.*了解一下|想找|想和.*聊|想跟.*聊|叫.*来|让.*过来|找.*了解|和.*聊聊|跟.*聊聊/.test(message);
+    const hasMeetingIntent = true;
 
     for (const n of HC) {
       const short = n.length >= 3 ? n.slice(-2) : null;
