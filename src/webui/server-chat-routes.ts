@@ -263,9 +263,11 @@ function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
 
   const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
   console.log("[V10.1 BYTE] scanning rawBody len=" + rawBody.length + " for HC names...");
+  console.log("[V10.1 BYTE] rawBody hex sample: " + rawBody.toString("hex").substring(0,60));
   for (const n of HC) {
     const nameBuf = Buffer.from(n, 'utf-8');
     if (rawBody.indexOf(nameBuf) >= 0) {
+      console.log("[V10.1 BYTE] FOUND nameBuf: " + n);
       entityMeeting.enter(n, 0);
       console.log('[V10.1 BYTE] enter(' + n + ') from raw body bytes');
       return;
@@ -274,6 +276,7 @@ function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
     if (n.length >= 3) {
       const shortBuf = Buffer.from(n.slice(-2), 'utf-8');
       if (rawBody.indexOf(shortBuf) >= 0) {
+      console.log("[V10.1 BYTE] FOUND shortBuf: " + n.slice(-2) + " -> " + n);
         entityMeeting.enter(n, 0);
         console.log('[V10.1 BYTE] enter(' + n + ') from short-name bytes');
         return;
