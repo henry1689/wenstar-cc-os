@@ -38,8 +38,44 @@ export interface RetrievalOutput {
 export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutput> {
   const { ctx, message, dna, p, enrichedHistory, memoryFragments, _meetingEntityName } = input;
 
-  // 🛡️ V5.1: 会晤信息隔离墙 — 会晤实体不检索任何用户记忆
+    // 🛡️ V5.2: 会晤信息隔离墙 — 阻断用户记忆，检索实体自有记忆
   if (_meetingEntityName) {
+    try {
+      const _fg = ctx.m4?.getFamilyGraph?.();
+      const _entityUuid = _fg?.getUUIDByName?.(_meetingEntityName);
+      const _sqlite = ctx.storage?.getSQLite?.();
+      if (_entityUuid && _sqlite && typeof _sqlite.queryAll === 'function') {
+        const _entityMems = _sqlite.queryAll(
+          "SELECT id, raw_input, calcium_score, effective_strength FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 12",
+          [_entityUuid]
+        ) || [];
+        for (const _em of (_entityMems || []).slice(0, 5)) {
+          const _t = (_em.raw_input || '').substring(0, 100);
+          if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);
+        }
+        if (_entityMems.length > 0) console.log('[EntityMem] 会晤实体自有记忆: ' + _entityMems.length + ' 条');
+        const _goldRows = _sqlite.queryAll(
+          "SELECT detail, content_md FROM vault_log WHERE belong_entity_uuid = ? ORDER BY created_at DESC LIMIT 5",
+          [_entityUuid]
+        ) || [];
+        for (const _gr of _goldRows) {
+          const _t = (_gr.content_md || _gr.detail || '').substring(0, 100);
+          if (_t.length > 4 && !memoryFragments.some(function(f) { return f.includes(_t.substring(0, 20)); }))
+            memoryFragments.push('【金库记忆】' + _t);
+        }
+        const _sandRows = _sqlite.queryAll(
+          "SELECT raw_input, calcium_level FROM memories WHERE belong_entity_uuid = ? AND calcium_level >= 2 ORDER BY calcium_score DESC LIMIT 5",
+          [_entityUuid]
+        ) || [];
+        for (const _sr of _sandRows.slice(0, 3)) {
+          const _t = (_sr.raw_input || '').substring(0, 80);
+          if (_t.length > 4 && !memoryFragments.some(function(f) { return f.includes(_t.substring(0, 20)); })) {
+            const _tag = _sr.calcium_level >= 3 ? '💎' : '📌';
+            memoryFragments.push('【' + _tag + '重要记忆】' + _t);
+          }
+        }
+      }
+    } catch (_e) { /* 实体记忆检索失败不阻塞 */ }
     return {
       isTopicShift: false, isFollowUp: false, hasContinuationMarkers: false,
       isCasualChat: true, isLimitedRetrieval: false, hasNewEntity: false, hasPersonEntity: false,

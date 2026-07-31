@@ -817,16 +817,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
             } catch { /* 非致命 */ }
           }
 
-          // 🆕 V4.0: 知识库缓存 — 首轮缓存，后续轮次持续注入
-          const cachedKB = _meetingKBCache.get(_meetingEntityName);
-          if (isFirstTurn) {
-            // 首轮：缓存本轮搜到的知识库内容（含实体 KB + 主 KB 搜索）
-            const _kbForCache = knowledgeBaseText?.substring(0, 3000) || '';
-            if (_kbForCache.length > 20) {
-              _meetingKBCache.set(_meetingEntityName, _kbForCache);
-              _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + _kbForCache;
-            }
-          } else if (cachedKB) {
+          // KB 缓存已移至 buildPreM4Context 之后（Patch 6） else if (cachedKB) {
             // 后续轮次：重新注入缓存的 KB 内容（用户追问时不丢失档案）
             _entityContextText += '\n\n【关于你的知识库档案】\n以下是之前查到的你的知识库档案，继续基于这些信息回复：\n' + cachedKB;
           }
@@ -874,6 +865,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         clueAssistant: ctx.clueAssistant, m8: ctx.m8, conversationDB: ctx.conversationDB,
         _gatekeeper: ctx._gatekeeper,  // V3.2: 门阀传入知识检索
         _meetingEntityName,  // 🆕 V4.0: 实体名传给知识检索
+          _meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() || null,  // 🆕 V5.3: 实体UUID过滤KB
       },
       knowledgeBaseText, memoryFragments, emotionalMemories,
       _bionicPromise,
@@ -881,7 +873,21 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     memoryFragments.length = 0; memoryFragments.push(..._preM4.memoryFragments);
     knowledgeBaseText = _preM4.knowledgeBaseText;
     biosGatedMemories = _preM4.biosGatedMemories;
-    clueReply = _preM4.clueReply;
+        clueReply = _preM4.clueReply;
+
+    // 🔧 V5.3: KB 缓存注入——在 buildPreM4Context 填充 knowledgeBaseText 后执行
+    if (_meetingEntityName && _entityContextText) {
+      const _cachedKB = _meetingKBCache.get(_meetingEntityName);
+      if (ctx._entityMeeting?.isFirstTurn?.()) {
+        const _kbForCache = knowledgeBaseText?.substring(0, 3000) || '';
+        if (_kbForCache.length > 20) {
+          _meetingKBCache.set(_meetingEntityName, _kbForCache);
+          _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + _kbForCache;
+        }
+      } else if (_cachedKB) {
+        _entityContextText += '\n\n【关于你的知识库档案】\n以下是之前查到的你的知识库档案，继续基于这些信息回复：\n' + _cachedKB;
+      }
+    }
 
 
 

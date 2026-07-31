@@ -44,6 +44,7 @@ export interface PreM4Input {
     conversationDB?: any;
     _gatekeeper?: any;  // V3.2: 户籍门阀过滤器
     _meetingEntityName?: string | null;  // 🆕 V4.0: 会晤实体名
+    _meetingEntityUuid?: string | null;  // 🆕 V5.3: 会晤实体UUID
   };
   knowledgeBaseText: string;
   memoryFragments: string[];
@@ -267,12 +268,12 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         }
       }
     } catch (err: any) { console.warn('[EntityOverlap] 关联知识检索失败:', err); }
-    } // 🛡️ V5.1: 会晤隔离墙 — 关闭 if(!_isEntityMeeting)
+    } // 🛡️ V5.2: 会晤模式知识库检索结束
   } catch (err: any) { console.warn('[KnowledgeSearch] 检索失败:', err); }
 
   // 🔧 V10.1 P0-2: SecondBrain → KB 桥接 —— 同时检索 MD 文件系统
   // 知识库(SQLite)为空或无结果时，从 SecondBrain Gateway 的内存索引中补充
-  if (!_isEntityMeeting && (!knowledgeBaseText || knowledgeBaseText.length < 200)) {
+  if (!knowledgeBaseText || knowledgeBaseText.length < 200) {
     try {
       const _sbg = (globalThis as any).__secondBrainGateway;
       if (_sbg && typeof _sbg.scanWikiMDFiles === 'function') {
@@ -324,7 +325,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       }
     }
   } catch (_intErr: any) { console.warn('[IntimateKB] 检索失败:', _intErr); }
-  } // 🛡️ V5.1: 会晤隔离墙 — 亲密KB结束
+  } // 🛡️ V5.2: 亲密KB结束
 
   // ── VAD 谱曲引擎 (8100) ──
   // 🛡️ V5.1: 会晤模式下跳过 VAD 情感曲谱
@@ -368,7 +369,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       knowledgeBaseText = combined ? (knowledgeBaseText ? combined + '\n\n' + knowledgeBaseText : combined) : knowledgeBaseText;
     }
   } catch (err: any) { console.warn('[VADTone] 谱曲引擎(8100)不可用，跳过:', err.message); }
-  } // 🛡️ V5.1: 会晤隔离墙 — VAD结束
+  } // 🛡️ V5.2: VAD结束
 
   // ── 仿生智脑检索 ──
   const bionicMemories = await input._bionicPromise;
