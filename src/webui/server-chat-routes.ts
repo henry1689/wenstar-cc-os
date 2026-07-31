@@ -256,31 +256,4 @@ function readBodyWithBytes(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Pr
 }
 
 /** 🔧 V10.4: 字节级会晤触发——仅在会晤未激活时触发，会中不自动切换 */
-function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
-  // 🔴 V10.4: 会晤已激活时不自动切换——只在未激活时触发进入
-  // 会中切换由 EntityMeeting.detectSwitchIntent 管控（仅"换XX来"等明确命令触发）
-  if (entityMeeting?.isActive?.()) { console.log("[V10.1 BYTE] skip: already active"); return; }
-
-  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
-  console.log("[V10.1 BYTE] scanning rawBody len=" + rawBody.length + " for HC names...");
-  console.log("[V10.1 BYTE] rawBody hex sample: " + rawBody.toString("hex").substring(0,60));
-  for (const n of HC) {
-    const nameBuf = Buffer.from(n, 'utf-8');
-    if (rawBody.indexOf(nameBuf) >= 0) {
-      console.log("[V10.1 BYTE] FOUND nameBuf: " + n);
-      entityMeeting.enter(n, 0);
-      console.log('[V10.1 BYTE] enter(' + n + ') from raw body bytes');
-      return;
-    }
-    // 末2字匹配
-    if (n.length >= 3) {
-      const shortBuf = Buffer.from(n.slice(-2), 'utf-8');
-      if (rawBody.indexOf(shortBuf) >= 0) {
-      console.log("[V10.1 BYTE] FOUND shortBuf: " + n.slice(-2) + " -> " + n);
-        entityMeeting.enter(n, 0);
-        console.log('[V10.1 BYTE] enter(' + n + ') from short-name bytes');
-        return;
-      }
-    }
-  }
-}
+function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void { if (entityMeeting?.isActive?.()) return; const HC = ["徐诗雨","徐诗韵","徐诗涵","熊梓铭","熊梓玥","阿珍","阿苏","徐东伟","熊勇","王全芬","林土锋","宁清华","陈雪花","曾美容","陈斌","赖陈喜","张小龙","罗权斌","刘运新","邱运财","陈锋华"]; const _t = rawBody.toString("utf-8"); try { const _m = JSON.parse(_t).message||""; for (const n of HC) { if (_m.includes(n)) { entityMeeting.enter(n,0); return; } if (n.length>=3&&_m.includes(n.slice(-2))) { entityMeeting.enter(n,0); return; } } } catch(_e){} for (const n of HC) { const nb = Buffer.from(n,"utf-8"); if(rawBody.indexOf(nb)>=0){ entityMeeting.enter(n,0); return; } if(n.length>=3){const sb=Buffer.from(n.slice(-2),"utf-8"); if(rawBody.indexOf(sb)>=0){entityMeeting.enter(n,0);return;}} }}
