@@ -259,9 +259,10 @@ function readBodyWithBytes(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Pr
 function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
   // 🔴 V10.4: 会晤已激活时不自动切换——只在未激活时触发进入
   // 会中切换由 EntityMeeting.detectSwitchIntent 管控（仅"换XX来"等明确命令触发）
-  if (entityMeeting?.isActive?.()) return;
+  if (entityMeeting?.isActive?.()) { console.log("[V10.1 BYTE] skip: already active"); return; }
 
   const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+  console.log("[V10.1 BYTE] scanning rawBody len=" + rawBody.length + " for HC names...");
   for (const n of HC) {
     const nameBuf = Buffer.from(n, 'utf-8');
     if (rawBody.indexOf(nameBuf) >= 0) {
