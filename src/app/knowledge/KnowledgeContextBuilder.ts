@@ -94,6 +94,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   // Level 4: 纯闲聊 → 跳过，节省 token
   // 🔧 V10.1: 按搜索等级控制 KB 片段长度和总预算
   const _meetingEntity = (input as any).ctx?._meetingEntityName;
+  const _meetingEntityUuid = (input as any).ctx?._meetingEntityUuid || null;
   const _isEntityMeeting = !!_meetingEntity;
   const _entitySearchMsg = _meetingEntity ? _meetingEntity : '';
   const _explicitQuery = /知识库|看过|知道.*吗|有没有|是否|曾经|查一下|搜一下|帮我查|告诉我.*关于/.test(message);
@@ -116,7 +117,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
 
     // 🛡️ V10.0: 会晤模式下绝对不注入通用知识库——实体上下文由 EntityContextBuilder 提供
     // 之前的代码用实体名全库搜索会导致熊梓铭文档泄漏给徐诗雨等人物
-    if (_entitySearchMsg && ctx.knowledgeBase && !_isEntityMeeting) {
+    if (_entitySearchMsg && ctx.knowledgeBase) {
       try {
         const _entityResults = await ctx.knowledgeBase.weightedSearch(
           _entitySearchMsg, dna.scene_tags || [],
@@ -375,7 +376,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   const bionicMemories = await input._bionicPromise;
 
   // ── 线索助理 ──
-  // 🛡️ V5.1: 会晤模式下跳过线索助理（用户记忆线索不适用于会晤实体）
+  // 🛡️ V5.1: 会晤模式下保留线索助理阻断（用户记忆线索不适用于会晤实体）
   let clueReply: string | null = null;
   if (!_isEntityMeeting) {
   try {
