@@ -256,4 +256,25 @@ function readBodyWithBytes(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Pr
 }
 
 /** 🔧 V10.4: 字节级会晤触发——仅在会晤未激活时触发，会中不自动切换 */
-function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void { if (entityMeeting?.isActive?.()) return; const HC = ["徐诗雨","徐诗韵","徐诗涵","熊梓铭","熊梓玥","阿珍","阿苏","徐东伟","熊勇","王全芬","林土锋","宁清华","陈雪花","曾美容","陈斌","赖陈喜","张小龙","罗权斌","刘运新","邱运财","陈锋华"]; const _t = rawBody.toString("utf-8"); try { const _m = JSON.parse(_t).message||""; for (const n of HC) { if (_m.includes(n)) { entityMeeting.enter(n,0); return; } if (n.length>=3&&_m.includes(n.slice(-2))) { entityMeeting.enter(n,0); return; } } } catch(_e){} for (const n of HC) { const nb = Buffer.from(n,"utf-8"); if(rawBody.indexOf(nb)>=0){ entityMeeting.enter(n,0); return; } if(n.length>=3){const sb=Buffer.from(n.slice(-2),"utf-8"); if(rawBody.indexOf(sb)>=0){entityMeeting.enter(n,0);return;}} }}
+function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
+  if (entityMeeting?.isActive?.()) return;
+  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
+  // V10.5: 文本匹配优先
+  const _text = rawBody.toString('utf-8');
+  try {
+    const msg = JSON.parse(_text).message || '';
+    for (const n of HC) {
+      if (msg.includes(n)) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') text match'); return; }
+      if (n.length >= 3 && msg.includes(n.slice(-2))) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') short name match'); return; }
+    }
+  } catch (_e) { /* fall through to byte search */ }
+  // 字节匹配兜底
+  for (const n of HC) {
+    const nb = Buffer.from(n, 'utf-8');
+    if (rawBody.indexOf(nb) >= 0) { entityMeeting.enter(n, 0); return; }
+    if (n.length >= 3) {
+      const sb = Buffer.from(n.slice(-2), 'utf-8');
+      if (rawBody.indexOf(sb) >= 0) { entityMeeting.enter(n, 0); return; }
+    }
+  }
+}
