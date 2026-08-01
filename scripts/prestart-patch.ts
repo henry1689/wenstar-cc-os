@@ -254,3 +254,9 @@ if (s8.includes('V10.5')) {
 } else {
   console.log('[Patch] ⚠️ server-chat-routes 未找到 _triggerMeetingFromBytes');
 }
+
+// ── KB 闸门修复 (替代 Patch 4，处理 CRLF) ──
+try {
+  const { execSync: _es } = require("child_process");
+  _es("node scripts/fix-kb-gates.cjs", { cwd: __dirname, stdio: "inherit" });
+} catch (_ke) { console.log("[Patch] KB闸门修复跳过:", _ke.message); }
