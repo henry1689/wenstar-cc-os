@@ -30,6 +30,11 @@ try {
   execSync('npx tsx scripts/prestart-patch.ts', { cwd: __dirname, stdio: 'inherit' });
 } catch (e) { console.warn('[Start] 补丁应用失败（不影响启动）:', e.message); }
 
+// 🆕 V5.3: KB 闸门修复 — 开放会晤模式知识库检索
+try {
+  execSync('node scripts/fix-kb-gates.cjs', { cwd: __dirname, stdio: 'inherit' });
+} catch (e) { console.warn('[Start] KB闸门修复失败（不影响启动）:', e.message); }
+
 // 🆕 V5.3: memories UUID 回填 — 每次启动确保 belong_entity_uuid 完整
 try {
   console.log('[Start] memories UUID 回填...');
