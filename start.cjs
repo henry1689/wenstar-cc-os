@@ -38,7 +38,7 @@ try {
 // 🆕 V5.3: memories UUID 回填 — 每次启动确保 belong_entity_uuid 完整
 try {
   console.log('[Start] memories UUID 回填...');
-  execSync('node scripts/backfill-memory-uuid.cjs', { cwd: __dirname, stdio: 'inherit' });
+  execSync('node scripts/backfill-memory-uuid-v2.cjs', { cwd: __dirname, stdio: 'inherit' });
 } catch (e) { console.warn('[Start] UUID 回填失败（不影响启动）:', e.message); }
 
 // 启动 server.ts
