@@ -172,7 +172,15 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       const _minScore = _searchLevel <= 1 ? 0.05 : (_searchLevel === 2 ? 0.10 : 0.20);
       const _topHits = knResults.filter((k: any) => k.matchScore >= _minScore);
 
-      if (_topHits.length > 0) {
+      
+        // V5.3: 会晤模式下按 entity UUID 过滤 KB 结果
+        if (_meetingEntityUuid) {
+          _topHits = _topHits.filter(function(k) {
+            var ku = k.belong_entity_uuid || null;
+            return !ku || ku === _meetingEntityUuid;
+          });
+        }
+        if (_topHits.length > 0) {
         const kbContent = _topHits.map((k: any) => {
           const cleanContent = stripFrontmatter(k.content || '');
           const maxLen = _kbBudget.maxSnippetChars;
