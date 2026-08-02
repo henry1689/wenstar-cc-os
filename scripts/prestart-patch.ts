@@ -260,3 +260,6 @@ try {
   const { execSync: _es } = require("child_process");
   _es("node scripts/fix-kb-gates.cjs", { cwd: __dirname, stdio: "inherit" });
 } catch (_ke) { console.log("[Patch] KB闸门修复跳过:", _ke.message); }
+
+// ── Edge清理 ──
+try { require("child_process").execSync("node scripts/clean-xzm-edges.cjs",{cwd:__dirname,stdio:"inherit"});} catch(_e){console.log("[Patch] Edge清理跳过:",_e.message);}
