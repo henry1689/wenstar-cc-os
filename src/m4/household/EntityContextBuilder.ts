@@ -173,7 +173,7 @@ parts.push('## 你的身份');
   if (!_relationLabel.includes('——亲密') && _relationLabel !== '情人——亲密关系（热力追踪已确认）') {
     _relationLabel = getCorrectedRelation(entityName, _relationLabel);
   }
-  if (_relationLabel) socParts.push(`与鸿艺的关系: ${_relationLabel}`);
+  const _rpProfile=dossier.roleplayProfile||(profile).roleplayProfile;if(_rpProfile?.names?.length){parts.push("### 角色扮演（仅限情趣互动场景）");parts.push("你在亲密互动时曾用以下称谓称呼鸿艺："+_rpProfile.names.join("、")+"。");parts.push("🔴 这些称谓仅限情趣互动/角色扮演场景，不影响正式身份。");if(_relationLabel)parts.push("你的正式身份："+_relationLabel+"。");parts.push("日常聊天/正式对话请以正式身份交流。");parts.push("");};if (_relationLabel) socParts.push(`与鸿艺的关系: ${_relationLabel}`);
   if (socParts.length > 0) { parts.push('### 社会身份'); parts.push(socParts.join('  |  ')); parts.push(''); }
 
   // ═══ 性格 ═══
