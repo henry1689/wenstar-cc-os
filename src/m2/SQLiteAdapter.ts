@@ -673,6 +673,7 @@ export class SQLiteAdapter {
     isForesight?: boolean;            // V13: 前瞻时态标记
     validUntilMs?: number | null;     // V13: 有效截止时间(ms)
     foresightStatus?: string | null;  // V13: 前瞻状态
+    namespace?: string | null;        // BATCH-23: memory namespace scope
   }): boolean {
     this.ensureReady();
     try {
@@ -684,8 +685,8 @@ export class SQLiteAdapter {
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
 	         global_uid, location_fingerprint, belong_entity_uuid,
-		         is_foresight, valid_until_ms, foresight_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		         is_foresight, valid_until_ms, foresight_status, namespace)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
           opts.calciumScore, opts.calciumLevel,
@@ -703,6 +704,7 @@ export class SQLiteAdapter {
           opts.globalUid || ('MM' + createHash('sha256').update(opts.id).digest('hex').substring(0, 8).toUpperCase()), opts.locationFingerprint ?? null,
 	          opts.belongEntityUuid ?? null,
           opts.isForesight ? 1 : 0, opts.validUntilMs ?? null, opts.foresightStatus ?? null,
+          opts.namespace || 'default',
         ],
       );
       this.save();
@@ -1686,13 +1688,13 @@ export class SQLiteAdapter {
       if (mx.length && mx[0].values?.[0]?.[0]) seq = Number(mx[0].values[0][0]) || 1;
     } catch {}
 
-    let n = 0;
+    let n = 0, nSkipped = 0;
     for (const [dgId, eUuid, _tc, firstTs, _lastTs, avgCa, maxCa] of (groups[0].values as any[][])) {
-      const dg = String(dgId), eu = String(eUuid);
+      const dg = String(dgId), eu = String(eUuid || '');
+      if (!eu) { nSkipped++; continue; }  // 空 UUID 跳过
       const ename = entMap.get(eu) || eu;
       const id = dg + '_ANCHOR';
 
-      // 查该组对话轮次（sql.js exec() 不支持参数化→用 prepare/step/getAsObject）
       const tvs: any[][] = [];
       try {
         const stmt = this.db!.prepare(
@@ -1705,6 +1707,8 @@ export class SQLiteAdapter {
         }
         stmt.free();
       } catch {}
+      if (tvs.length === 0) continue;
+
       const pts: string[] = ['【核心·' + ename + '】'];
       for (const [role, content] of tvs as any[][]) {
         pts.push((String(role) === 'user' ? '鸿艺' : ename) + '：' + String(content || '').substring(0, 150));
@@ -1734,8 +1738,23 @@ export class SQLiteAdapter {
         );
         n++;
       } catch { /* 单条失败不阻塞 */ }
+      if (n % 100 === 0) console.log(`[SQLiteAdapter] memories锚点进度: ${n}条`);
     }
-    if (n > 0) this._dirtyCount++;
+    if (nSkipped > 0) console.log(`[SQLiteAdapter] memories锚点跳过: ${nSkipped}条(空UUID)`);
+    if (n > 0) {
+      this._dirtyCount += Math.ceil(n / 10);
+      // 🔴 V16: 强制立即落盘 — 防止 AlignmentGuard 后续写操作前 server 崩溃丢失数据
+      try {
+        this.flushNow();
+        console.log(`[SQLiteAdapter] memories锚点落盘完成: ${n}条`);
+      } catch (e) { console.warn('[SQLiteAdapter] memories锚点落盘失败:', (e as Error)?.message); }
+      // 落盘后验证
+      try {
+        const vfy = this.db.exec("SELECT COUNT(*) FROM memories WHERE id LIKE '%_ANCHOR' AND belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+        const vfyCount = (vfy.length && vfy[0]?.values?.[0]?.[0]) ? Number(vfy[0].values[0][0]) : 0;
+        if (vfyCount < n * 0.8) console.warn(`[SQLiteAdapter] ⚠️ 锚点自检异常: 写入${n}条 查询到${vfyCount}条有UUID`);
+      } catch {}
+    }
     return n;
   }
 
