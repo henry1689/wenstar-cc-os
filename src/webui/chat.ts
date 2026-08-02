@@ -1510,7 +1510,7 @@ if (isFactualRecallQuery) {
         }
 
         // 主人大脑镜像注入
-        if (ctx.masterProfile ) {
+        if (ctx.masterProfile && !_meetingEntityName) {
           const aboutYou = ctx.masterProfile.retrieveAboutYou(5);
           if (aboutYou) {
             finalKnowledgeText = aboutYou + finalKnowledgeText;
