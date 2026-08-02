@@ -239,16 +239,11 @@ export class SQLiteAdapter {
       console.error('[SQLiteAdapter] 数据完整性修复失败:', err);
     }
 
-    // V15: 统一启动修复（同一 sql.js session — 消除 better-sqlite3 双写竞争）
+    // V15: entity_relations + KB 修复（独立于 memories 锚点，不依赖运行顺序）
     try {
-      const anchored = this._rebuildMemoryAnchors();
-      if (anchored > 0) console.log(`[SQLiteAdapter] memories锚点: ${anchored}条`);
       this._fixEntityRelations();
       this._fixKnowledgeBase();
-      this._runIntegrityChecks();
-      // 立即落盘：防止 start.cjs 的 better-sqlite3 脚本读到旧数据
-      if (this._dirtyCount > 0) { this.flushNow(); console.log('[SQLiteAdapter] 启动修复落盘OK'); }
-    } catch (err) { console.warn('[SQLiteAdapter] 启动修复失败:', (err as Error)?.message); }
+    } catch (err) { console.warn('[SQLiteAdapter] 实体/KB修复失败:', (err as Error)?.message); }
 
     // V13: write() 路径完整性自检 — 检查 global_uid 是否全部填充
     try {
@@ -458,6 +453,30 @@ export class SQLiteAdapter {
         this.flushNow();
       } catch (_bfErr) { console.warn('[Backfill] 自动回填失败:', (_bfErr as Error)?.message); }
     }
+
+    // 🔴 V17: 锚点重建 + 完整性检查 — init() 最末端，确保所有上游修复完成后执行
+    //   必须在 Backfill 落盘之后执行，否则 Backfill 的 flushNow() 会覆盖锚点重建的写入
+    try {
+      const anchored = this._rebuildMemoryAnchors();
+      if (anchored > 0) console.log(`[SQLiteAdapter] memories锚点: ${anchored}条`);
+      this._runIntegrityChecks();
+      // 强制落盘
+      if (this._dirtyCount > 0) { this.flushNow(); }
+      // 磁盘验证：sql.js 重读磁盘文件确认持久化成功
+      {
+        const data2 = (this.db as any).export();
+        writeFileSync(this.dbPath, Buffer.from(data2));
+        const initSqlJs2 = (await import('sql.js')).default;
+        const SQL2 = await initSqlJs2();
+        const verifyBuf = readFileSync(this.dbPath);
+        const vDb = new (SQL2 as any).Database(verifyBuf);
+        const vRes = (vDb as any).exec("SELECT COUNT(*) as c FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+        const vCount = (vRes.length && vRes[0]?.values?.[0]?.[0]) ? Number(vRes[0].values[0][0]) : 0;
+        (vDb as any).close();
+        const icon = vCount >= 600 ? '✅' : '🔴';
+        console.log(`[SQLiteAdapter] ${icon} 磁盘验证: ${vCount}条有UUID (重读磁盘)`);
+      }
+    } catch (err) { console.warn('[SQLiteAdapter] 锚点重建失败:', (err as Error)?.message); }
   }
 
   /** 获取原始 sql.js 实例（供 ConversationDB 共享） */
