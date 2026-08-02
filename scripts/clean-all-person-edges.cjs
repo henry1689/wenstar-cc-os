@@ -115,13 +115,14 @@ for (const person of PERSONS) {
   fg.prepare('SELECT id FROM edges WHERE source_id = ?').all(node.id).forEach(e => after.add(e.id));
   fg.prepare('SELECT id FROM edges WHERE target_id = ?').all(node.id).forEach(e => after.add(e.id));
 
-  // 4. entity_relations 清理
-  const ent = fusion.prepare("SELECT id FROM entities WHERE name = ?").get(person.name);
-  if (ent) {
-    fusion.prepare('DELETE FROM entity_relations WHERE entity_a_id = ? OR entity_b_id = ?').run(ent.id, ent.id);
-    const me = fusion.prepare("SELECT id FROM entities WHERE name = ?").get('我');
-    if (me) { const a = Math.min(ent.id, me.id), b = Math.max(ent.id, me.id); fusion.prepare('INSERT OR IGNORE INTO entity_relations (entity_a_id,entity_b_id,relation,strength,updated_at) VALUES (?,?,?,1.0,?)').run(a, b, '熟人', now); }
-  }
+  // 4. entity_relations 清理 — 🔴 V16: 已迁移至 SQLiteAdapter._fixEntityRelations()
+  //    better-sqlite3 对 fusion_memory.db 的写入会与 sql.js export() 竞争导致数据丢失
+  // const ent = fusion.prepare("SELECT id FROM entities WHERE name = ?").get(person.name);
+  // if (ent) {
+  //   fusion.prepare('DELETE FROM entity_relations WHERE entity_a_id = ? OR entity_b_id = ?').run(ent.id, ent.id);
+  //   const me = fusion.prepare("SELECT id FROM entities WHERE name = ?").get('我');
+  //   if (me) { ... fusion.prepare('INSERT OR IGNORE INTO entity_relations ...').run(...); }
+  // }
 
   console.log('  ' + person.name + ': ' + before.size + '→' + after.size + '条边');
 }

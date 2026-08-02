@@ -239,6 +239,17 @@ export class SQLiteAdapter {
       console.error('[SQLiteAdapter] 数据完整性修复失败:', err);
     }
 
+    // V15: 统一启动修复（同一 sql.js session — 消除 better-sqlite3 双写竞争）
+    try {
+      const anchored = this._rebuildMemoryAnchors();
+      if (anchored > 0) console.log(`[SQLiteAdapter] memories锚点: ${anchored}条`);
+      this._fixEntityRelations();
+      this._fixKnowledgeBase();
+      this._runIntegrityChecks();
+      // 立即落盘：防止 start.cjs 的 better-sqlite3 脚本读到旧数据
+      if (this._dirtyCount > 0) { this.flushNow(); console.log('[SQLiteAdapter] 启动修复落盘OK'); }
+    } catch (err) { console.warn('[SQLiteAdapter] 启动修复失败:', (err as Error)?.message); }
+
     // V13: write() 路径完整性自检 — 检查 global_uid 是否全部填充
     try {
       const missing = this.db.exec("SELECT COUNT(*) FROM memories WHERE (global_uid IS NULL OR global_uid = '') AND leaf_zone != 'assistant'");
@@ -1526,6 +1537,113 @@ export class SQLiteAdapter {
 
   private ensureReady(): void {
     if (!this.ready || !this.db) throw new Error('SQLiteAdapter not initialized');
+  }
+
+  /**
+   * V16: 修复核心实体与用户的 entity_relations（sql.js session 内执行）。
+   * 替代 clean-all-person-edges.cjs / fix-all-entities-final.cjs 中的 better-sqlite3 写入。
+   */
+  private _fixEntityRelations(): void {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    const persons: Array<{name:string; rel:string}> = [
+      {name:'熊梓铭',rel:'熟人'},{name:'徐诗雨',rel:'熟人'},{name:'徐诗韵',rel:'熟人'},{name:'玉瑶',rel:'灵魂伴侣'}
+    ];
+    let meId: number|null = null;
+    try {
+      const sm = this.db.prepare("SELECT id FROM entities WHERE name = '我'");
+      if (sm.step()) meId = (sm.getAsObject() as any).id;
+      sm.free();
+    } catch {}
+    if (!meId) return;
+    for (const {name, rel} of persons) {
+      try {
+        const se = this.db.prepare('SELECT id FROM entities WHERE name = ?');
+        se.bind([name]);
+        let eId: number|null = null;
+        if (se.step()) eId = (se.getAsObject() as any).id;
+        se.free();
+        if (!eId) continue;
+        this.db.run('DELETE FROM entity_relations WHERE entity_a_id = ? OR entity_b_id = ?', [eId, eId]);
+        const a = Math.min(eId, meId), b = Math.max(eId, meId);
+        this.db.run('INSERT OR IGNORE INTO entity_relations (entity_a_id,entity_b_id,relation,strength,updated_at) VALUES (?,?,?,1.0,?)', [a, b, rel, now]);
+      } catch {}
+    }
+    this._dirtyCount++;
+  }
+
+  /** V16: 修复 knowledge_base（sql.js session 内执行）。替代 fix-xsy-kb.cjs / fix-all-entities-final.cjs。 */
+  private _fixKnowledgeBase(): void {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    // 1) 徐诗雨去重
+    try {
+      const d = this.db.exec("SELECT id FROM knowledge_base WHERE belong_entity_uuid='TXS-000000007' AND classification='人物档案' ORDER BY created_at ASC");
+      if (d.length&&d[0].values&&d[0].values.length>1) {
+        for (let i=1;i<d[0].values.length;i++) this.db.run('DELETE FROM knowledge_base WHERE id=?',[String(d[0].values[i][0])]);
+        console.log(`[SQLiteAdapter] KB去重徐诗雨:${d[0].values.length}→1`);
+        this._dirtyCount++;
+      }
+    } catch {}
+    // 2) 熊梓铭去归属
+    try {
+      const x = this.db.exec("SELECT id,title FROM knowledge_base WHERE belong_entity_uuid='TXS-000000003' AND classification!='人物参考'");
+      if (x.length&&x[0].values) {
+        let f=0;
+        for (const [id] of x[0].values as any[][]) { this.db.run('UPDATE knowledge_base SET belong_entity_uuid=NULL,updated_at=? WHERE id=?',[now,String(id)]); f++; }
+        if (f>0){console.log(`[SQLiteAdapter] KB去归属熊梓铭:${f}篇`);this._dirtyCount++;}
+      }
+    } catch {}
+    // 3) 徐诗韵补建
+    try {
+      const c = this.db.exec("SELECT COUNT(*) FROM knowledge_base WHERE belong_entity_uuid='TXS-000000011'");
+      if ((c.length&&c[0]?.values?.[0]?.[0]?Number(c[0].values[0][0]):0)===0) {
+        this.db.run("INSERT OR IGNORE INTO knowledge_base (id,title,content,source_type,classification,type,tags,locked,belong_entity_uuid,created_at,updated_at,impression_score,recall_count) VALUES (?,?,?,?,?,?,?,0,?,?,?,0.9,0)",
+          ['kn_xsyun_v16','徐诗韵·人物档案','## 徐诗韵\n### 基本信息\n女|2010年生|初中在读|未婚\n### 性格\n活泼、开朗、爱笑、粘人、话多、没心没肺、小机灵鬼\n### 外貌\n瓜子脸，大眼睛圆亮，笑起来弯成月牙露小虎牙。高马尾，约155cm。\n### 家族\n父徐东伟|母阿苏|姐徐诗雨、徐诗涵\n### 关系\n密友——通过姐姐诗雨认识\n','md','人物档案','note','["徐诗韵","人物档案"]','TXS-000000011',now,now]);
+        console.log('[SQLiteAdapter] KB创建徐诗韵:1篇');
+        this._dirtyCount++;
+      }
+    } catch {}
+  }
+
+  /** V16: 启动时完整性检查 — 4 项核验，输出 PAS S/FAIL/WARN。 */
+  private _runIntegrityChecks(): void {
+    if (!this.db) return;
+    console.log('[SQLiteAdapter] === 完整性检查 ===');
+    try {
+      const t = this.db.exec("SELECT COUNT(*) FROM memories");
+      const l = this.db.exec("SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+      const tt = (t.length&&t[0]?.values?.[0]?.[0])?Number(t[0].values[0][0]):0;
+      const ll = (l.length&&l[0]?.values?.[0]?.[0])?Number(l[0].values[0][0]):0;
+      const r = tt>0?(ll/tt*100):100;
+      console.log(`  ${r>=90?'✅':r>=70?'⚠️':'🔴'} CK-M1 记忆标注: ${ll}/${tt}=${r.toFixed(1)}%`);
+    } catch {}
+    try {
+      const me = this.db.exec("SELECT id FROM entities WHERE name='我'");
+      const mid = (me.length&&me[0]?.values?.[0]?.[0])?Number(me[0].values[0][0]):null;
+      if (mid) {
+        const miss: string[] = [];
+        for (const n of ['熊梓铭','徐诗雨','徐诗韵','玉瑶']) {
+          const s = this.db.prepare('SELECT id FROM entities WHERE name=?');
+          s.bind([n]); let e=null; if(s.step())e=(s.getAsObject()as any).id; s.free();
+          if(!e){miss.push(n);continue;}
+          const a=Math.min(e,mid),b=Math.max(e,mid);
+          const er=this.db.exec(`SELECT 1 FROM entity_relations WHERE entity_a_id=${a} AND entity_b_id=${b}`);
+          if(!er.length||!er[0]?.values?.length)miss.push(n);
+        }
+        console.log(`  ${miss.length===0?'✅':'🔴'} CK-M2 实体关系: ${miss.length===0?'全在':'缺:'+miss.join(',')}`);
+      }
+    } catch {}
+    try {
+      const o = this.db.exec("SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid!='' AND belong_entity_uuid NOT IN (SELECT uuid FROM entities WHERE uuid IS NOT NULL AND uuid!='')");
+      const oc = (o.length&&o[0]?.values?.[0]?.[0])?Number(o[0].values[0][0]):0;
+      console.log(`  ${oc<=5?'✅':'⚠️'} CK-M3 孤儿记忆: ${oc}条`);
+    } catch {}
+    try {
+      const d = this.db.exec("SELECT belong_entity_uuid,COUNT(*)c FROM knowledge_base WHERE belong_entity_uuid IS NOT NULL GROUP BY belong_entity_uuid HAVING c>1");
+      const dc = d.length&&d[0]?.values?.length||0;
+      console.log(`  ${dc===0?'✅':'⚠️'} CK-M4 KB重复: ${dc}实体`);
+    } catch {}
   }
 
   /**
