@@ -227,11 +227,12 @@ if (!s4.includes('_meetingEntityUuid')) {
 // ── Patch 7: chat.ts — 传入 _meetingEntityUuid 给 buildPreM4Context ──
 const f6 = 'src/webui/chat.ts';
 let s6 = readFileSync(f6, 'utf-8');
-if (s6.includes('_meetingEntityName,') && !s6.includes('_meetingEntityUuid,')) {
+// V5.3.1: 用冒号检测（key 是 _meetingEntityUuid: 不是 _meetingEntityUuid,）
+if (s6.includes('_meetingEntityName,') && !s6.includes('_meetingEntityUuid:')) {
   // 在 _meetingEntityName 后添加 _meetingEntityUuid
   s6 = s6.replace(
     "_meetingEntityName,  // 🆕 V4.0: 实体名传给知识检索",
-    "_meetingEntityName,  // 🆕 V4.0: 实体名传给知识检索\n          _meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() || null,  // 🆕 V5.3: 实体UUID过滤KB"
+    "_meetingEntityName,  // 🆕 V4.0: 实体名传给知识检索\n        _meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() || null,  // 🆕 V5.3: 实体UUID过滤KB"
   );
   writeFileSync(f6, s6, 'utf-8');
   console.log('[Patch] ✅ chat.ts _meetingEntityUuid 已传入 buildPreM4Context');

@@ -874,7 +874,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
         clueAssistant: ctx.clueAssistant, m8: ctx.m8, conversationDB: ctx.conversationDB,
         _gatekeeper: ctx._gatekeeper,  // V3.2: 门阀传入知识检索
         _meetingEntityName,  // 🆕 V4.0: 实体名传给知识检索
-          _meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() || null,  // 🆕 V5.3: 实体UUID过滤KB
+        _meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() || null,  // 🆕 V5.3: 实体UUID过滤KB
       },
       knowledgeBaseText, memoryFragments, emotionalMemories,
       _bionicPromise,
