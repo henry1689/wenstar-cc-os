@@ -5,18 +5,102 @@
  *
  * 执行: node scripts/fix-family-graph.cjs
  * 备份: 同级目录 family_graph.db.bak.<timestamp>
+ *
+ * SCRIPT-GOV-A2c: 治理合约门控 (CRITICAL, update)
+ *   默认: dry-run (扫描不写入)
+ *   写入: --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]
+ *   拒绝: 缺少必填字段 → exit 2
  */
 
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+const { validateGate, recordGovernanceDecision } = require('./_governance-gate.cjs');
+
+// ── 治理 CLI 参数解析 ──
+const argv = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i];
+  if (a === '--apply') argv.apply = true;
+  else if (a === '--dry-run') argv.dryRun = true;
+  else if (a === '--operator' && process.argv[i+1]) argv.operator = process.argv[++i];
+  else if (a === '--reason' && process.argv[i+1]) argv.reason = process.argv[++i];
+  else if (a === '--ticket' && process.argv[i+1]) argv.ticket = process.argv[++i];
+  else if (a === '--confirm' && process.argv[i+1]) argv.confirm = process.argv[++i];
+  else if (a === '--scope' && process.argv[i+1]) argv.scope = process.argv[++i];
+  else if (a === '--report-path' && process.argv[i+1]) argv.reportPath = process.argv[++i];
+  else if (a === '--help') { console.log('Usage: node fix-family-graph.cjs [--apply] [--dry-run] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] [--report-path <path>]'); process.exit(0); }
+}
+
+const mode = argv.apply ? 'apply' : 'dry-run';
+const isDryRun = mode === 'dry-run';
+
+// ── 构建治理合约 ──
+function buildContract(backupCreated, backupPathDynamic) {
+  return {
+    scriptId: 'fix-family-graph',
+    riskLevel: 'CRITICAL',
+    operationType: 'update',
+    mode: mode,
+    environment: 'local',
+    operator: { operatorId: argv.operator || '', reason: argv.reason || '', ticket: argv.ticket || null },
+    scope: { selector: argv.scope || 'table:nodes,edges', limit: 0, batchSize: 0, since: null, until: null },
+    confirmation: { required: true, provided: !!argv.confirm, tokenDigest: argv.confirm || null },
+    backup: { required: true, created: backupCreated, backupId: backupPathDynamic || null, backupPath: backupPathDynamic || null, verified: backupCreated },
+    irreversibleConfirmation: !!argv.confirm,
+    reportPath: argv.reportPath || null,
+  };
+}
+
+// ── 预检 ──
+const preflight = validateGate(buildContract(false, null));
+if (preflight.warnings.length > 0) {
+  console.warn('治理合约警告:');
+  preflight.warnings.forEach(w => console.warn(`  [${w.rule}] ${w.message}`));
+}
+
+if (isDryRun) {
+  console.log('═══════════════════════════════════════════');
+  console.log('  DRY-RUN MODE — 将扫描但不写入');
+  console.log('  使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际写入');
+  console.log('═══════════════════════════════════════════\n');
+}
+
+// ── 🔴 预检门控 (在 DB 访问之前) ──
+if (!isDryRun) {
+  const preflightContract = buildContract(false, null);
+  const preflight = validateGate(preflightContract);
+  const preflightErrors = preflight.errors.filter(e => !['R008','R009','R010','R013'].includes(e.rule));
+
+  if (preflightErrors.length > 0) {
+    console.error('\n═══════════════════════════════════════════');
+    console.error('  SCRIPT EXECUTION CONTRACT DENIED');
+    console.error('═══════════════════════════════════════════');
+    console.error('  Script:  fix-family-graph.cjs');
+    console.error('  Risk:    CRITICAL');
+    console.error('  Mode:    apply');
+    console.error('  Operation: update (merge/clean/repair)');
+    console.error('');
+    console.error('  Issues:');
+    preflightErrors.forEach(e => console.error('    [' + e.rule + '] ' + e.message));
+    console.error('');
+    console.error('  Refusing to continue.');
+    console.error('═══════════════════════════════════════════\n');
+    recordGovernanceDecision(preflightContract, preflight); process.exit(2);
+  }
+  if (preflight.warnings.length > 0) {
+    console.warn('治理合约警告:');
+    preflight.warnings.forEach(w => console.warn('  [' + w.rule + '] ' + w.message));
+  }
+}
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'knowledge', 'family_graph.db');
 const BAK_PATH = DB_PATH + '.bak.' + Date.now();
 
-// 备份
+// 备份 (两种模式都执行)
 fs.copyFileSync(DB_PATH, BAK_PATH);
-console.log('📦 备份:', path.basename(BAK_PATH));
+const bakExists = fs.existsSync(BAK_PATH);
+console.log('📦 备份:', path.basename(BAK_PATH), bakExists ? '(已验证 ✓)' : '(验证失败)');
 
 async function main() {
   const SQL = await initSqlJs();
@@ -47,6 +131,38 @@ async function main() {
   }
 
   let totalFixes = 0;
+
+  // ── Apply 治理门控 ──
+  if (!isDryRun) {
+    const contract = buildContract(bakExists, BAK_PATH);
+    const validation = validateGate(contract);
+    if (!validation.allowed) {
+      console.error('\n═══════════════════════════════════════════');
+      console.error('  SCRIPT EXECUTION CONTRACT DENIED');
+      console.error('═══════════════════════════════════════════');
+      console.error('  Script:  fix-family-graph.cjs');
+      console.error('  Risk:    CRITICAL');
+      console.error('  Mode:    apply');
+      console.error('  Operation: update (merge/clean/repair)');
+      console.error('');
+      console.error('  Issues:');
+      validation.errors.forEach(e => console.error('    [' + e.rule + '] ' + e.message));
+      console.error('');
+      console.error('  Refusing to continue.');
+      console.error('═══════════════════════════════════════════\n');
+      db.close();
+      recordGovernanceDecision(contract, validation); process.exit(2);
+    }
+    console.log('治理合约验证: 通过 ✓\n');
+  } else {
+    // Dry-run: 包装 run() 以阻止写入但继续扫描
+    const _origRun = run;
+    let _dryRunOps = 0;
+    run = function(sql, params) {
+      _dryRunOps++;
+      if (_dryRunOps <= 5) console.log('  [DRY-RUN] 将执行: ' + sql.substring(0, 80) + (sql.length > 80 ? '...' : ''));
+    };
+  }
 
   // ════════════════════════════════════════════════════════════
   // P0-1: 父亲 → 爸爸 合并
@@ -397,9 +513,17 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   // 落盘 + 报告
   // ════════════════════════════════════════════════════════════
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
-  db.close();
+  if (!isDryRun) {
+    const data = db.export();
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
+    db.close();
+  } else {
+    db.close();
+    console.log('\n[DRY-RUN] 扫描完成。共检测到 ' + totalFixes + ' 个修复问题。');
+    console.log('[DRY-RUN] 未修改数据库。');
+    console.log('[DRY-RUN] 使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行修复');
+    return;
+  }
 
   // 验证
   const SQL2 = await initSqlJs();

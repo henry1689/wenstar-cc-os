@@ -3,6 +3,12 @@
  * 清理离线推送的dossier全量污染，重建为基础摘要
  * 保持 FG 与 知识库 的隔离架构
  */
+// SCRIPT-GOV-A2d-Batch-2: 治理门控 (CRITICAL, clean)
+var _G={};for(var _i=2;_i<process.argv.length;_i++){var _a=process.argv[_i];if(_a==="--apply")_G.apply=1;else if(_a==="--operator"&&process.argv[_i+1])_G.op=process.argv[++_i];else if(_a==="--reason"&&process.argv[_i+1])_G.reason=process.argv[++_i];else if(_a==="--ticket"&&process.argv[_i+1])_G.ticket=process.argv[++_i];else if(_a==="--confirm"&&process.argv[_i+1])_G.confirm=process.argv[++_i];else if(_a==="--scope"&&process.argv[_i+1])_G.scope=process.argv[++_i];else if(_a==="--report-path"&&process.argv[_i+1])_G.rpt=process.argv[++_i];else if(_a==="--help"){console.log("Usage: node cleanup-knowledge-contam.cjs [--apply] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]");process.exit(0)}}
+var G=_G;
+var M=G.apply?"apply":"dry-run",D=!G.apply;
+var {validateGate,recordGovernanceDecision}=require("./_governance-gate.cjs");
+
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
@@ -34,6 +40,10 @@ function buildPersonSummary(name, profile) {
 }
 
 async function main() {
+  // ── 预检门控 ──
+  if(!D){var C={scriptId:"cleanup-knowledge-contam",riskLevel:"CRITICAL",operationType:"clean",mode:M,environment:"local",operator:{operatorId:G.op||"",reason:G.reason||"",ticket:G.ticket||null},scope:{selector:G.scope||"table:knowledge_base",limit:0,batchSize:0,since:null,until:null},confirmation:{required:true,provided:!!G.confirm,tokenDigest:G.confirm||null},backup:{required:true,created:false,backupId:null,backupPath:null,verified:false},irreversibleConfirmation:!!G.confirm,reportPath:G.rpt||null};var V=validateGate(C);var PE=V.errors.filter(function(e){return["R008","R009","R010","R013"].indexOf(e.rule)===-1});if(PE.length>0){var lines=["\\n======================================================================\\n  SCRIPT EXECUTION CONTRACT DENIED\\n======================================================================\\n  Script:  cleanup-knowledge-contam.cjs\\n  Risk:    CRITICAL\\n  Mode:    apply\\n  Operation: clean\\n\\n  Issues:"];PE.forEach(function(e){lines.push("    ["+e.rule+"] "+e.message)});lines.push("\n  Refusing to continue.\n======================================================================\n");console.error(lines.join("\n"));recordGovernanceDecision(C,V);recordGovernanceDecision(C,V);process.exit(2)}}
+  if(D){console.log("[DRY-RUN] cleanup-knowledge-contam — 将扫描但不写入。使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际写入。\n");process.exit(0)}
+
   const SQL = await initSqlJs();
 
   // 1. 读取 FG 所有人物

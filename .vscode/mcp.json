@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mnemos": {
+      "command": "mnemos-mcp",
+      "args": [],
+      "env": {
+        "MNEMOS_SQLITE_PATH": "D:\\tools\\mnemos\\data\\mnemos.db",
+        "MNEMOS_STORE_TYPE": "sqlite",
+        "MNEMOS_EMBEDDING_PROVIDER": "simple",
+        "MNEMOS_LLM_PROVIDER": "mock"
+      }
+    }
+  }
+}

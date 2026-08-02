@@ -9,9 +9,9 @@ import { normalizePath } from './utils.js';
 /**
  * 检查 git 是否可用
  */
-export function isGitAvailable(): boolean {
+export function isGitAvailable(cwd: string = process.cwd()): boolean {
   try {
-    execSync('git --version', { stdio: 'pipe' });
+    execSync('git --version', { cwd, stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -19,11 +19,11 @@ export function isGitAvailable(): boolean {
 }
 
 /**
- * 检查当前目录是否在 git 仓库中
+ * 检查指定目录是否在 git 仓库中
  */
-export function isGitRepo(): boolean {
+export function isGitRepo(cwd: string = process.cwd()): boolean {
   try {
-    execSync('git rev-parse --git-dir', { stdio: 'pipe' });
+    execSync('git rev-parse --git-dir', { cwd, stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -33,12 +33,12 @@ export function isGitRepo(): boolean {
 /**
  * 执行 git 命令并返回输出的行数组
  */
-function gitLines(args: string): string[] {
+function gitLines(args: string, cwd?: string): string[] {
   try {
     const output = execSync(`git ${args}`, {
       stdio: 'pipe',
       encoding: 'utf-8',
-      cwd: process.cwd(),
+      cwd: cwd || process.cwd(),
     });
     return output
       .split('\n')
@@ -56,10 +56,10 @@ function gitLines(args: string): string[] {
  *   unstaged → git diff --name-only
  *   untracked → git ls-files --others --exclude-standard
  */
-export function getChangedFiles(): string[] {
-  const staged = gitLines('diff --cached --name-only');
-  const unstaged = gitLines('diff --name-only');
-  const untracked = gitLines('ls-files --others --exclude-standard');
+export function getChangedFiles(cwd?: string): string[] {
+  const staged = gitLines('diff --cached --name-only', cwd);
+  const unstaged = gitLines('diff --name-only', cwd);
+  const untracked = gitLines('ls-files --others --exclude-standard', cwd);
 
   const all = [...staged, ...unstaged, ...untracked];
   // 去重
@@ -69,16 +69,16 @@ export function getChangedFiles(): string[] {
 /**
  * 获取相对于 base 的变更文件
  */
-export function getChangedFilesSince(base: string): string[] {
-  return gitLines(`diff --name-only ${base}`);
+export function getChangedFilesSince(base: string, cwd?: string): string[] {
+  return gitLines(`diff --name-only ${base}`, cwd);
 }
 
 /**
  * git diff 不可用时的 fallback：返回空数组
  */
-export function getChangedFilesSafe(): string[] {
+export function getChangedFilesSafe(cwd?: string): string[] {
   if (isGitAvailable() && isGitRepo()) {
-    return getChangedFiles();
+    return getChangedFiles(cwd);
   }
   return [];
 }

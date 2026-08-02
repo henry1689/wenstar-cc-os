@@ -461,7 +461,7 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     return content;
   }
 
-  async function search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }, interactionType?: string): Promise<KnowledgeItem[]> {
+  async function search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }, interactionType?: string, belongEntityUuid?: string): Promise<KnowledgeItem[]> {
     const ftsSearch = async (kw: string, lim: number) => {
       if (_ftsInitialized) {
         const ftsResults = await _retrieverBreaker.call(
@@ -472,11 +472,19 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
           }
         );
         if (ftsResults.length > 0) {
+          // V13: 回读 belong_entity_uuid 供 UUID 过滤
+          const euidMap = new Map<string, string | null>();
+          const kbRows = sqlite.queryAll(
+            `SELECT id, belong_entity_uuid FROM knowledge_base WHERE id IN (${ftsResults.map(() => '?').join(',')})`,
+            ftsResults.map((r: any) => r.id)
+          );
+          for (const row of kbRows) { euidMap.set((row as any).id, (row as any).belong_entity_uuid || null); }
           return ftsResults.map((r: any) => ({
             id: r.id, title: r.title, content: r.content,
             source_type: '', source_name: null, file_size: 0,
             tags: [], created_at: '', updated_at: '',
             locked: false, classification: r.classification || undefined,
+            belong_entity_uuid: euidMap.get(r.id) ?? null,
           } as KnowledgeItem));
         }
       }
@@ -485,6 +493,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       let sql = `SELECT * FROM knowledge_base WHERE (content LIKE ? OR title LIKE ?) AND (source_type IN (${srcWhitelist}) OR source_type IS NULL OR source_type = '')`;
       const params: any[] = [`%${kw}%`, `%${kw}%`];
       if (interactionType) { sql += ` AND interaction_type = ?`; params.push(interactionType); }
+      // V13: entityUuid 过滤 — 精准隔离人物知识
+      if (belongEntityUuid) {
+        sql += ` AND (belong_entity_uuid = ? OR belong_entity_uuid IS NULL)`;
+        params.push(belongEntityUuid);
+      }
       sql += ` ORDER BY updated_at DESC LIMIT ?`; params.push(lim);
       return sqlite.queryAll(sql, params).map(rowToEntry);
     };
@@ -546,6 +559,13 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     }
 
     // 🔥 ImpressionModel: 更新被召回知识的印象值
+    // V13: entityUuid 过滤 — 精准隔离人物知识 (post-filter, 因为 FTS5 不支持此列)
+    if (belongEntityUuid && results.length > 0) {
+      results = results.filter((r: any) =>
+        !r.belong_entity_uuid || r.belong_entity_uuid === belongEntityUuid
+      );
+    }
+
     for (const r of results.slice(0, 5)) {
       try {
         const existing = sqlite.queryAll('SELECT impression_score, recall_count FROM knowledge_base WHERE id = ?', [r.id]);

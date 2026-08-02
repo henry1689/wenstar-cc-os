@@ -12,6 +12,33 @@ import type {
 } from './types.js';
 
 /**
+ * Config 文件关键词风险判定。
+ * 文件在 config/ 目录下时，根据文件名/路径中的语义关键词识别高风险 config。
+ */
+const HIGH_CONFIG_KEYWORDS = [
+  'llm', 'model', 'provider', 'deepseek', 'openai', 'completion',
+  'api', 'token', 'secret', 'auth', 'credential', 'endpoint',
+  'database', 'db', 'sqlite', 'storage',
+  'memory', 'context', 'pfc', 'prefrontal',
+  'prompt', 'policy', 'rule', 'system', 'instruction',
+  'agent', 'tool', 'executor', 'runner',
+  'safety', 'guard', 'permission',
+];
+
+function isHighRiskConfigFile(filePath: string): string | null {
+  const configMatch = filePath.match(/(?:^|\/)config\/(.+)$/i);
+  if (!configMatch) return null;
+
+  const relative = configMatch[1].toLowerCase();
+  for (const kw of HIGH_CONFIG_KEYWORDS) {
+    if (relative.includes(kw)) {
+      return `config 文件包含治理敏感关键词: ${kw}`;
+    }
+  }
+  return null;
+}
+
+/**
  * 对单个文件判定风险等级
  */
 function classifyFile(
@@ -34,6 +61,12 @@ function classifyFile(
     if (normalized === entry || normalized.endsWith('/' + entry)) {
       return { path: normalized, risk: 'medium', reason: '中风险区域文件' };
     }
+  }
+
+  // 2.5. Config 文件关键词判定 (calibration patch R21-B1.1)
+  const configRisk = isHighRiskConfigFile(normalized);
+  if (configRisk) {
+    return { path: normalized, risk: 'high', reason: configRisk };
   }
 
   // 3. glob 匹配 low_risk.path_patterns

@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-07-28T07:26:34.980Z",
+  "timestamp": "2026-07-28T10:08:08.363Z",
   "elapsed": "0.3",
   "scores": {
     "D1": 78.57142857142857,
-    "D2": 55.161982243172346,
+    "D2": 55.16463050428028,
     "D3": 100,
-    "D4": 90.9090909090909,
+    "D4": 81.81818181818183,
     "D5": 100,
     "D6": 85.71428571428571,
     "D7": 25,
@@ -13,7 +13,7 @@
     "D9": 100,
     "D10": 75
   },
-  "weightedScore": 69.52426179455932,
+  "weightedScore": 68.61583295074539,
   "grade": "🟡 C",
   "results": {
     "D1": [
@@ -60,7 +60,7 @@
       {
         "label": "search_index > 200000 条",
         "pass": true,
-        "detail": "684449 条"
+        "detail": "692542 条"
       },
       {
         "label": "global_uid 填充率 > 95%",
@@ -75,12 +75,12 @@
       {
         "label": "memory_associations > 200 条边",
         "pass": true,
-        "detail": "1509 条"
+        "detail": "697 条"
       },
       {
         "label": "无孤儿边 (source/target 都在 memories 中)",
         "pass": false,
-        "detail": "1509 条孤儿边"
+        "detail": "697 条孤儿边"
       },
       {
         "label": "无重复 DAG 边",
@@ -218,7 +218,7 @@
           "metrics": {
             "recall": 40,
             "relevant": 39,
-            "diversity": 0.8927464835117729,
+            "diversity": 0.8944678532319341,
             "entity": null
           }
         },
@@ -247,7 +247,7 @@
           }
         }
       ],
-      "avgDiversity": 0.9734837275432325,
+      "avgDiversity": 0.9736161405986294,
       "avgRelevant": 4.3076923076923075
     },
     "D4": [
@@ -264,17 +264,17 @@
       {
         "label": "边类型 entity 存在",
         "pass": true,
-        "detail": "1348 条"
+        "detail": "523 条"
       },
       {
         "label": "边类型 semantic 存在",
         "pass": true,
-        "detail": "66 条"
+        "detail": "70 条"
       },
       {
         "label": "边类型 emotion 存在",
         "pass": true,
-        "detail": "76 条"
+        "detail": "85 条"
       },
       {
         "label": "边类型 causal 存在",
@@ -283,13 +283,13 @@
       },
       {
         "label": "低密度实体 < 30%",
-        "pass": true,
-        "detail": "8/27 个实体边<5条"
+        "pass": false,
+        "detail": "4/10 个实体边<5条"
       },
       {
         "label": "平均置信度 > 0.6",
         "pass": true,
-        "detail": "0.817"
+        "detail": "0.841"
       },
       {
         "label": "有记忆实体中有边的比例 > 50%",
@@ -364,12 +364,12 @@
         {
           "label": "零向量比例 ≤ 80% (存量数据限制)",
           "pass": false,
-          "detail": "97% (1539/1587)"
+          "detail": "97% (1534/1587)"
         },
         {
           "label": "向量维度 = 24",
           "pass": true,
-          "detail": "47 OK / 0 异常"
+          "detail": "51 OK / 0 异常"
         },
         {
           "label": "无 NaN/null 向量 (非零向量中)",
@@ -379,7 +379,7 @@
         {
           "label": "活跃维度 ≥ 6 (M3稀疏向量特征)",
           "pass": true,
-          "detail": "6 活跃 / 18 稀疏"
+          "detail": "9 活跃 / 15 稀疏"
         },
         {
           "label": "向量值范围合理 [-1,1]",
@@ -389,7 +389,7 @@
         {
           "label": "情绪子空间活跃度 > 80%",
           "pass": true,
-          "detail": "94%"
+          "detail": "100%"
         }
       ],
       "dimStats": [
@@ -416,7 +416,7 @@
         {
           "min": 0.5,
           "max": 0.55,
-          "mean": 0.5042553191489362
+          "mean": 0.5039215686274511
         },
         {
           "min": 0,
@@ -426,7 +426,7 @@
         {
           "min": 0.2,
           "max": 0.2,
-          "mean": 0.19999999999999998
+          "mean": 0.19999999999999993
         },
         {
           "min": 0,
@@ -446,17 +446,17 @@
         {
           "min": -1,
           "max": 0.15,
-          "mean": -0.04787234042553192
+          "mean": -0.10294117647058823
         },
         {
           "min": 0,
           "max": 0.15,
-          "mean": 0.01276595744680851
+          "mean": 0.011764705882352941
         },
         {
           "min": 0,
-          "max": 0,
-          "mean": 0
+          "max": 0.5333333333333333,
+          "mean": 0.02091503267973856
         },
         {
           "min": 0,
@@ -466,7 +466,7 @@
         {
           "min": 0,
           "max": 0.3333333333333333,
-          "mean": 0.0070921985815602835
+          "mean": 0.0065359477124183
         },
         {
           "min": 0,
@@ -481,12 +481,17 @@
         {
           "min": 0,
           "max": 0.2,
-          "mean": 0.012765957446808512
+          "mean": 0.011764705882352943
         },
         {
           "min": 0,
           "max": 0.3333333333333333,
-          "mean": 0.0070921985815602835
+          "mean": 0.0065359477124183
+        },
+        {
+          "min": 0,
+          "max": 0.3333333333333333,
+          "mean": 0.0130718954248366
         },
         {
           "min": 0,
@@ -500,13 +505,8 @@
         },
         {
           "min": 0,
-          "max": 0,
-          "mean": 0
-        },
-        {
-          "min": 0,
-          "max": 0,
-          "mean": 0
+          "max": 0.1,
+          "mean": 0.00392156862745098
         },
         {
           "min": 0.5,
@@ -514,10 +514,10 @@
           "mean": 0.5
         }
       ],
-      "zeroVecCount": 1539,
-      "zeroPct": 0.9697542533081286,
+      "zeroVecCount": 1534,
+      "zeroPct": 0.9666036546943919,
       "nanVecs": 0,
-      "activeDims": 6
+      "activeDims": 9
     },
     "D7": [
       {
@@ -591,7 +591,7 @@
       {
         "label": "边角: \"重复关键词查询\"",
         "pass": true,
-        "detail": "48 条结果"
+        "detail": "47 条结果"
       },
       {
         "label": "边角: \"控制字符查询\"",
@@ -601,7 +601,7 @@
       {
         "label": "边角: \"布尔运算符查询\"",
         "pass": true,
-        "detail": "47 条结果"
+        "detail": "50 条结果"
       },
       {
         "label": "边角: \"全角百分号\"",
@@ -629,7 +629,7 @@
         {
           "label": "DAG 边查询 < 30ms",
           "pass": true,
-          "detail": "1ms"
+          "detail": "0ms"
         },
         {
           "label": "闭包展开 < 100ms",
@@ -639,7 +639,7 @@
         {
           "label": "DB 文件 < 200MB",
           "pass": true,
-          "detail": "154MB"
+          "detail": "156MB"
         },
         {
           "label": "LIKE 搜索 < 100ms",
@@ -649,29 +649,29 @@
         {
           "label": "数据规模合理",
           "pass": true,
-          "detail": "memories:1587, conversations:4820"
+          "detail": "memories:1587, conversations:5122"
         }
       ],
       "ngramLatency": 1,
-      "dbSizeMB": 154.015625,
+      "dbSizeMB": 156.1640625,
       "totalMems": 1587,
-      "totalConvs": 4820
+      "totalConvs": 5122
     },
     "D10": {
       "snapshot": {
-        "timestamp": "2026-07-28T07:26:34.970Z",
-        "searchIndexCount": 684449,
-        "edgeCount": 1509,
+        "timestamp": "2026-07-28T10:08:08.354Z",
+        "searchIndexCount": 692542,
+        "edgeCount": 697,
         "memCount": 1587,
         "globalUidFill": 0,
         "entityUuidFill": 0,
         "edgeTypes": {
           "causal": 19,
-          "emotion": 76,
-          "entity": 1348,
-          "semantic": 66
+          "emotion": 85,
+          "entity": 523,
+          "semantic": 70
         },
-        "dbSizeMB": 154.015625
+        "dbSizeMB": 156.1640625
       },
       "baseline": {
         "timestamp": "2026-07-28T03:39:23.446Z",

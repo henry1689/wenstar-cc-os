@@ -244,7 +244,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     console.warn(`[Persist] ⚠️ 本轮写入有错误 seq=${input.seqPos} msg="${input.message.substring(0, 20)}"`);
   }
 
-  // 🔧 V10.1 P1-2: 对话→知识归纳 —— 用户消息含事实陈述时自动提取到知识库
+  // V13: 对话→事实归纳 — 写入 vault_log（金库）而非 knowledge_base
+  // knowledge_base 仅用于用户上传的文件/文档知识，对话归纳属于金库记忆体系
   try {
     const _msg = input.message;
     const _patterns = [
@@ -259,23 +260,15 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       if (_match) {
         const _fact = _match[0].trim();
         if (_fact.length >= 4) {
-          // 异步添加到知识库，不阻塞对话
-          const _kb = (input.ctx as any).knowledgeBase;
-          if (_kb && typeof _kb.add === 'function') {
-            _kb.add({
-              title: `[对话归纳] ${_fact}`,
-              content: `鸿艺曾说过：${_msg}`,
-              source_type: 'research',
-              tags: ['auto_inducted', 'conversation', cat],
-              interaction_type: 'other',
-            }).then(function() {
-              console.log('[KB·Induct] ' + cat + ' → "' + _fact.substring(0, 30) + '"');
-            }).catch(function(e: any) {
-              // 隐私守卫拦截或source_type不合法 → 静默跳过
-            });
-          }
-          break; // 一条消息只提取最优先的
+          // V13: 写入 vault_log 金库（不再写入 knowledge_base）
+          const vlId = 'vl_induct_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+          input.ctx.storage.getSQLite()?.writeRaw(
+            "INSERT INTO vault_log (id, operation, source_type, detail, content_md, belong_entity_uuid, created_at) VALUES (?, 'auto_induct', 'conversation', ?, ?, ?, ?)",
+            [vlId, `[对话归纳·${cat}] ${_fact}`, `鸿艺曾说过：${_msg}`, belongUUID || undefined, new Date().toISOString()],
+          );
+          console.log('[KB·Induct→Vault] ' + cat + ' → "' + _fact.substring(0, 30) + '"');
         }
+        break; // 一条消息只提取最优先的
       }
     }
   } catch (_indErr) { /* 归纳失败不阻塞 */ }

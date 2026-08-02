@@ -20,6 +20,11 @@ export interface RankedItem {
   entityUuid: string | null;
   calciumScore: number;
   createdAt: string;
+  // V13 Foresight: 前瞻时态标记（检索层过滤过期计划/承诺）
+  isForesight?: boolean;
+  validStartMs?: number | null;
+  validUntilMs?: number | null;
+  foresightStatus?: string | null;
 }
 
 /** 一路召回输出（路内已按 score 降序） */

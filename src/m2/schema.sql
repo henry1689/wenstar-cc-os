@@ -86,6 +86,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_locus ON memories(locus_path);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_landmarks ON memories(is_landmark) WHERE is_landmark = 1;
 CREATE INDEX IF NOT EXISTS idx_memories_calcium_strength ON memories(calcium_level, effective_strength);
+-- V13: UUID 实体隔离索引
+CREATE INDEX IF NOT EXISTS idx_memories_belong_uuid ON memories(belong_entity_uuid);
 -- P0-1: 多维检索索引
 CREATE INDEX IF NOT EXISTS idx_memories_fg_entity ON memories(fg_entity_names);
 CREATE INDEX IF NOT EXISTS idx_memories_time_period ON memories(time_period);
@@ -173,6 +175,8 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
 CREATE INDEX IF NOT EXISTS idx_knowledge_created ON knowledge_base(created_at DESC);
 -- 🆕 V10.0 P1-1: 知识库分类索引（getUnclassified 每轮都查，无索引则全表扫描）
 CREATE INDEX IF NOT EXISTS idx_kb_class ON knowledge_base(classification);
+-- V13: UUID 实体隔离索引
+CREATE INDEX IF NOT EXISTS idx_kb_belong_uuid ON knowledge_base(belong_entity_uuid);
 
 -- 知识-记忆关联
 CREATE TABLE IF NOT EXISTS knowledge_memories (
@@ -282,10 +286,14 @@ CREATE TABLE IF NOT EXISTS vault_log (
     target_id TEXT,
     detail TEXT,
     content_md TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- V13: 实体归属标注 (TXS-ID，通过 source_id→memories.id 回填)
+    belong_entity_uuid TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_vault_log_op ON vault_log(operation);
 CREATE INDEX IF NOT EXISTS idx_vault_log_time ON vault_log(created_at);
+-- V13: UUID 实体隔离索引
+CREATE INDEX IF NOT EXISTS idx_vault_log_belong_uuid ON vault_log(belong_entity_uuid);
 
 -- 砂金库 — 全量对话活档案
 -- P0-4: 新增 message_id 唯一索引用于幂等写入
@@ -323,6 +331,8 @@ CREATE INDEX IF NOT EXISTS idx_conv_dna_root ON conversations(dna_root_id);
 CREATE INDEX IF NOT EXISTS idx_conv_dg ON conversations(dialog_group_id);
 CREATE INDEX IF NOT EXISTS idx_conv_promoted ON conversations(is_promoted);
 CREATE INDEX IF NOT EXISTS idx_conv_message_id ON conversations(message_id);
+-- V13: UUID 实体隔离索引
+CREATE INDEX IF NOT EXISTS idx_conversations_belong_uuid ON conversations(belong_entity_uuid);
 -- 🆕 V10.0 P1-1: 对话压缩标记索引（几乎所有查询都过滤 is_compacted=0）
 CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversations(is_compacted);
 
@@ -423,6 +433,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_source_type ON memories(source_type);
 
 -- V4.0 Phase 5: 黑钻库 status 索引
 CREATE INDEX IF NOT EXISTS idx_bd_status ON black_diamond(status);
+-- V13: UUID 实体隔离索引
+CREATE INDEX IF NOT EXISTS idx_black_diamond_belong_uuid ON black_diamond(belong_entity_uuid);
 
 -- V4.0 Phase 5: 检索策略质量日志
 CREATE TABLE IF NOT EXISTS retrieval_log (

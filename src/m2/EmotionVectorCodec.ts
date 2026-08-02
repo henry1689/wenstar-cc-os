@@ -63,6 +63,39 @@ export function decodeEmotionVector(json: string): Perception24D | null {
  * l2_norm = sqrt(Σx²)，值域 [0, sqrt(24)] ≈ [0, 4.9]
  * 范数接近 0 表示无情感倾向（纯事实文本），范数大表示情感强烈
  */
+/**
+ * V13: 带文本指纹的感知向量编码
+ * 解决 97% 近零向量问题：中性文本无情感关键词命中时全部维度为 0，
+ * 导致所有中性记忆向量完全相同，向量检索无法区分。
+ * 策略：对近零向量 (max|v| < 0.1) 添加基于文本哈希的微量扰动 (±0.02)。
+ * 同文本确定、不同文本可区分、不覆盖 M3 情感信号。
+ */
+export function encodeEmotionVectorWithFingerprint(p: Perception24D, text: string): string {
+  const arr = [
+    p.pleasure, p.arousal, p.dominance, p.aggression,
+    p.sincerity, p.humor, p.factual, p.logical,
+    p.certainty, p.abstract, p.temporal_focus, p.self_ref,
+    p.intimacy, p.power_diff, p.dependency, p.moral_judgment,
+    p.etiquette, p.belonging, p.sexual_attraction, p.sensory_craving,
+    p.energy_merge, p.possessiveness, p.ecstasy, p.safety,
+  ];
+  // 排除 safety[23]：safety 固定基线 0.5，不参与信号强度判断
+  const maxAbsExclSafety = Math.max(...arr.slice(0, 23).map(v => Math.abs(v)));
+  if (maxAbsExclSafety < 0.05) {
+    let hash = 2166136261;
+    for (let i = 0; i < Math.min(text.length, 256); i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    for (let i = 0; i < 24; i++) {
+      const seed = ((hash >> (i % 16)) & 0xFF) / 255;
+      arr[i] = Math.max(-1, Math.min(1, arr[i] + (seed - 0.5) * 0.04));
+      hash = ((hash << 5) - hash) + i;
+    }
+  }
+  return JSON.stringify(arr);
+}
+
 export function computeL2Norm(p: Perception24D): number {
   const keys: (keyof Perception24D)[] = [
     'pleasure', 'arousal', 'dominance', 'aggression',

@@ -4,9 +4,64 @@
  * 删除所有非真实人物的 person 类型节点及其边。
  * 执行前自动备份 family_graph.db。
  * 使用: node scripts/clean-familygraph-nodes.cjs
+ *
+ * SCRIPT-GOV-A2c: 治理合约门控 (CRITICAL, clean)
+ *   默认: dry-run (扫描不写入)
+ *   写入: --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]
+ *   拒绝: 缺少必填字段 → exit 2
  */
 const fs = require("fs");
 const path = require("path");
+const { validateGate, recordGovernanceDecision } = require('./_governance-gate.cjs');
+
+// ── 治理 CLI 参数解析 ──
+const argv = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i];
+  if (a === '--apply') argv.apply = true;
+  else if (a === '--dry-run') argv.dryRun = true;
+  else if (a === '--operator' && process.argv[i+1]) argv.operator = process.argv[++i];
+  else if (a === '--reason' && process.argv[i+1]) argv.reason = process.argv[++i];
+  else if (a === '--ticket' && process.argv[i+1]) argv.ticket = process.argv[++i];
+  else if (a === '--confirm' && process.argv[i+1]) argv.confirm = process.argv[++i];
+  else if (a === '--scope' && process.argv[i+1]) argv.scope = process.argv[++i];
+  else if (a === '--report-path' && process.argv[i+1]) argv.reportPath = process.argv[++i];
+  else if (a === '--help') { console.log('Usage: node clean-familygraph-nodes.cjs [--apply] [--dry-run] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] [--report-path <path>]'); process.exit(0); }
+}
+
+const mode = argv.apply ? 'apply' : 'dry-run';
+const isDryRun = mode === 'dry-run';
+
+// ── 构建治理合约 ──
+function buildContract(backupCreated, backupPath, backupVerified) {
+  return {
+    scriptId: 'clean-familygraph-nodes',
+    riskLevel: 'CRITICAL',
+    operationType: 'clean',
+    mode: mode,
+    environment: 'local',
+    operator: { operatorId: argv.operator || '', reason: argv.reason || '', ticket: argv.ticket || null },
+    scope: { selector: argv.scope || 'table:nodes,edges', limit: 0, batchSize: 0, since: null, until: null },
+    confirmation: { required: true, provided: !!argv.confirm, tokenDigest: argv.confirm || null },
+    backup: { required: true, created: backupCreated, backupId: backupPath || null, backupPath: backupPath || null, verified: backupVerified },
+    irreversibleConfirmation: !!argv.confirm,
+    reportPath: argv.reportPath || null,
+  };
+}
+
+// ── 预检 ──
+const preflight = validateGate(buildContract(false, null, false));
+if (preflight.warnings.length > 0) {
+  console.warn('治理合约警告:');
+  preflight.warnings.forEach(w => console.warn(`  [${w.rule}] ${w.message}`));
+}
+
+if (isDryRun) {
+  console.log('═══════════════════════════════════════════');
+  console.log('  DRY-RUN MODE — 将扫描但不写入');
+  console.log('  使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际写入');
+  console.log('═══════════════════════════════════════════\n');
+}
 
 const BACKUP_DIR = path.join(__dirname, "..", "data", "backups");
 const FG_PATH = path.join(__dirname, "..", "data", "webui", "knowledge", "family_graph.db");
@@ -41,23 +96,56 @@ function isRealPersonName(name) {
 }
 
 async function main() {
+  // ── 🔴 预检门控 (在 DB 访问之前) ──
+  if (!isDryRun) {
+    const preflightContract = buildContract(false, null, false);
+    const preflight = validateGate(preflightContract);
+    // 仅检查非备份错误 (R001-R007, R011 — 排除 R008-R010, R013)
+    const preflightErrors = preflight.errors.filter(e => !['R008','R009','R010','R013'].includes(e.rule));
+
+    if (preflightErrors.length > 0) {
+      console.error('\n═══════════════════════════════════════════');
+      console.error('  SCRIPT EXECUTION CONTRACT DENIED');
+      console.error('═══════════════════════════════════════════');
+      console.error('  Script:  clean-familygraph-nodes.cjs');
+      console.error('  Risk:    CRITICAL');
+      console.error('  Mode:    apply');
+      console.error('  Operation: clean (DELETE nodes + edges)');
+      console.error('');
+      console.error('  Issues:');
+      preflightErrors.forEach(e => console.error('    [' + e.rule + '] ' + e.message));
+      console.error('');
+      console.error('  Refusing to continue.');
+      console.error('═══════════════════════════════════════════\n');
+      recordGovernanceDecision(preflightContract, preflight); process.exit(2);
+    }
+    if (preflight.warnings.length > 0) {
+      console.warn('治理合约警告:');
+      preflight.warnings.forEach(w => console.warn('  [' + w.rule + '] ' + w.message));
+    }
+  }
+
   if (!fs.existsSync(FG_PATH)) {
     console.error("family_graph.db 不存在:", FG_PATH);
     process.exit(1);
   }
 
-  // 备份
+  // 备份 (两种模式都执行)
   if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const bakName = `family_graph_global_cleanup_${Date.now()}.db`;
-  fs.copyFileSync(FG_PATH, path.join(BACKUP_DIR, bakName));
-  console.log("已备份:", bakName);
+  const bakPath = path.join(BACKUP_DIR, bakName);
+  fs.copyFileSync(FG_PATH, bakPath);
+  const bakCreated = fs.existsSync(bakPath);
+  const bakSize = bakCreated ? fs.statSync(bakPath).size : null;
+  const bakVerified = bakCreated && bakSize > 0;
+  console.log("已备份:", bakName, bakVerified ? '(已验证 ✓)' : '(验证失败)');
 
   const initSqlJs = require("sql.js");
   const SQL = await initSqlJs();
   const buf = fs.readFileSync(FG_PATH);
   const db = new SQL.Database(buf);
 
-  // 1. 找出所有非真实人名的 person 节点
+  // 1. 找出所有非真实人名的 person 节点 (两种模式都扫描)
   const allNodes = db.exec("SELECT id, name, properties FROM nodes WHERE type = 'person'");
   if (!allNodes[0]?.values) { console.log("无节点"); db.close(); return; }
 
@@ -75,30 +163,64 @@ async function main() {
 
   console.log("\n真实人物:", kept.length, "个");
   console.log("脏节点:", toDelete.length, "个");
-  console.log("\n即将删除的脏节点:");
+  console.log("\n" + (isDryRun ? '[DRY-RUN] 即将删除' : '即将删除') + "的脏节点:");
   for (const n of toDelete) console.log(" ", n.name);
 
-  // 2. 删除脏节点及其边
-  let deletedEdges = 0;
-  for (const n of toDelete) {
-    // 先删边
-    const edgeDel = db.exec("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [n.id, n.id]);
-    if (edgeDel[0]?.affectedRows) deletedEdges += edgeDel[0].affectedRows;
-    // 再删节点
-    db.exec("DELETE FROM nodes WHERE id = ?", [n.id]);
+  if (toDelete.length === 0) {
+    console.log("\n无需清理。");
+    db.close();
+    return;
   }
 
-  console.log("\n已删除边:", deletedEdges, "条");
-  console.log("已删除节点:", toDelete.length, "个");
+  // ── Apply 治理门控 ──
+  if (!isDryRun) {
+    const contract = buildContract(bakCreated, bakName, bakVerified);
+    const validation = validateGate(contract);
+    if (!validation.allowed) {
+      console.error('\n═══════════════════════════════════════════');
+      console.error('  SCRIPT EXECUTION CONTRACT DENIED');
+      console.error('═══════════════════════════════════════════');
+      console.error('  Script:  clean-familygraph-nodes.cjs');
+      console.error('  Risk:    CRITICAL');
+      console.error('  Mode:    apply');
+      console.error('  Operation: clean (DELETE nodes + edges)');
+      console.error('');
+      console.error('  Issues:');
+      validation.errors.forEach(e => console.error('    [' + e.rule + '] ' + e.message));
+      console.error('');
+      console.error('  Refusing to continue.');
+      console.error('═══════════════════════════════════════════\n');
+      db.close();
+      recordGovernanceDecision(contract, validation); process.exit(2);
+    }
+    console.log('治理合约验证: 通过 ✓');
+  }
 
-  // 3. 保存
-  const data = db.export();
-  fs.writeFileSync(FG_PATH + ".new", Buffer.from(data));
-  fs.renameSync(FG_PATH + ".new", FG_PATH);
+  // 2. 删除脏节点及其边 (dry-run 跳过)
+  let deletedEdges = 0;
+  if (!isDryRun) {
+    for (const n of toDelete) {
+      const edgeDel = db.exec("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [n.id, n.id]);
+      if (edgeDel[0]?.affectedRows) deletedEdges += edgeDel[0].affectedRows;
+      db.exec("DELETE FROM nodes WHERE id = ?", [n.id]);
+    }
+
+    console.log("\n已删除边:", deletedEdges, "条");
+    console.log("已删除节点:", toDelete.length, "个");
+
+    // 3. 保存
+    const data = db.export();
+    fs.writeFileSync(FG_PATH + ".new", Buffer.from(data));
+    fs.renameSync(FG_PATH + ".new", FG_PATH);
+    console.log("\n清洗完成！");
+  } else {
+    console.log('\n[DRY-RUN] 将删除 ' + toDelete.length + ' 个脏节点及其边');
+    console.log('[DRY-RUN] 真实人物 ' + kept.length + ' 个将保留');
+    console.log('[DRY-RUN] 使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行写入');
+  }
+
   db.close();
-
-  console.log("\n清洗完成！");
-  console.log("剩余真实人物:", kept.join(", "));
+  if (!isDryRun) console.log("剩余真实人物:", kept.join(", "));
 }
 
 main().catch(e => { console.error("清洗失败:", e.message); process.exit(1); });

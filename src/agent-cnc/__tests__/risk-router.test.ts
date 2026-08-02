@@ -127,10 +127,10 @@ describe('routeRisks — 风险分类', () => {
   });
 
   it('C. 低风险 glob 匹配 → overallRisk=low', () => {
-    const result = singleFile('src/config/settings.json');
+    const result = singleFile('src/types/settings.ts');
     expect(result.overallRisk).toBe('low');
     expect(result.files[0].risk).toBe('low');
-    expect(result.files[0].reason).toContain('src/config/**');
+    expect(result.files[0].reason).toContain('src/types/**');
   });
 
   it('C2. 测试文件 glob 匹配 → low', () => {
@@ -197,7 +197,7 @@ describe('routeRisks — Workflow 触发', () => {
 describe('routeRisks — 多文件变更', () => {
   it('H. high + low 混合 → overallRisk=high', () => {
     const result = routeRisks(
-      ['src/webui/chat.ts', 'src/config/settings.json'],
+      ['src/webui/chat.ts', 'src/types/settings.ts'],
       TEST_RISK_MAP,
       TEST_HARNESS,
     );
@@ -247,11 +247,147 @@ describe('routeRisks — 多文件变更', () => {
 
   it('仅 low risk 文件 → overallRisk=low, requirePlan=false', () => {
     const result = routeRisks(
-      ['src/config/a.json', 'src/types/b.ts'],
+      ['src/types/a.ts', 'src/types/b.ts'],
       TEST_RISK_MAP,
       TEST_HARNESS,
     );
     expect(result.overallRisk).toBe('low');
     expect(result.requirePlan).toBe(false);
+  });
+});
+
+// ============================================================
+// Config 文件关键词风险判定 (R21-B1.1 Calibration)
+// ============================================================
+
+// 使用精简的 TEST_RISK_MAP（不含 src/config/** 低风险通配符）
+const TEST_RISK_MAP_NO_CONFIG_LOW: RiskMapConfig = {
+  risk_map: {
+    version: '0.1',
+    high_risk: {
+      severity: 'S',
+      require_plan: true,
+      require_human_approval: true,
+      files: [
+        { path: 'src/webui/chat.ts', reason: '聊天中枢' },
+      ],
+    },
+    medium_risk: {
+      severity: 'A',
+      require_plan: 'recommended',
+      files: ['src/m3/PerceptionAnalyzer.ts'],
+    },
+    low_risk: {
+      severity: 'B',
+      allow_direct_patch: true,
+      path_patterns: ['**/__tests__/**', 'src/types/**'],
+    },
+  },
+};
+
+describe('Config 文件关键词风险判定', () => {
+  it('CK1: src/config/model-provider.ts → HIGH (model + provider keywords)', () => {
+    const result = routeRisks(
+      ['src/config/model-provider.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('config 文件包含治理敏感关键词');
+    expect(result.files[0].reason).toContain('model');
+    expect(result.overallRisk).toBe('high');
+    expect(result.requirePlan).toBe(true);
+  });
+
+  it('CK2: src/config/ConfigService.ts → MEDIUM (no keyword, 需显式 HIGH 列表)', () => {
+    const result = routeRisks(
+      ['src/config/ConfigService.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    // "ConfigService" 文件名不含治理关键词 → 无法通过关键词判定 HIGH
+    // 真实 risk-map.yaml 中通过显式 high_risk.files 条目覆盖
+    expect(result.files[0].risk).toBe('medium');
+    expect(result.files[0].reason).toContain('未匹配');
+  });
+
+  it('CK3: src/config/llm-config.ts → HIGH (llm keyword)', () => {
+    const result = routeRisks(
+      ['src/config/llm-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('llm');
+  });
+
+  it('CK4: src/config/auth-config.ts → HIGH (auth keyword)', () => {
+    const result = routeRisks(
+      ['src/config/auth-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('auth');
+  });
+
+  it('CK5: src/config/storage-config.ts → HIGH (storage keyword)', () => {
+    const result = routeRisks(
+      ['src/config/storage-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('storage');
+  });
+
+  it('CK6: src/config/provider-config.ts → HIGH (provider keyword)', () => {
+    const result = routeRisks(
+      ['src/config/provider-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('provider');
+  });
+
+  it('CK7: src/config/safety-config.ts → HIGH (safety keyword)', () => {
+    const result = routeRisks(
+      ['src/config/safety-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toContain('safety');
+  });
+
+  it('CK8: src/config/theme-config.ts → MEDIUM (no keywords, default)', () => {
+    const result = routeRisks(
+      ['src/config/theme-config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('medium');
+    expect(result.files[0].reason).toContain('未匹配');
+  });
+
+  it('CK9: src/m5/config.ts → MEDIUM (不在 config/ 目录，不触发关键词)', () => {
+    const result = routeRisks(
+      ['src/m5/config.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    // 路径中没有 "config/"，不触发 config 关键词规则 → 默认 MEDIUM
+    expect(result.files[0].risk).toBe('medium');
+  });
+
+  it('CK10: 既有 high-risk 不退化为 config medium', () => {
+    const result = routeRisks(
+      ['src/webui/chat.ts'],
+      TEST_RISK_MAP_NO_CONFIG_LOW,
+      TEST_HARNESS,
+    );
+    expect(result.files[0].risk).toBe('high');
+    expect(result.files[0].reason).toBe('聊天中枢');
   });
 });

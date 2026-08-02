@@ -139,7 +139,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
 
     // 🆕 V4.0·Phase 2: 始终搜知识库，按搜索等级决定注入强度
     // 🛡️ V5.1: 会晤隔离墙 — 会晤模式下不搜通用知识库
-    if (!_isEntityMeeting) {
+    {
     const sceneTags = dna.scene_tags || [];
     let knResults = await ctx.knowledgeBase.weightedSearch(
       _entitySearchMsg || searchMsg || message, sceneTags,
@@ -315,8 +315,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   }
 
   // ── 亲密模式两性知识 ──
-  // 🛡️ V5.1: 会晤模式下不加载两性知识
-  if (!_isEntityMeeting) {
+  // 🛡️ V5.1: 会晤模式下也加载亲密知识 — V5.3
+  {
   try {
     const _isIntimateMode = (p.intimacy || 0) >= 2 || /高潮|操|干|插|顶|射|做爱|性交|爱爱|上床|湿了|硬了|进去|想要|吻我|抱我|摸我|亲我|胸|乳头|阴|龟头|鸡巴|阴道|舔|吸/.test(message);
     if (_isIntimateMode && ctx.knowledgeBase) {
@@ -337,8 +337,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   } // 🛡️ V5.2: 亲密KB结束
 
   // ── VAD 谱曲引擎 (8100) ──
-  // 🛡️ V5.1: 会晤模式下跳过 VAD 情感曲谱
-  if (!_isEntityMeeting) {
+  // 🛡️ V5.1: 会晤模式下也加载 VAD 情感曲谱 — V5.3
+  {
   try {
     const toneHint = await _getVadToneHint(message);
     if (toneHint) console.log('[VADTone] toneHint: ' + toneHint.substring(0, 80));

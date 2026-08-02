@@ -84,8 +84,8 @@ export class BlackDiamondGate {
       this.sqlite.writeRaw(
         `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level,
          recall_count, tags, notes, created_at, updated_at, entry_channel, entry_reason,
-         stabilization_score, manual_quota_consumed, status)
-         VALUES (?, ?, NULL, NULL, 5, 0, ?, ?, ?, ?, 'manual', ?, 1.0, 1, 'active')`,
+         stabilization_score, manual_quota_consumed, status, belong_entity_uuid)
+         VALUES (?, ?, NULL, NULL, 5, 0, ?, ?, ?, ?, 'manual', ?, 1.0, 1, 'active', NULL)`,
         [entryId, summary.substring(0, 200), tagsJson, content.substring(0, 500), now, now, entryReason],
       );
 
@@ -209,10 +209,16 @@ export class BlackDiamondGate {
   private _logOperation(operation: string, targetId: string, detail: string): void {
     try {
       const id = `vd_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 4)}`;
+      // V13: 回查 black_diamond.belong_entity_uuid 确保审计日志可被 UUID 检索
+      let euuid: string | null = null;
+      try {
+        const bd = this.sqlite.queryAll('SELECT belong_entity_uuid FROM black_diamond WHERE id = ?', [targetId]) as any[];
+        if (bd.length > 0) euuid = bd[0]?.belong_entity_uuid || null;
+      } catch { /* 回查不阻塞 */ }
       this.sqlite.writeRaw(
-        `INSERT INTO vault_log (id, operation, source_type, target_id, detail, created_at)
-         VALUES (?, ?, 'black_diamond', ?, ?, ?)`,
-        [id, operation, targetId, detail, new Date().toISOString()],
+        `INSERT INTO vault_log (id, operation, source_type, target_id, detail, created_at, belong_entity_uuid)
+         VALUES (?, ?, 'black_diamond', ?, ?, ?, ?)`,
+        [id, operation, targetId, detail, new Date().toISOString(), euuid],
       );
     } catch { /* 审计日志不阻塞 */ }
   }

@@ -31,6 +31,9 @@ import {
 } from './report.js';
 import { runMeters, getRegisteredMeterIds } from './meters/index.js';
 import { fileExists, readTextFile, getNodeVersion, normalizePath } from './utils.js';
+import { buildGuardEvent, writeGuardEvent } from './guard-event.js';
+import { auditGuardHistory } from './audit.js';
+import { readGuardHistory, summarizeGuardHistory } from './guard-history.js';
 import type {
   ScanResult,
   CommandResult,
@@ -48,6 +51,7 @@ interface CliArgs {
   test: boolean;
   strict: boolean;
   offline: boolean;
+  json: boolean;
   planPath: string | null;
   baseRef: string | null;
   files: string[] | null;
@@ -60,6 +64,7 @@ export function parseArgs(raw: string[]): CliArgs {
     test: false,
     strict: false,
     offline: false,
+    json: false,
     planPath: null,
     baseRef: null,
     files: null,
@@ -80,6 +85,9 @@ export function parseArgs(raw: string[]): CliArgs {
         break;
       case '--offline':
         args.offline = true;
+        break;
+      case '--json':
+        args.json = true;
         break;
       case '--plan':
         if (i + 1 < raw.length) {
@@ -118,6 +126,16 @@ export interface CliRuntime {
   log(...args: unknown[]): void;
   error(...args: unknown[]): void;
   exit(code: number): never;
+  /** 执行 TypeScript 编译检查。测试可注入 mock 避免真实 shell 执行。 */
+  runTypeCheck(cwd?: string): CommandResult;
+  /** 执行 Vitest。测试可注入 mock 避免真实 shell 执行。 */
+  runVitest(cwd?: string): CommandResult;
+  /** 获取变更文件列表。测试可注入 mock 避免真实 git 执行。 */
+  getChangedFiles(cwd?: string): string[];
+  /** 获取相对于 base ref 的变更文件。测试可注入 mock 避免真实 git 执行。 */
+  getChangedFilesSince(base: string, cwd?: string): string[];
+  /** 运行 Meter 检查。测试可注入 mock 控制 meter 结果。 */
+  runMeters(ids: string[], context: HarnessContext): Promise<MeterResult[]>;
 }
 
 export const defaultRuntime: CliRuntime = {
@@ -125,6 +143,11 @@ export const defaultRuntime: CliRuntime = {
   log: (...args: unknown[]) => console.log(...args),
   error: (...args: unknown[]) => console.error(...args),
   exit: (code: number): never => process.exit(code),
+  runTypeCheck: (cwd) => runTypeCheck(cwd),
+  runVitest: (cwd) => runVitest(cwd),
+  getChangedFiles: (cwd) => getChangedFilesSafe(cwd),
+  getChangedFilesSince: (base, cwd) => getChangedFilesSince(base, cwd),
+  runMeters: (ids, ctx) => runMeters(ids, ctx),
 };
 
 // ---- 辅助 ----
@@ -141,16 +164,20 @@ export function hasLine(content: string, search: string): boolean {
 
 // ---- doctor ----
 
-function cmdDoctor(): void {
-  console.log('[Agent CNC] Doctor');
-  console.log('');
+export function cmdDoctor(
+  args: CliArgs,
+  rt: CliRuntime = defaultRuntime,
+): void {
+  const rootDir = rt.cwd();
+  rt.log('[Agent CNC] Doctor');
+  rt.log('');
 
-  const configFiles = checkConfigFiles(ROOT_DIR);
+  const configFiles = checkConfigFiles(rootDir);
   const nodeVersion = getNodeVersion();
   const llmStatus = checkLlmConfigured();
 
   // 检查 tsc/vitest/tsx
-  const pkgJsonPath = path.join(ROOT_DIR, 'package.json');
+  const pkgJsonPath = path.join(rootDir, 'package.json');
   let tscAvailable = false;
   let vitestAvailable = false;
   let tsxAvailable = false;
@@ -165,25 +192,25 @@ function cmdDoctor(): void {
   }
 
   // 检查脚本自身
-  const cliExists = fileExists(path.join(ROOT_DIR, 'src', 'agent-cnc', 'cli.ts'));
-  const harnessExists = fileExists(path.join(ROOT_DIR, '.agent-cnc', 'harness.yaml'));
-  const riskMapExists = fileExists(path.join(ROOT_DIR, '.agent-cnc', 'risk-map.yaml'));
+  const cliExists = fileExists(path.join(rootDir, 'src', 'agent-cnc', 'cli.ts'));
+  const harnessExists = fileExists(path.join(rootDir, '.agent-cnc', 'harness.yaml'));
+  const riskMapExists = fileExists(path.join(rootDir, '.agent-cnc', 'risk-map.yaml'));
 
-  console.log(`Project: WenStarOS`);
-  console.log(`Mode: ${getRunMode()}`);
-  console.log(`LLM: ${llmStatus}`);
-  console.log(`Config: ${configFiles.exists ? 'OK' : `MISSING: ${configFiles.missing.join(', ')}`}`);
-  console.log(`Git: ${isGitAvailable() ? 'OK' : 'NOT FOUND'}`);
-  console.log(`Node: ${nodeVersion}`);
-  console.log(`TypeScript: ${tscAvailable ? 'OK' : 'MISSING'}`);
-  console.log(`Vitest: ${vitestAvailable ? 'OK' : 'MISSING'}`);
-  console.log(`tsx: ${tsxAvailable ? 'OK' : 'MISSING'}`);
-  console.log(`CLI Entry: ${cliExists ? 'OK' : 'MISSING'}`);
-  console.log(`harness.yaml: ${harnessExists ? 'OK' : 'MISSING'}`);
-  console.log(`risk-map.yaml: ${riskMapExists ? 'OK' : 'MISSING'}`);
+  rt.log(`Project: WenStarOS`);
+  rt.log(`Mode: ${getRunMode()}`);
+  rt.log(`LLM: ${llmStatus}`);
+  rt.log(`Config: ${configFiles.exists ? 'OK' : `MISSING: ${configFiles.missing.join(', ')}`}`);
+  rt.log(`Git: ${isGitAvailable(rootDir) ? 'OK' : 'NOT FOUND'}`);
+  rt.log(`Node: ${nodeVersion}`);
+  rt.log(`TypeScript: ${tscAvailable ? 'OK' : 'MISSING'}`);
+  rt.log(`Vitest: ${vitestAvailable ? 'OK' : 'MISSING'}`);
+  rt.log(`tsx: ${tsxAvailable ? 'OK' : 'MISSING'}`);
+  rt.log(`CLI Entry: ${cliExists ? 'OK' : 'MISSING'}`);
+  rt.log(`harness.yaml: ${harnessExists ? 'OK' : 'MISSING'}`);
+  rt.log(`risk-map.yaml: ${riskMapExists ? 'OK' : 'MISSING'}`);
 
   const allOk = configFiles.exists && tscAvailable && vitestAvailable && tsxAvailable;
-  console.log(`Result: ${allOk ? 'PASS' : 'WARN'}`);
+  rt.log(`Result: ${allOk ? 'PASS' : 'WARN'}`);
 }
 
 // ---- scan ----
@@ -202,17 +229,17 @@ export function cmdScan(args: CliArgs, rt: CliRuntime): void {
     rt.log(`Using --files: ${changedFiles.length} file(s)`);
   } else if (args.baseRef) {
     // 指定 base ref
-    if (!isGitAvailable() || !isGitRepo()) {
+    if (!isGitAvailable(rootDir) || !isGitRepo(rootDir)) {
       rt.log('Git 不可用，无法使用 --base。请使用 --files 指定文件。');
       changedFiles = [];
     } else {
-      changedFiles = getChangedFilesSince(args.baseRef);
+      changedFiles = rt.getChangedFilesSince(args.baseRef, rootDir);
       rt.log(`Changed files since ${args.baseRef}: ${changedFiles.length}`);
     }
   } else {
     // 默认 git diff
-    changedFiles = getChangedFilesSafe();
-    if (changedFiles.length === 0 && !isGitAvailable()) {
+    changedFiles = rt.getChangedFiles(rootDir);
+    if (changedFiles.length === 0 && !isGitAvailable(rootDir)) {
       rt.log('Git 不可用且未指定 --files。');
       rt.log('提示: 使用 --files 手动指定变更文件');
     }
@@ -339,33 +366,38 @@ export function cmdValidate(rt: CliRuntime): void {
 
 // ---- guard ----
 
-async function cmdGuard(args: CliArgs): Promise<void> {
-  console.log('[Agent CNC] Guard');
-  console.log('');
+export async function cmdGuard(
+  args: CliArgs,
+  rt: CliRuntime = defaultRuntime,
+): Promise<void> {
+  const rootDir = rt.cwd();
+  rt.log('[Agent CNC] Guard');
+  rt.log('');
 
   const commandResults: CommandResult[] = [];
   const meterResults: MeterResult[] = [];
   const gateFailReasons: string[] = [];
   const gateWarnings: string[] = [];
   let scanResult: ScanResult | null = null;
+  let planExists = false;
 
   // 1. 执行 scan
   let changedFiles: string[];
   if (args.files) {
     changedFiles = args.files.map(normalizePath);
   } else {
-    changedFiles = getChangedFilesSafe();
+    changedFiles = rt.getChangedFiles(rootDir);
   }
 
   if (changedFiles.length === 0 && !args.files) {
-    console.log('No changed files. Running validation only.');
+    rt.log('No changed files. Running validation only.');
   }
 
   // 2. 执行 validate
-  console.log('--- Validating config ---');
-  const validation = validateConfig(ROOT_DIR);
+  rt.log('--- Validating config ---');
+  const validation = validateConfig(rootDir);
   const registeredIds = getRegisteredMeterIds();
-  const missingMeters = checkMeterRegistry(ROOT_DIR, registeredIds);
+  const missingMeters = checkMeterRegistry(rootDir, registeredIds);
   if (missingMeters.length > 0) {
     validation.passed = false;
     validation.missingMeterImplementations.push(...missingMeters);
@@ -373,33 +405,33 @@ async function cmdGuard(args: CliArgs): Promise<void> {
 
   if (!validation.passed) {
     gateFailReasons.push('validate 失败');
-    console.log('Validation: FAIL');
-    for (const e of validation.missingFiles) console.log(`  ❌ Missing: ${e}`);
-    for (const e of validation.invalidYaml) console.log(`  ❌ Invalid: ${e}`);
-    for (const e of validation.missingFields) console.log(`  ❌ Missing field: ${e}`);
-    for (const e of validation.missingMeterImplementations) console.log(`  ❌ ${e}`);
+    rt.log('Validation: FAIL');
+    for (const e of validation.missingFiles) rt.log(`  ❌ Missing: ${e}`);
+    for (const e of validation.invalidYaml) rt.log(`  ❌ Invalid: ${e}`);
+    for (const e of validation.missingFields) rt.log(`  ❌ Missing field: ${e}`);
+    for (const e of validation.missingMeterImplementations) rt.log(`  ❌ ${e}`);
   } else {
-    console.log('Validation: PASS');
+    rt.log('Validation: PASS');
   }
 
   // 3. 加载配置 + 风险路由
-  const riskMap = loadRiskMap(ROOT_DIR);
-  const harnessConfig = loadHarnessConfig(ROOT_DIR);
+  const riskMap = loadRiskMap(rootDir);
+  const harnessConfig = loadHarnessConfig(rootDir);
 
   if (!riskMap || !harnessConfig) {
-    console.error('ERROR: 配置文件加载失败');
-    process.exit(1);
+    rt.error('ERROR: 配置文件加载失败');
+    rt.exit(1);
   }
 
   if (changedFiles.length > 0) {
     scanResult = routeRisks(changedFiles, riskMap, harnessConfig);
-    console.log(`\n--- Risk Assessment ---`);
-    console.log(`Overall Risk: ${scanResult.overallRisk.toUpperCase()}`);
-    console.log(`Require Plan: ${scanResult.requirePlan ? 'YES' : 'No'}`);
-    console.log(`Files: ${scanResult.files.length}`);
+    rt.log(`\n--- Risk Assessment ---`);
+    rt.log(`Overall Risk: ${scanResult.overallRisk.toUpperCase()}`);
+    rt.log(`Require Plan: ${scanResult.requirePlan ? 'YES' : 'No'}`);
+    rt.log(`Files: ${scanResult.files.length}`);
     for (const f of scanResult.files) {
       if (f.risk !== 'low') {
-        console.log(`  ${f.risk.toUpperCase()} ${f.path}`);
+        rt.log(`  ${f.risk.toUpperCase()} ${f.path}`);
       }
     }
 
@@ -407,19 +439,19 @@ async function cmdGuard(args: CliArgs): Promise<void> {
     if (scanResult.overallRisk === 'high') {
       // 检查 Plan 是否存在
       const defaultPlanPath = path.join(
-        ROOT_DIR,
+        rootDir,
         '.agent-cnc',
         'reports',
         'current-plan.md',
       );
       const planPath = args.planPath || defaultPlanPath;
-      const planExists = fileExists(planPath);
+      planExists = fileExists(planPath);
 
       if (!planExists) {
         gateFailReasons.push('high_risk_without_plan');
-        console.log('\n❌ HIGH RISK but no Plan found!');
-        console.log(`   Expected: ${planPath}`);
-        console.log('   Use --plan <path> to specify plan, or create current-plan.md');
+        rt.log('\n❌ HIGH RISK but no Plan found!');
+        rt.log(`   Expected: ${planPath}`);
+        rt.log('   Use --plan <path> to specify plan, or create current-plan.md');
       } else {
         // 检查 Plan 必须包含的章节
         const planContent = readTextFile(planPath) || '';
@@ -438,10 +470,10 @@ async function cmdGuard(args: CliArgs): Promise<void> {
         }
         if (missingSections.length > 0) {
           gateFailReasons.push('plan_missing_sections');
-          console.log(`\n❌ Plan 缺少必需章节: ${missingSections.join(', ')}`);
+          rt.log(`\n❌ Plan 缺少必需章节: ${missingSections.join(', ')}`);
         } else {
-          console.log(`\n✅ Plan found: ${planPath}`);
-          console.log('   All required sections present.');
+          rt.log(`\n✅ Plan found: ${planPath}`);
+          rt.log('   All required sections present.');
         }
       }
 
@@ -453,20 +485,20 @@ async function cmdGuard(args: CliArgs): Promise<void> {
   }
 
   // 5. 执行 TypeScript 编译检查（默认必须）
-  console.log('\n--- TypeScript Compile Check ---');
-  const tscResult = runTypeCheck(ROOT_DIR);
+  rt.log('\n--- TypeScript Compile Check ---');
+  const tscResult = rt.runTypeCheck(rootDir);
   commandResults.push(tscResult);
   if (tscResult.exitCode !== 0) {
     gateFailReasons.push('tsc --noEmit 失败');
-    console.log(`❌ tsc --noEmit FAILED (${tscResult.durationMs}ms)`);
+    rt.log(`❌ tsc --noEmit FAILED (${tscResult.durationMs}ms)`);
   } else {
-    console.log(`✅ tsc --noEmit PASSED (${tscResult.durationMs}ms)`);
+    rt.log(`✅ tsc --noEmit PASSED (${tscResult.durationMs}ms)`);
   }
 
   // 6. Vitest（仅在 --test 或 --strict 时跑）
   if (args.test || args.strict) {
-    console.log('\n--- Vitest ---');
-    const vitestResult = runVitest(ROOT_DIR);
+    rt.log('\n--- Vitest ---');
+    const vitestResult = rt.runVitest(rootDir);
     commandResults.push(vitestResult);
     if (vitestResult.exitCode !== 0) {
       if (args.strict) {
@@ -474,27 +506,27 @@ async function cmdGuard(args: CliArgs): Promise<void> {
       } else {
         gateWarnings.push('vitest 失败（非 strict 模式）');
       }
-      console.log(`❌ vitest FAILED (${vitestResult.durationMs}ms)`);
+      rt.log(`❌ vitest FAILED (${vitestResult.durationMs}ms)`);
     } else {
-      console.log(`✅ vitest PASSED (${vitestResult.durationMs}ms)`);
+      rt.log(`✅ vitest PASSED (${vitestResult.durationMs}ms)`);
     }
   }
 
   // 7. 执行 Meter
   if (scanResult && scanResult.requiredMeters.length > 0) {
-    console.log('\n--- Meter Execution ---');
+    rt.log('\n--- Meter Execution ---');
 
     // 构建 HarnessContext
     const context: HarnessContext = {
-      rootDir: ROOT_DIR,
+      rootDir,
       changedFiles,
       riskResult: scanResult,
-      dbAvailable: fileExists(path.join(ROOT_DIR, 'data', 'webui', 'fusion_memory.db')),
-      dbPath: path.join(ROOT_DIR, 'data', 'webui', 'fusion_memory.db'),
+      dbAvailable: fileExists(path.join(rootDir, 'data', 'webui', 'fusion_memory.db')),
+      dbPath: path.join(rootDir, 'data', 'webui', 'fusion_memory.db'),
       wenstarOsRoot: process.env['WENSTAR_OS_ROOT'] || null,
     };
 
-    const results = await runMeters(scanResult.requiredMeters, context);
+    const results = await rt.runMeters(scanResult.requiredMeters, context);
     meterResults.push(...results);
 
     for (const m of results) {
@@ -506,7 +538,7 @@ async function cmdGuard(args: CliArgs): Promise<void> {
             : m.status === 'fail'
               ? '❌'
               : '⏭️';
-      console.log(`  ${icon} ${m.title}: ${m.status} (score: ${m.score})`);
+      rt.log(`  ${icon} ${m.title}: ${m.status} (score: ${m.score})`);
 
       if (m.status === 'fail' && m.severity === 'S') {
         gateFailReasons.push(`S severity meter failed: ${m.id}`);
@@ -523,19 +555,19 @@ async function cmdGuard(args: CliArgs): Promise<void> {
   }
 
   // 8. Gate 判定
-  console.log('\n--- Gate Decision ---');
+  rt.log('\n--- Gate Decision ---');
   const gatePassed = gateFailReasons.length === 0;
 
   if (gatePassed) {
-    console.log('GATE: PASS');
+    rt.log('GATE: PASS');
     if (gateWarnings.length > 0) {
-      console.log('Warnings:');
-      for (const w of gateWarnings) console.log(`  ⚠️ ${w}`);
+      rt.log('Warnings:');
+      for (const w of gateWarnings) rt.log(`  ⚠️ ${w}`);
     }
   } else {
-    console.log('GATE: FAIL');
-    console.log('Reasons:');
-    for (const r of gateFailReasons) console.log(`  ❌ ${r}`);
+    rt.log('GATE: FAIL');
+    rt.log('Reasons:');
+    for (const r of gateFailReasons) rt.log(`  ❌ ${r}`);
   }
 
   // 9. 生成报告
@@ -561,36 +593,67 @@ async function cmdGuard(args: CliArgs): Promise<void> {
       : ['修复以上 FAIL 项后重新运行 guard'],
   });
 
-  const { mdPath, jsonPath } = saveReport(ROOT_DIR, report);
-  console.log(`\nReport saved:`);
-  console.log(`  MD:  ${mdPath}`);
-  console.log(`  JSON: ${jsonPath}`);
+  const { mdPath, jsonPath } = saveReport(rootDir, report);
+  rt.log(`\nReport saved:`);
+  rt.log(`  MD:  ${mdPath}`);
+  rt.log(`  JSON: ${jsonPath}`);
+
+  // 10. 写入 Guard History Event（R22-A）
+  try {
+    const guardEvent = buildGuardEvent({
+      rootDir,
+      targetFiles: changedFiles,
+      scanResult,
+      planFound: planExists,
+      planPath: args.planPath || null,
+      gatePassed,
+      gateFailReasons,
+      meterResults,
+      cliArgs: process.argv.slice(2),
+    });
+    writeGuardEvent(rootDir, guardEvent);
+  } catch (e: unknown) {
+    rt.log(`⚠️ WARN: Failed to write guard history event: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   if (!gatePassed) {
-    process.exit(1);
+    rt.exit(1);
   }
 }
 
 // ---- report ----
 
-function cmdReport(): void {
-  console.log('[Agent CNC] Report');
-  console.log('');
+export async function cmdReport(
+  args: CliArgs,
+  rt: CliRuntime = defaultRuntime,
+): Promise<void> {
+  const rootDir = rt.cwd();
+  rt.log('[Agent CNC] Report');
+  rt.log('');
 
   const latestJsonPath = path.join(
-    ROOT_DIR,
+    rootDir,
     '.agent-cnc',
     'reports',
     'latest-result.json',
   );
 
   if (!fileExists(latestJsonPath)) {
-    console.log('No previous report found. Run `guard` first to generate a report.');
+    rt.log('No previous report found. Run `guard` first to generate a report.');
     return;
   }
 
   // 读取最近结果
-  const data = JSON.parse(fs.readFileSync(latestJsonPath, 'utf-8'));
+  let data: any;
+  try {
+    const rawJson = fs.readFileSync(latestJsonPath, 'utf-8');
+    data = JSON.parse(rawJson);
+  } catch (e: unknown) {
+    rt.error(`Failed to read or parse report file: ${latestJsonPath}`);
+    rt.error(`  ${e instanceof Error ? e.message : String(e)}`);
+    rt.error('  Run `guard` first to generate a valid report.');
+    rt.exit(1);
+  }
 
   // 重新生成时间戳版本
   const report = buildReport({
@@ -608,10 +671,155 @@ function cmdReport(): void {
     nextSteps: data.nextSteps || [],
   });
 
-  const { mdPath } = saveReport(ROOT_DIR, report);
-  console.log(`Report generated:`);
-  console.log(`  ${mdPath}`);
-  console.log(`  .agent-cnc/reports/latest.md`);
+  // R22-D: 运行实时审计 + history 摘要
+  let auditResult: Awaited<ReturnType<typeof auditGuardHistory>> | undefined;
+  let historySummary: ReturnType<typeof summarizeGuardHistory> | undefined;
+  try {
+    const changedFiles = rt.getChangedFiles(rootDir);
+    const riskMap = loadRiskMap(rootDir);
+    if (riskMap && changedFiles.length > 0) {
+      const scanResult = routeRisks(changedFiles, riskMap, {
+        agent_cnc_harness: {
+          version: '0.1', project: 'audit', commands: {} as any,
+          trigger_workflows: [], gates: { block_on: [] },
+          autonomy: { default_level: 'A2', max_level: 'A4', allow_auto_patch_for: [], require_human_approval_for: [] },
+        },
+      });
+      const highRiskFiles = scanResult.files.filter((f) => f.risk === 'high').map((f) => f.path);
+
+      let currentBranch: string | undefined;
+      try {
+        const { execSync: es } = await import('node:child_process');
+        currentBranch = es('git branch --show-current', { cwd: rootDir, stdio: 'pipe', encoding: 'utf-8' }).trim();
+      } catch { /* */ }
+
+      auditResult = auditGuardHistory({
+        changedFiles, highRiskFiles,
+        planRequired: scanResult.requirePlan,
+        currentBranch, cwd: rootDir,
+      });
+
+      const history = readGuardHistory({ cwd: rootDir, limit: 50 });
+      historySummary = summarizeGuardHistory(history.events);
+    }
+  } catch {
+    // audit 失败不影响 report 主流程
+  }
+
+  // 将 audit result 传递给 renderMarkdown (via saveReport)
+  const { mdPath } = saveReport(rootDir, report, auditResult, historySummary);
+  rt.log(`Report generated:`);
+  rt.log(`  ${mdPath}`);
+  rt.log(`  .agent-cnc/reports/latest.md`);
+
+  if (auditResult && !auditResult.passed) {
+    rt.log('');
+    rt.log('⚠️ Audit findings detected. See report section 10 for details.');
+    rt.log('   Run `agent-cnc audit` for real-time bypass check.');
+  }
+}
+
+// ---- audit ----
+
+async function cmdAudit(
+  args: CliArgs,
+  rt: CliRuntime = defaultRuntime,
+): Promise<void> {
+  const rootDir = rt.cwd();
+  rt.log('[Agent CNC] Audit');
+  rt.log('');
+
+  // 获取变更文件
+  let changedFiles: string[];
+  if (args.files) {
+    changedFiles = args.files.map(normalizePath);
+  } else {
+    changedFiles = rt.getChangedFiles(rootDir);
+  }
+
+  if (changedFiles.length === 0) {
+    rt.log('No changed files. Nothing to audit.');
+    return;
+  }
+
+  // 加载 risk map
+  const riskMap = loadRiskMap(rootDir);
+  if (!riskMap) {
+    rt.error('ERROR: 无法加载 risk-map.yaml');
+    rt.exit(2);
+  }
+
+  // 分类文件
+  const scanResult = routeRisks(changedFiles, riskMap, {
+    agent_cnc_harness: {
+      version: '0.1', project: 'audit', commands: {} as any,
+      trigger_workflows: [], gates: { block_on: [] },
+      autonomy: { default_level: 'A2', max_level: 'A4', allow_auto_patch_for: [], require_human_approval_for: [] },
+    },
+  });
+
+  const highRiskFiles = scanResult.files
+    .filter((f) => f.risk === 'high')
+    .map((f) => f.path);
+
+  rt.log(`Changed files: ${changedFiles.length}`);
+  rt.log(`High-risk files: ${highRiskFiles.length}`);
+  if (highRiskFiles.length > 0) {
+    for (const f of scanResult.files.filter((f) => f.risk === 'high')) {
+      rt.log(`  🔴 ${f.path} — ${f.reason}`);
+    }
+  }
+  rt.log('');
+
+  // 获取当前 branch
+  let currentBranch: string | undefined;
+  try {
+    const { execSync } = await import('node:child_process');
+    currentBranch = execSync('git branch --show-current', { cwd: rootDir, stdio: 'pipe', encoding: 'utf-8' }).trim();
+  } catch { /* not a git repo */ }
+
+  // 跑审计
+  const result = auditGuardHistory({
+    changedFiles,
+    highRiskFiles,
+    planRequired: scanResult.requirePlan,
+    currentBranch,
+    cwd: rootDir,
+  });
+
+  // 输出
+  if (args.json) {
+    rt.log(JSON.stringify(result, null, 2));
+  } else {
+    rt.log('--- Audit Result ---');
+    if (result.passed) {
+      rt.log('AUDIT: PASS');
+    } else {
+      rt.log('AUDIT: FAIL');
+
+      for (const f of result.findings) {
+        const icon = f.severity === 'BLOCKER' ? '🔴' : f.severity === 'HIGH' ? '🟡' : 'ℹ️';
+        rt.log(`${icon} ${f.type} [${f.severity}]`);
+        rt.log(`   ${f.message}`);
+        if (f.files && f.files.length > 0) {
+          rt.log(`   Files: ${f.files.join(', ')}`);
+        }
+        if (f.event_id) {
+          rt.log(`   Event: ${f.event_id}`);
+        }
+      }
+    }
+    rt.log('');
+    rt.log(`High-risk files: ${result.high_risk_files.length}`);
+    rt.log(`Considered events: ${result.considered_events}`);
+    if (result.warnings.length > 0) {
+      rt.log(`History warnings: ${result.warnings.length}`);
+    }
+  }
+
+  if (!result.passed) {
+    rt.exit(1);
+  }
 }
 
 // ---- Main ----
@@ -622,7 +830,7 @@ async function main(): Promise<void> {
 
   switch (args.command) {
     case 'doctor':
-      cmdDoctor();
+      cmdDoctor(args, defaultRuntime);
       break;
     case 'scan':
       cmdScan(args, defaultRuntime);
@@ -631,14 +839,17 @@ async function main(): Promise<void> {
       cmdValidate(defaultRuntime);
       break;
     case 'guard':
-      await cmdGuard(args);
+      await cmdGuard(args, defaultRuntime);
       break;
     case 'report':
-      cmdReport();
+      await cmdReport(args, defaultRuntime);
+      break;
+    case 'audit':
+      await cmdAudit(args, defaultRuntime);
       break;
     default:
       console.log(`Unknown command: ${args.command}`);
-      console.log('Available: doctor | scan | validate | guard | report');
+      console.log('Available: doctor | scan | validate | guard | report | audit');
       process.exit(1);
   }
 }

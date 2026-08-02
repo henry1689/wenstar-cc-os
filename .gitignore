@@ -1,40 +1,54 @@
-
-# Build output
-# Dependencies
-# Environment
-# IDE
-# Logs
-# OS
-# Runtime data
-*.log
-*.njsproj
-*.ntvs*
-*.sln
-*.suo
-*.sw?
-*.tmp
-.DS_Store
-.env
-.env.local
-.idea/
-.sandbox-data/
-.vs/
-.vscode/
-Thumbs.db
-data/
-dist/
 node_modules/
-npm-debug.log*
-.npm-cache/
-voxcpm2/
-voxcpm2/
-__m7_test_*.db
-undefined/
-.claude/
-.claude-sessions/
-.claude-data/
+dist/
+coverage/
+.vitest/
+*.log
+.DS_Store
 
-# V3.2 build artifacts
-data/webui/backups/
-src/__tests__/.e2e-tmp-*/
-src/m4/backups/
+# Environment / credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Private/local data
+data/
+.var/
+*.jsonl
+.tmp/
+.cache/
+
+# Databases / local stores
+*.db
+*.sqlite
+*.sqlite3
+__*.db
+
+# Knowledge exports / local artifacts
+D:wenstar*
+D:*wenstar*
+
+# Backups / archives
+backups/
+archives/
+*.bak
+*.backup
+*.dump
+
+# Generated outputs
+test-results-full.txt
+tmp_audit.json
+audit-findings.json
+
+# UI / sub-project build artifacts
+ui/node_modules/
+ui/dist/
+bionic-cognitive-engine/venv/
+
+# Agent CNC generated reports
+.agent-cnc/reports/*.md
+.agent-cnc/reports/*.json
+.agent-cnc/history/*.jsonl

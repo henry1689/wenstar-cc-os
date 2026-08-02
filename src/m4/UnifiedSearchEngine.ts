@@ -606,6 +606,13 @@ export async function searchV13(
     _mark('L6_MMR_skip');
   }
 
+  // ═══════════ 实体隔离：按 entityUuid 过滤候选（V12 有此逻辑，V13 丢失） ═══════════
+  if (entityUuids.length > 0) {
+    const uuidSet = new Set(entityUuids);
+    candidates = candidates.filter(c => !c.entityUuid || uuidSet.has(c.entityUuid));
+    _mark('L6_EntityFilter');
+  }
+
   // ═══════════ L7 · 叙事组装 ═══════════
   let narrative: MemoryNarrative | undefined;
   if (cfg.enableNarrativeAssembler && closureResult) {

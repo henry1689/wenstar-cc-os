@@ -237,13 +237,12 @@ export class M8FusionAdapter implements M8Engine {
     if (ok && scarType) {
       try {
         const sqlite = this.storage.getSQLite();
-        const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
+        const mem = sqlite.queryAll('SELECT raw_input, created_at, belong_entity_uuid FROM memories WHERE id = ?', [memoryId]);
         if (mem?.[0]) {
           const r = mem[0] as any;
-          // 🔧 V10.1: 不再写入 knowledge_base——疤痕记忆属于 vault_log 金库，不是文件知识
           sqlite.writeRaw(
-            "INSERT INTO vault_log (detail, content_md, operation, created_at) VALUES (?, ?, 'scar', datetime('now','localtime'))",
-            [`人生地标: ${scarType}`, (r.raw_input || '').substring(0, 500)],
+            "INSERT INTO vault_log (detail, content_md, source_id, operation, created_at, belong_entity_uuid) VALUES (?, ?, ?, 'scar', datetime('now','localtime'), ?)",
+            [`人生地标: ${scarType}`, (r.raw_input || '').substring(0, 500), memoryId, r.belong_entity_uuid || null],
           );
         }
       } catch { /* 不阻塞 */ }
@@ -256,13 +255,12 @@ export class M8FusionAdapter implements M8Engine {
     if (ok && narrativeTag) {
       try {
         const sqlite = this.storage.getSQLite();
-        const mem = sqlite.queryAll('SELECT raw_input, created_at FROM memories WHERE id = ?', [memoryId]);
+        const mem = sqlite.queryAll('SELECT raw_input, created_at, belong_entity_uuid FROM memories WHERE id = ?', [memoryId]);
         if (mem?.[0]) {
           const r = mem[0] as any;
-          // 🔧 V10.1: 不再写入 knowledge_base——记忆地标属于 vault_log 金库，不是文件知识
           sqlite.writeRaw(
-            "INSERT INTO vault_log (detail, content_md, operation, created_at) VALUES (?, ?, 'landmark', datetime('now','localtime'))",
-            [`记忆地标: ${narrativeTag}`, (r.raw_input || '').substring(0, 500)],
+            "INSERT INTO vault_log (detail, content_md, source_id, operation, created_at, belong_entity_uuid) VALUES (?, ?, ?, 'landmark', datetime('now','localtime'), ?)",
+            [`记忆地标: ${narrativeTag}`, (r.raw_input || '').substring(0, 500), memoryId, r.belong_entity_uuid || null],
           );
         }
       } catch { /* 不阻塞 */ }

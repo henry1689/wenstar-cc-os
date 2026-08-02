@@ -26,12 +26,12 @@ if (fs.existsSync(envPath)) {
 }
 
 // ── 启动前脚本（非阻断，静默收集结果） ──
+// 🔴 V15: prestart-patch.ts 已删除（8个Patch经git commit固化，不再需要运行时字符串替换）
+// 🔴 V15: rebuild-memories 已迁移至 SQLiteAdapter._rebuildMemoryAnchors()，消除双写竞争
 const prestartScripts = [
-  { label: '补丁', cmd: `node "${TSC_CLI}" "${path.join(__dirname, 'scripts', 'prestart-patch.ts')}"` },
   { label: 'KB闸门', cmd: `node "${path.join(__dirname, 'scripts', 'fix-kb-gates.cjs')}"` },
   { label: 'UUID回填', cmd: `node "${path.join(__dirname, 'scripts', 'backfill-memory-uuid-v2.cjs')}"` },
   { label: 'Edge清理', cmd: `node "${path.join(__dirname, 'scripts', 'clean-all-person-edges.cjs')}"` },
-  { label: '记忆重建', cmd: `node "${path.join(__dirname, 'scripts', 'rebuild-memories-from-convs.cjs')}"` },
   { label: 'KB清理', cmd: `node "${path.join(__dirname, 'scripts', 'fix-xsy-kb.cjs')}"` },
   { label: '全链路修复', cmd: `node "${path.join(__dirname, 'scripts', 'fix-all-entities-final.cjs')}"` },
 ];

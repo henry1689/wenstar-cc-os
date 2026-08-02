@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx vitest run)",
+      "Bash(npx vitest run src/*)",
+      "Bash(node scripts/safe-backfill.cjs)"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/AI文件/harness/.claude/harness-pre-check.cjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/AI文件/harness/.claude/harness-pre-check.cjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/AI文件/harness/.claude/harness-post-check.cjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/AI文件/harness/.claude/harness-post-check.cjs"
+          }
+        ]
+      }
+    ]
+  }
+}

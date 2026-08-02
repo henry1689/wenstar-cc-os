@@ -25,6 +25,8 @@ export class KnowledgeBase {
     dna_id?: string; scene_tags?: string | string[];
     interaction_type?: string; emotion_vector?: string;
     classification?: string;
+    /** V13: 实体归属 UUID — 确保知识条目可被户籍系统检索 */
+    belongEntityUuid?: string;
   }): Promise<KnowledgeItem> { return this.engine.add(params); }
 
   list(limit = 50): KnowledgeItem[] { return this.engine.list(limit); }
@@ -45,8 +47,8 @@ export class KnowledgeBase {
 
   async delete(id: string): Promise<boolean> { return this.engine.delete(id); }
 
-  async search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }): Promise<KnowledgeItem[]> {
-    return this.engine.search(keyword, limit, emotionalContext);
+  async search(keyword: string, limit = 10, emotionalContext?: { pleasure: number; arousal: number; intimacy: number }, belongEntityUuid?: string): Promise<KnowledgeItem[]> {
+    return this.engine.search(keyword, limit, emotionalContext, undefined, belongEntityUuid);
   }
 
   async weightedSearch(
@@ -54,8 +56,9 @@ export class KnowledgeBase {
     sceneTags: string[],
     perception?: { pleasure: number; arousal: number; intimacy: number },
     limit = 5,
+    belongEntityUuid?: string,
   ): Promise<Array<KnowledgeItem & { matchScore: number; breakdown: { scene: number; emotion: number; text: number } }>> {
-    return this.engine.weightedSearch(keyword, sceneTags, perception, limit);
+    return this.engine.weightedSearch(keyword, sceneTags, perception, limit, belongEntityUuid);
   }
 
   count(): number { return this.engine.count(); }

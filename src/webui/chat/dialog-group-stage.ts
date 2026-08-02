@@ -8,6 +8,7 @@ import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
 import { computeCalcium } from '../../m2/math.js';
 // V13.0: 在线 DAG 建边（feature flag 控制，不阻塞闭组主流程）
 let _dagEdgeBuilders: { entity: any; causal: any; repo: any } | null = null;
+let _lastGroupCtx: any = null;  // V13: 上一个闭组上下文（供因果边构建）
 const WS_DAG_ONLINE_EDGES = process.env.WS_DAG_ONLINE_EDGES === 'true';
 
 // H3: 单一钙化标度 [0,1] — 与 m2.computeCalcium / M3Config 阈值(0.3/0.6/0.8)完全一致的等级映射。
@@ -66,14 +67,32 @@ export async function flushDialogGroup(
     ]);
     const pVec = vec24(peakP);
 
+    // V13: 解析实体 UUID（从 dg.entities 取第一个 person 名查 FamilyGraph）
+    let entityUuid: string | null = null;
+    if (dg.entities && dg.entities.length > 0) {
+      try {
+        const fg = ctx.m4?.getFamilyGraph?.();
+        if (fg) {
+          const personNames = dg.entities.filter((n: string) => n && n !== '我' && n !== '玉瑶');
+          for (const name of personNames) {
+            const uuid = fg.getUUIDByName?.(name);
+            if (uuid) { entityUuid = uuid; break; }
+          }
+          if (!entityUuid && ctx.ctx?.characterName) {
+            entityUuid = fg.getUUIDByName?.(ctx.ctx.characterName) ?? null;
+          }
+        }
+      } catch { /* UUID 解析不阻塞 */ }
+    }
+
     // 写入核心锚点（高钙化分，带anchor_score标记）
     const anchorId = dg.id + '_ANCHOR';
     sql.writeRaw(
-      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       anchorId, -(dg.rounds.length + 100), now, pVec, anchorCalcium,
       calciumLevel(anchorCalcium), dg.locusPath || 'general',
       'language_semantic_zone', anchorText, 0.5 + anchorCalcium * 0.3, now,
-      decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, anchorCalcium
+      decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, anchorCalcium, entityUuid
     );
 
     // 写入细节碎片（其余轮次）
@@ -87,11 +106,11 @@ export async function flushDialogGroup(
       const roundP = dg.perceptions[i] || peakP;
       const chunkCalcium = Math.round(computeCalcium(roundP as any).score * 1000) / 1000;
       sql.writeRaw(
-        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         chunkId, -dg.rounds.length - i, now, vec24(roundP), chunkCalcium,
         calciumLevel(chunkCalcium), dg.locusPath || 'general',
         'language_semantic_zone', chunkText, 0.3 + chunkCalcium * 0.2, now,
-        decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic
+        decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, entityUuid
       );
     }
 
@@ -205,8 +224,12 @@ async function _buildOnlineDAGEdges(ctx: any, dg: any, dna: any): Promise<void> 
   const entityCreated = _dagEdgeBuilders.entity.buildForDialogGroup(groupCtx);
 
   // 因果边: 30分钟内同话题的连续对话组
-  // prevGroupCtx 从最近一条 entity 边推导（简化：仅当 entityCreated>0 时尝试因果边）
-  const causalCreated = 0; // 需要 caller 传入 prevGroupCtx，当前版本先跑通实体边
+  let causalCreated = 0;
+  if (_lastGroupCtx && _lastGroupCtx.belongEntityUuid === euuid) {
+    causalCreated = _dagEdgeBuilders.causal.buildForDialogGroup(groupCtx, _lastGroupCtx, combinedText);
+  }
+  // 保存当前上下文供下一个闭组使用
+  _lastGroupCtx = groupCtx;
 
   if (entityCreated > 0 || causalCreated > 0) {
     console.log(`[DAG-Online] 对话组 ${groupId}: entity=${entityCreated} causal=${causalCreated}`);

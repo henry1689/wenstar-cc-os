@@ -1,10 +1,27 @@
 // 为存量数据构建 4 类 DAG 边 (entity/semantic/emotion/causal)
+// SCRIPT-GOV-A2d-Batch-2c-phase-a: 治理门控 (CRITICAL, update)
 import initSqlJs from 'sql.js';
 import { readFileSync, writeFileSync } from 'fs';
+import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);
+const {validateGate,recordGovernanceDecision}=require('./_governance-gate.cjs');
+var G={};for(var _i=2;_i<process.argv.length;_i++){var _a=process.argv[_i];if(_a==="--apply")G.apply=1;else if(_a==="--operator"&&process.argv[_i+1])G.op=process.argv[++_i];else if(_a==="--reason"&&process.argv[_i+1])G.reason=process.argv[++_i];else if(_a==="--ticket"&&process.argv[_i+1])G.ticket=process.argv[++_i];else if(_a==="--confirm"&&process.argv[_i+1])G.confirm=process.argv[++_i];else if(_a==="--scope"&&process.argv[_i+1])G.scope=process.argv[++_i];else if(_a==="--report-path"&&process.argv[_i+1])G.rpt=process.argv[++_i];else if(_a==="--help"){console.log("Usage: node build-dag-edges.mjs [--apply] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]");process.exit(0)}}
+var M=G.apply?"apply":"dry-run",DR=!G.apply;
+
+const DB_PATH = 'data/webui/fusion_memory.db';
 
 async function main() {
+  // ── 预检门控 ──
+  if(!DR){var C={scriptId:"build-dag-edges",riskLevel:"CRITICAL",operationType:"update",mode:M,environment:"local",operator:{operatorId:G.op||"",reason:G.reason||"",ticket:G.ticket||null},scope:{selector:G.scope||"table:memory_associations",limit:0,batchSize:0,since:null,until:null},confirmation:{required:true,provided:!!G.confirm,tokenDigest:G.confirm||null},backup:{required:true,created:false,backupId:null,backupPath:null,verified:false},irreversibleConfirmation:!!G.confirm,reportPath:G.rpt||null};var V=validateGate(C);var PE=V.errors.filter(function(e){return["R008","R009","R010","R013"].indexOf(e.rule)===-1});if(PE.length>0){var DE=["","======================================================================","  SCRIPT EXECUTION CONTRACT DENIED","======================================================================","  Script:  build-dag-edges.mjs","  Risk:    CRITICAL","  Mode:    apply","  Operation: update","","  Issues:"];PE.forEach(function(e){DE.push("    ["+e.rule+"] "+e.message)});DE.push("","  Refusing to continue.","======================================================================","");console.error(DE.join("\n"));recordGovernanceDecision(C,V);process.exit(2)}}
+
+  if(DR){console.log("[DRY-RUN] build-dag-edges — 将扫描 memory_associations 边分布并重建 4 类 DAG 边。使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行重建。\n");process.exit(0)}
+
+  // ── 治理通过 → 创建备份 ──
+  const BACKUP = DB_PATH + '.bak.' + Date.now();
+  writeFileSync(BACKUP, readFileSync(DB_PATH));
+  console.log('备份: '+BACKUP);
+
   const SQL = await initSqlJs();
-  const db = new SQL.Database(readFileSync('data/webui/fusion_memory.db'));
+  const db = new SQL.Database(readFileSync(DB_PATH));
   const now = Date.now();
   let ec=0, sc=0, mc=0, cc=0;
 
@@ -73,7 +90,7 @@ async function main() {
   console.log('  causal: '+cc);
 
   // Save
-  writeFileSync('data/webui/fusion_memory.db', Buffer.from(db.export()));
+  writeFileSync(DB_PATH, Buffer.from(db.export()));
   const et=db.exec('SELECT edge_type,count(*) FROM memory_associations GROUP BY edge_type');
   console.log('\n  DAG 边汇总:');
   if (et.length&&et[0].values) for (const r of et[0].values) console.log('    '+r[0]+': '+r[1]);

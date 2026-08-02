@@ -1,6 +1,77 @@
+// fix-memories-now.cjs — memories 归属标注修复
+//
+// SCRIPT-GOV-A2d-Batch-1: 治理门控 (CRITICAL, update)
+//   默认: dry-run (扫描不写入)
+//   写入: --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]
+//   拒绝: 缺少必填字段 → exit 2
+
+const { validateGate , recordGovernanceDecision } = require('./_governance-gate.cjs');
+
+// ── CLI 解析 ──
+const argv = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i];
+  if (a === '--apply') argv.apply = true;
+  else if (a === '--dry-run') argv.dryRun = true;
+  else if (a === '--operator' && process.argv[i+1]) argv.operator = process.argv[++i];
+  else if (a === '--reason' && process.argv[i+1]) argv.reason = process.argv[++i];
+  else if (a === '--ticket' && process.argv[i+1]) argv.ticket = process.argv[++i];
+  else if (a === '--confirm' && process.argv[i+1]) argv.confirm = process.argv[++i];
+  else if (a === '--scope' && process.argv[i+1]) argv.scope = process.argv[++i];
+  else if (a === '--report-path' && process.argv[i+1]) argv.reportPath = process.argv[++i];
+  else if (a === '--help') { console.log('Usage: node fix-memories-now.cjs [--apply] [--dry-run] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] [--report-path <path>]'); process.exit(0); }
+}
+
+const mode = argv.apply ? 'apply' : 'dry-run';
+const isDryRun = mode === 'dry-run';
+
+// ── 预检门控 (在 DB 访问 / execSync 之前) ──
+if (!isDryRun) {
+  const contract = {
+    scriptId: 'fix-memories-now', riskLevel: 'CRITICAL', operationType: 'update', mode, environment: 'local',
+    operator: { operatorId: argv.operator || '', reason: argv.reason || '', ticket: argv.ticket || null },
+    scope: { selector: argv.scope || 'table:memories', limit: 0, batchSize: 0, since: null, until: null },
+    confirmation: { required: true, provided: !!argv.confirm, tokenDigest: argv.confirm || null },
+    backup: { required: true, created: false, backupId: null, backupPath: null, verified: false },
+    irreversibleConfirmation: !!argv.confirm,
+    reportPath: argv.reportPath || null,
+  };
+  const preflight = validateGate(contract);
+  const preflightErrors = preflight.errors.filter(e => !['R008','R009','R010','R013'].includes(e.rule));
+  if (preflightErrors.length > 0) {
+    console.error('\n═══════════════════════════════════════════');
+    console.error('  SCRIPT EXECUTION CONTRACT DENIED');
+    console.error('═══════════════════════════════════════════');
+    console.error('  Script:  fix-memories-now.cjs');
+    console.error('  Risk:    CRITICAL');
+    console.error('  Mode:    apply');
+    console.error('  Operation: update');
+    console.error('');
+    console.error('  Issues:');
+    preflightErrors.forEach(e => console.error('    [' + e.rule + '] ' + e.message));
+    console.error('\n  Refusing to continue.');
+    console.error('═══════════════════════════════════════════\n');
+    recordGovernanceDecision(contract,preflight);
+    process.exit(2);
+  }
+}
+
+if (isDryRun) {
+  console.log('═══════════════════════════════════════════');
+  console.log('  DRY-RUN MODE — 将扫描但不写入');
+  console.log('  使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际写入');
+  console.log('═══════════════════════════════════════════\n');
+  console.log('[DRY-RUN] 将扫描 memories 中 belong_entity_uuid IS NULL 的行');
+  console.log('[DRY-RUN] 将执行内容匹配 + 时间窗口 + 二次内容匹配');
+  console.log('[DRY-RUN] 零写入。零服务停止。\n');
+  process.exit(0);
+}
+
+// ── 治理验证通过 ─ 进入写入路径 ──
 const { execSync } = require('child_process');
 const D = require('D:/tools/wenstar-cc/node_modules/better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const dbPath = 'D:/tools/wenstar-cc/data/webui/fusion_memory.db';
 
 // 1. Stop service
@@ -10,10 +81,16 @@ console.log('服务已停');
 // 2. Clear WAL
 const walFile = dbPath + '-wal';
 const shmFile = dbPath + '-shm';
-const fs = require('fs');
 try { fs.unlinkSync(walFile); } catch(e) {}
 try { fs.unlinkSync(shmFile); } catch(e) {}
 console.log('WAL已清理');
+
+// 备份
+const bakDir = path.join(path.dirname(dbPath), 'backups');
+if (!fs.existsSync(bakDir)) fs.mkdirSync(bakDir, { recursive: true });
+const bakPath = path.join(bakDir, 'fusion_memory_before_fix_memories_' + Date.now() + '.db');
+fs.copyFileSync(dbPath, bakPath);
+console.log('已备份: ' + path.basename(bakPath));
 
 // 3. Open with better-sqlite3 (DIRECT disk writes)
 const db = new D(dbPath);
@@ -25,7 +102,6 @@ const memBefore = db.prepare('SELECT COUNT(*) as c FROM memories WHERE belong_en
 const memTotal = db.prepare('SELECT COUNT(*) as c FROM memories').get().c;
 console.log('修复前: ' + memBefore + '/' + memTotal + ' (' + (memBefore/memTotal*100).toFixed(1) + '%)');
 
-// Step A: Content matching -直接从 conversations 复制 UUID
 const r1 = db.prepare(`UPDATE memories SET belong_entity_uuid = (
   SELECT DISTINCT c.belong_entity_uuid FROM conversations c
   WHERE c.belong_entity_uuid IS NOT NULL
@@ -34,7 +110,6 @@ const r1 = db.prepare(`UPDATE memories SET belong_entity_uuid = (
 ) WHERE belong_entity_uuid IS NULL`).run();
 console.log('A. 内容匹配: +' + r1.changes);
 
-// Step B: Time window propagation for roleplay memories (2-hour windows)
 const anchors = db.prepare('SELECT DISTINCT created_at, belong_entity_uuid FROM memories WHERE belong_entity_uuid IS NOT NULL LIMIT 500').all();
 let twAdded = 0;
 for (const a of anchors) {
@@ -48,7 +123,6 @@ for (const a of anchors) {
 }
 console.log('B. 时间窗口(2h): +' + twAdded);
 
-// Step C: Wider time window (4h) for remaining roleplay
 if (twAdded > 0) {
   const anchors2 = db.prepare('SELECT DISTINCT created_at, belong_entity_uuid FROM memories WHERE belong_entity_uuid IS NOT NULL LIMIT 500').all();
   let tw2Added = 0;
@@ -64,7 +138,6 @@ if (twAdded > 0) {
   console.log('C. roleplay宽窗(4h): +' + tw2Added);
 }
 
-// Step D: Second content match with wider substring
 const r2 = db.prepare(`UPDATE memories SET belong_entity_uuid = (
   SELECT DISTINCT c.belong_entity_uuid FROM conversations c
   WHERE c.belong_entity_uuid IS NOT NULL
@@ -73,23 +146,10 @@ const r2 = db.prepare(`UPDATE memories SET belong_entity_uuid = (
 ) WHERE belong_entity_uuid IS NULL`).run();
 console.log('D. 二次内容匹配(20字): +' + r2.changes);
 
-// Verify
 const fg = new D('D:/tools/wenstar-cc/data/webui/knowledge/family_graph.db', {readonly: true});
 const memAfter = db.prepare('SELECT COUNT(*) as c FROM memories WHERE belong_entity_uuid IS NOT NULL').get().c;
 console.log('\n修复后: ' + memAfter + '/' + memTotal + ' (' + (memAfter/memTotal*100).toFixed(1) + '%)');
 
-console.log('\n=== 逐角色验证 ===');
-const CHARS = ['徐诗韵','徐诗雨','徐诗涵','王全芬','玉瑶','熊梓铭'];
-for (const name of CHARS) {
-  const node = fg.prepare(`SELECT uuid FROM nodes WHERE name='${name}'`).get();
-  const u = node ? node.uuid : null;
-  const cc = u ? db.prepare('SELECT COUNT(*) as c FROM conversations WHERE belong_entity_uuid=?').get(u).c : 0;
-  const cm = u ? db.prepare('SELECT COUNT(*) as c FROM memories WHERE belong_entity_uuid=?').get(u).c : 0;
-  const memKeyword = db.prepare(`SELECT COUNT(*) as c FROM memories WHERE raw_input LIKE '%${name}%'`).get().c;
-  console.log(name + ': convs=' + cc + ' mems=' + cm + '/' + memKeyword);
-}
-
-// Checkpoint
 db.pragma('wal_checkpoint(TRUNCATE)');
 db.close();
 fg.close();

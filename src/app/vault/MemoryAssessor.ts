@@ -194,6 +194,7 @@ export class MemoryAssessor {
       }
 
       let promoted = 0;
+      const promotedUuids: (string | null)[] = [];  // V13: 收集晋升条目的 UUID 用于 vault_log 标注
       let nextSeq = Number((sqlite.queryAll('SELECT COALESCE(MAX(seq_pos), 0) as max_seq FROM memories') as any[])?.[0]?.max_seq ?? 0) + 1;
       sqlite.writeRaw('BEGIN');
       txOpened = true;
@@ -240,6 +241,8 @@ export class MemoryAssessor {
           archived_at: null,
           healed_at: null,
           fg_entity_names: entityGenes.length > 0 ? entityGenes.map((gene) => gene.name).join(',') : undefined,
+          // V13: 从 source conversation 继承 entity 归属
+          belongEntityUuid: String(conv.belong_entity_uuid || conv.entity_uuid || null),
           primary_emotion: derivePrimaryEmotion(perception),
           recall_count: 0,
           last_recalled_at: null,
@@ -262,6 +265,7 @@ export class MemoryAssessor {
           sqlite.write(record);
           sqlite.writeRaw('UPDATE conversations SET is_promoted = 1 WHERE id = ?', conv.id);
           promoted++;
+          promotedUuids.push(record.belongEntityUuid || null);
           nextSeq++;
         } catch { /* 去重跳过 */ }
       }
@@ -269,8 +273,18 @@ export class MemoryAssessor {
       sqlite.writeRaw('COMMIT');
       txOpened = false;
       if (promoted > 0) {
-        logVaultOperation(sqlite, 'promote_sand', 'sand', undefined, undefined, `砂金晋升金库 ${promoted} 条`);
-        console.log(`[MemoryAssessor] 砂金→金库: ${promoted} 条 (calcium>=${cfg.minCalciumScore})`);
+        // V13: 收集晋升中的多数 UUID 作为归属
+        const euuidCount = new Map<string, number>();
+        for (const entry of promotedUuids) {
+          if (entry) euuidCount.set(entry, (euuidCount.get(entry) || 0) + 1);
+        }
+        let majorityUuid: string | null = null;
+        let maxCount = 0;
+        for (const [uid, cnt] of euuidCount) {
+          if (cnt > maxCount) { maxCount = cnt; majorityUuid = uid; }
+        }
+        logVaultOperation(sqlite, 'promote_sand', 'sand', undefined, undefined, `砂金晋升金库 ${promoted} 条`, undefined, majorityUuid);
+        console.log(`[MemoryAssessor] 砂金→金库: ${promoted} 条 (calcium>=${cfg.minCalciumScore}, UUID=${majorityUuid || 'none'})`);
       }
     } catch (err) {
       if (txOpened) {

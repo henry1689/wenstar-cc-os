@@ -18,6 +18,10 @@ risk_map:
         reason: "LLM API 调用、提示词组装、reasoning_content 清洗"
       - path: "src/engine/tianquan/prefrontal/PrefrontalCortex.ts"
         reason: "PFC 统一上下文门控，影响所有 LLM 注入内容"
+      - path: "src/config/M5Config.ts"
+        reason: "LLM/M5 模块配置中心，控制模型路由、provider、prompt 行为"
+      - path: "src/config/ConfigService.ts"
+        reason: "全系统配置服务中心，可能影响运行时治理敏感行为"
 
   medium_risk:
     severity: "A"
@@ -45,7 +49,6 @@ risk_map:
     allow_direct_patch: true
     path_patterns:
       - "**/__tests__/**"
-      - "src/config/**"
       - "src/types/**"
       - "src/**/types/**"
       - "src/cli/**"

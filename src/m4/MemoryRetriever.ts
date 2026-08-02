@@ -124,7 +124,7 @@ export class MemoryRetriever {
         const _cached = await keywordCache.get(cacheKey);
         if (_cached) { byKeyword.push(..._cached); }
         else {
-          const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200 });
+          const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200, entityUuids: options?.entityUuids });
           const seen = new Set<string>();
           for (const dna of recent) {
             for (const kw of keywords) {
@@ -461,6 +461,7 @@ export class MemoryRetriever {
           similarity_mode: 'mood_congruent',
           limit: 30,
           excludeRoleplay: true,
+          entityUuids: options?.entityUuids,
         });
         for (const sm of scored) {
           if (sm?.record) {
@@ -494,7 +495,7 @@ export class MemoryRetriever {
     }
     if (keywords.size > 0) {
       try {
-        const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200 });
+        const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200, entityUuids: options?.entityUuids });
         const seen = new Set<string>();
         for (const dna of recent) {
           if (seen.has(dna.branch_id)) continue;
@@ -569,7 +570,7 @@ export class MemoryRetriever {
     // ─── 4. 话题前缀路 (locus) ───
     const locusItems: RankedItem[] = [];
     try {
-      const byLocus = await this.storage.findByLocus(locusPath, { limit: 20 });
+      const byLocus = await this.storage.findByLocus(locusPath, { limit: 20, entityUuids: options?.entityUuids });
       for (const dna of byLocus) {
         const kind = (dna as any).memory_kind;
         if (kind === 'roleplay') continue;

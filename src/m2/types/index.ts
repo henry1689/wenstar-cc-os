@@ -119,6 +119,20 @@ export interface EmotionalMemoryRecord {
   sensory_anchor?: string;
   promoted_to_diamond?: boolean;
   scar?: MemoryScar;
+  /** V13: 实体归属UUID — 用于跨实体隔离 */
+  belongEntityUuid?: string | null;
+  /** V13: 全局唯一标识 — DAG 边锚点 */
+  global_uid?: string | null;
+  /** V13: 位置指纹 */
+  location_fingerprint?: string | null;
+  /** V13: Foresight 前瞻时态标记 */
+  isForesight?: boolean;
+  /** V13: Foresight 有效期起始 (ms) */
+  validStartMs?: number | null;
+  /** V13: Foresight 有效期截止 (ms) */
+  validUntilMs?: number | null;
+  /** V13: Foresight 状态 */
+  foresightStatus?: string | null;
 }
 
 /** 检索查询 */
@@ -132,6 +146,8 @@ export interface RetrievalQuery {
   dialogGroupMode?: 'all' | 'first-per-group';
   /** 排除角色扮演记忆：true 时不返回 memory_kind='roleplay' 或 memory_type='rp_dialog' 的记录 */
   excludeRoleplay?: boolean;
+  /** V13: 实体UUID过滤 — 限定检索范围到特定人物（NULL 代表未归属的记忆也返回） */
+  entityUuids?: string[];
 }
 
 /** 评分后的记忆 */
@@ -223,6 +239,8 @@ export interface QueryOptions {
   locus_path?: string;
   /** 实体名称列表（用于多跳检索） */
   entity_names?: string[];
+  /** V13: 实体UUID过滤 — 限定检索到特定人物 */
+  entityUuids?: string[];
 }
 
 /** 存储状态 */

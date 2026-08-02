@@ -278,6 +278,27 @@ export interface ChatResponse {
   riskFlag?: string;
 }
 
+/** 🔴 V15: _meetingEntityName 全链路传播点编目（架构铁律 #6）
+ *  S4 评审必须逐点核验。修改任何传播点→必须同步更新此处索引。
+ *  格式：{ 行号, 阶段, 描述, 传播方式 }
+ */
+const MEETING_PROP_POINTS: Array<{ line: number; stage: string; desc: string; via: string }> = [
+  { line: 651, stage: 'L0-路由', desc: '活跃会议名传入 processChat', via: '_activeMeetingName' },
+  { line: 764, stage: 'L1-上下文', desc: '从 EntityMeeting 获取实体名', via: 'getEntityName()' },
+  { line: 798, stage: 'L2-档案', desc: '构建实体上下文（档案+对话+开场协议）', via: 'buildEntityContext()' },
+  { line: 861, stage: 'L3-DNA', desc: '注入 entity_genes 到 M1 DNA 编码', via: 'dna.entity_genes.push' },
+  { line: 876, stage: 'L4-KB过滤', desc: '传入 _meetingEntityUuid 给 KnowledgeContextBuilder', via: 'PreM4Input._meetingEntityUuid' },
+  { line: 963, stage: 'L5-记忆门控', desc: '会晤模式跳过主人记忆检索', via: '!meetingEntityName guard' },
+  { line: 1327, stage: 'L6-注入保留', desc: 'preserveLabels=true 保留结构标签', via: 'MemoryInjector.preserveLabels' },
+  { line: 1380, stage: 'L7-PFC', desc: '通知前额叶皮层当前会晤实体', via: 'meetingEntity param' },
+  { line: 1451, stage: 'L8-角色提示', desc: '会晤模式跳过当前角色提示', via: 'roleHint = null' },
+  { line: 1487, stage: 'L9-自问自检', desc: '会晤模式跳过玉瑶自问', via: '!meetingEntityName guard' },
+  { line: 1513, stage: 'L10-主人镜像', desc: '会晤模式跳过主人画像', via: '!meetingEntityName guard' },
+  { line: 1647, stage: 'L11-政策选择', desc: '会晤模式使用 ChatPolicy meetingMode', via: 'ChatPolicy(meetingMode(...))' },
+  { line: 1752, stage: 'L12-M5调度', desc: '传入 isEntityMeeting=true 给 M5.orchestrate', via: '!!_meetingEntityName' },
+  { line: 1778, stage: 'L13-自名检测', desc: '检查回复中是否自报姓名', via: 'reply.includes(entityName)' },
+];
+
 export async function processChat(message: string, ctx: ChatContext): Promise<ChatResponse> {
 
   try {

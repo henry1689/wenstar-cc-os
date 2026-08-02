@@ -1528,6 +1528,99 @@ export class SQLiteAdapter {
     if (!this.ready || !this.db) throw new Error('SQLiteAdapter not initialized');
   }
 
+  /**
+   * V15: 从 conversations 重建 memories 锚点（同一 sql.js session）。
+   * 消除原 rebuild-memories-from-convs.cjs 绕过 SQLiteAdapter 的双写竞争。
+   * 每次启动自动执行，幂等（清理旧 ANCHOR → 重建）。
+   */
+  private _rebuildMemoryAnchors(): number {
+    if (!this.db) return 0;
+    const now = new Date().toISOString();
+    const RP_RE = /爸爸|爷爷|女儿|儿子|哥哥|叔叔|妈妈|妹妹|姐姐|爹爹|主人|老公|老婆/;
+
+    // 清理旧 ANCHOR
+    try { this.db.run("DELETE FROM memories WHERE id LIKE '%_ANCHOR' OR id LIKE '%_CHUNK%'"); } catch {}
+
+    // 按对话组聚合
+    const groups = this.db.exec(
+      "SELECT dg.dialog_group_id, dg.belong_entity_uuid, dg.tc, dg.first_ts, dg.last_ts, dg.avg_ca, dg.max_ca " +
+      "FROM (SELECT dialog_group_id, belong_entity_uuid, COUNT(*) as tc, MIN(timestamp) as first_ts, " +
+      "MAX(timestamp) as last_ts, AVG(COALESCE(calcium_score,0.5)) as avg_ca, " +
+      "MAX(COALESCE(calcium_score,0.5)) as max_ca FROM conversations " +
+      "WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != '' AND dialog_group_id IS NOT NULL " +
+      "GROUP BY dialog_group_id, belong_entity_uuid) dg ORDER BY dg.belong_entity_uuid, dg.first_ts"
+    );
+    if (!groups.length || !groups[0]?.values?.length) return 0;
+
+    // entity UUID → name
+    const entMap = new Map<string, string>();
+    try {
+      const ents = this.db.exec("SELECT uuid, name FROM entities WHERE type = 'person' AND uuid IS NOT NULL");
+      if (ents.length && ents[0].values) {
+        for (const [u, n] of ents[0].values) entMap.set(String(u), String(n));
+      }
+    } catch {}
+
+    // seq_pos 起始值
+    let seq = 1;
+    try {
+      const mx = this.db.exec("SELECT COALESCE(MAX(seq_pos),0)+1 FROM memories");
+      if (mx.length && mx[0].values?.[0]?.[0]) seq = Number(mx[0].values[0][0]) || 1;
+    } catch {}
+
+    let n = 0;
+    for (const [dgId, eUuid, _tc, firstTs, _lastTs, avgCa, maxCa] of (groups[0].values as any[][])) {
+      const dg = String(dgId), eu = String(eUuid);
+      const ename = entMap.get(eu) || eu;
+      const id = dg + '_ANCHOR';
+
+      // 查该组对话轮次（sql.js exec() 不支持参数化→用 prepare/step/getAsObject）
+      const tvs: any[][] = [];
+      try {
+        const stmt = this.db!.prepare(
+          "SELECT role, content FROM conversations WHERE dialog_group_id = ? AND belong_entity_uuid = ? ORDER BY timestamp LIMIT 10"
+        );
+        stmt.bind([dg, eu]);
+        while (stmt.step()) {
+          const row = stmt.getAsObject();
+          tvs.push([row.role, row.content]);
+        }
+        stmt.free();
+      } catch {}
+      const pts: string[] = ['【核心·' + ename + '】'];
+      for (const [role, content] of tvs as any[][]) {
+        pts.push((String(role) === 'user' ? '鸿艺' : ename) + '：' + String(content || '').substring(0, 150));
+      }
+      const raw = pts.join('\n').substring(0, 4000);
+
+      const allC = tvs.map(([, c]: any) => String(c || '')).join(' ');
+      const kind = RP_RE.test(allC) ? 'roleplay' : 'normal';
+
+      const ca = Math.min(9.99, parseFloat(((Number(maxCa) || Number(avgCa) || 0.5)).toFixed(3)));
+      const cl = ca >= 2 ? 3 : ca >= 1 ? 2 : ca >= 0.5 ? 1 : 0;
+      const es = Math.min(1.0, ca * 0.8);
+
+      try {
+        this.db!.run(
+          "INSERT OR REPLACE INTO memories (id,seq_pos,created_at,perception_json,calcium_score,calcium_level," +
+          "locus_path,leaf_zone,raw_input,memory_kind,lifecycle_state,confidence_score,stability_score," +
+          "thread_id,recall_count,promoted_to_diamond,effective_strength,strength_updated_at," +
+          "is_landmark,primary_emotion,memory_type,dialog_group_id,belong_entity_uuid," +
+          "is_foresight,valid_until_ms,foresight_status,source_type) " +
+          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,1,?,'dialog',?,?,0,NULL,'none','conversation')",
+          [id, seq++, String(firstTs || now),
+           '[0,0,0,0,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+           ca, cl, 'user.misc.default', 'language_semantic_zone', raw, kind,
+           cl >= 2 ? 'active' : 'candidate', 0.55, cl >= 2 ? 0.45 : 0.2,
+           dg, es, now, '平静', dg, eu]
+        );
+        n++;
+      } catch { /* 单条失败不阻塞 */ }
+    }
+    if (n > 0) this._dirtyCount++;
+    return n;
+  }
+
   /** 将内存数据库持久化到磁盘（批量 flush，非每次写入都落盘） */
   private save(): void {
     if (!this.db) return;

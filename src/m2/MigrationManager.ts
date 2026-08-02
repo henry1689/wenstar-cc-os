@@ -430,7 +430,7 @@ function computeChecksum(text: string): string {
  * 与 schema 迁移不同：这些是运行时数据回填，每次启动都检查。
  * 幂等：只修 null/缺失项，不覆盖已有数据。
  */
-export function repairDataIntegrity(db: any): { globalUid: number; entityUuid: number; nullVectors: number } {
+export async function repairDataIntegrity(db: any, fgDbPath?: string): Promise<{ globalUid: number; entityUuid: number; nullVectors: number }> {
   const result = { globalUid: 0, entityUuid: 0, nullVectors: 0 };
   const t0 = Date.now();
 
@@ -447,32 +447,117 @@ export function repairDataIntegrity(db: any): { globalUid: number; entityUuid: n
     }
   } catch (e) { console.warn('[Repair] global_uid 回填失败:', e); }
 
-  // 2. belong_entity_uuid 回填（关键词匹配）
+  // 2. belong_entity_uuid 回填（V13: 从 FamilyGraph 动态获取真实 TXS UUID，替代硬编码假 UUID）
   try {
-    const PEOPLE: Array<[string, string]> = [
-      ['熊梓铭', 'uuid-ziming'], ['梓铭', 'uuid-ziming'],
-      ['徐诗韵', 'uuid-shirley'], ['诗韵', 'uuid-shirley'],
-      ['玉瑶', 'uuid-yaoyao'], ['瑶瑶', 'uuid-yaoyao'],
-      ['鸿艺', 'uuid-hongyi'],
-      ['梓玥', 'uuid-ziyue'], ['熊梓玥', 'uuid-ziyue'],
-      ['王全芬', 'uuid-wangqf'],
-      ['徐诗雨', 'uuid-shiyu'], ['诗雨', 'uuid-shiyu'],
-    ];
-    for (const [name, uuid] of PEOPLE) {
-      const r = db.exec(
-        "SELECT COUNT(*) FROM memories WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')",
-        [`%${name}%`]
-      );
-      const cnt = r[0]?.values?.[0]?.[0] ?? 0;
-      if (cnt > 0) {
+    // 先清理旧假 UUID（uuid-* 格式全是错误的）
+    const fakeCleaned = db.exec("SELECT COUNT(*) FROM memories WHERE belong_entity_uuid LIKE 'uuid-%'");
+    const fakeCount = fakeCleaned.length ? (fakeCleaned[0]?.values?.[0]?.[0] ?? 0) : 0;
+    if (fakeCount > 0) {
+      db.run("UPDATE memories SET belong_entity_uuid = NULL WHERE belong_entity_uuid LIKE 'uuid-%'");
+      console.log(`[Repair] 清理假 UUID (uuid-*格式): ${fakeCount} 条 → 重置为 NULL`);
+    }
+
+    // 从 FamilyGraph 获取真实 person name → TXS UUID 映射
+    let nameToUuid: Array<[string, string]> = [];
+    try {
+      if (fgDbPath) {
+        const { existsSync, readFileSync } = await import('node:fs');
+        if (existsSync(fgDbPath)) {
+          const initSqlJs = (await import('sql.js')).default;
+          const SQL = await initSqlJs();
+          const fgBuf = readFileSync(fgDbPath);
+          const fgDb = new SQL.Database(fgBuf);
+          const rows = fgDb.exec(
+            "SELECT name, uuid FROM nodes WHERE type = 'person' AND uuid IS NOT NULL AND uuid LIKE 'TXS-%'"
+          );
+          if (rows.length > 0 && rows[0].values) {
+            nameToUuid = rows[0].values.map(([n, u]: any) => [String(n), String(u)]);
+            // 补充别名映射：从 aliases JSON 中展开
+            const aliasRows = fgDb.exec(
+              "SELECT name, aliases FROM nodes WHERE type = 'person' AND aliases IS NOT NULL AND aliases != '[]'"
+            );
+            if (aliasRows.length > 0 && aliasRows[0].values) {
+              for (const [fn, aliasesJson] of aliasRows[0].values) {
+                try {
+                  const aliases = JSON.parse(String(aliasesJson));
+                  // sql.js exec() 不支持参数化，用 JS 过滤 name→uuid 表
+                  const puuidMap = new Map(nameToUuid);
+                  const puuid = puuidMap.get(String(fn)) ?? null;
+                  if (puuid && Array.isArray(aliases)) {
+                    for (const alias of aliases) {
+                      if (typeof alias === 'string' && alias.length >= 1) {
+                        nameToUuid.push([alias, puuid]);
+                      }
+                    }
+                  }
+                } catch { /* alias 解析失败跳过 */ }
+              }
+            }
+          }
+          fgDb.close();
+        }
+      }
+    } catch (fgErr) {
+      console.warn('[Repair] FamilyGraph 读取失败，跳过 entity 回填:', (fgErr as Error)?.message);
+    }
+
+    if (nameToUuid.length > 0) {
+      // 去重：同一名字只保留一个 UUID
+      const seen = new Set<string>();
+      const deduped = nameToUuid.filter(([n]) => {
+        if (seen.has(n)) return false;
+        seen.add(n);
+        return true;
+      });
+      const uuidSet = new Set(deduped.map(([, u]) => u));
+      console.log(`[Repair] FamilyGraph 提供 ${deduped.length} 个人名/${uuidSet.size} 个真实 TXS UUID`);
+
+      let filled = 0;
+      for (const [name, uuid] of deduped) {
+        if (!uuid || !uuid.startsWith('TXS-')) continue;
+        // 2a. 关键词匹配 raw_input（排除已正确标注的）
         db.run(
-          "UPDATE memories SET belong_entity_uuid = ? WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')",
+          "UPDATE memories SET belong_entity_uuid = ? WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '' OR belong_entity_uuid LIKE 'uuid-%')",
           [uuid, `%${name}%`]
         );
-        result.entityUuid += Number(cnt);
+        // 2b. fg_entity_names 字段（已有逗号分隔人名）
+        db.run(
+          "UPDATE memories SET belong_entity_uuid = ? WHERE fg_entity_names LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')",
+          [uuid, `%${name}%`]
+        );
       }
+      // 2c. 直接解析 fg_entity_names 逗号分隔 → FG UUID（比 LIKE 更精准）
+      try {
+        const fgRows = db.exec(
+          "SELECT id, fg_entity_names FROM memories WHERE fg_entity_names IS NOT NULL AND fg_entity_names != '' AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')"
+        );
+        if (fgRows.length > 0 && fgRows[0].values) {
+          const nameToUuidMap = new Map(deduped);
+          let fgFilled = 0;
+          for (const [memId, fgNames] of fgRows[0].values) {
+            const names = String(fgNames).split(',').map(n => n.trim()).filter(Boolean);
+            for (const name of names) {
+              const fgUuid = nameToUuidMap.get(name);
+              if (fgUuid && fgUuid.startsWith('TXS-')) {
+                db.run("UPDATE memories SET belong_entity_uuid = ? WHERE id = ?", [fgUuid, String(memId)]);
+                fgFilled++;
+                break; // 第一个有效人名即可
+              }
+            }
+          }
+          if (fgFilled > 0) console.log(`[Repair] fg_entity_names 解析回填: ${fgFilled} 条`);
+        }
+      } catch (e2c) { /* fg_entity_names 解析失败不阻塞 */ }
+      // 重新统计
+      const after = db.exec("SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+      result.entityUuid = after.length ? (after[0]?.values?.[0]?.[0] ?? 0) : 0;
+      if (result.entityUuid > 0) console.log(`[Repair] belong_entity_uuid 回填 (真实 TXS UUID): ${result.entityUuid} 条`);
+    } else {
+      // 无 FamilyGraph 时至少统计现状
+      const after = db.exec("SELECT COUNT(*) FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+      result.entityUuid = after.length ? (after[0]?.values?.[0]?.[0] ?? 0) : 0;
+      console.warn(`[Repair] ⚠️ 无 FamilyGraph UUID 映射可用，entity 回填跳过。现有 ${result.entityUuid} 条已标注`);
     }
-    if (result.entityUuid > 0) console.log(`[Repair] belong_entity_uuid 回填: ${result.entityUuid} 条`);
   } catch (e) { console.warn('[Repair] belong_entity_uuid 回填失败:', e); }
 
   // 3. null 感知向量 → 零向量
@@ -491,6 +576,156 @@ export function repairDataIntegrity(db: any): { globalUid: number; entityUuid: n
   const elapsed = Date.now() - t0;
   if (result.globalUid > 0 || result.entityUuid > 0 || result.nullVectors > 0) {
     console.log(`[Repair] 数据完整性修复完成 (${elapsed}ms): global_uid=${result.globalUid} entity_uuid=${result.entityUuid} nullVectors=${result.nullVectors}`);
+  }
+
+  return result;
+}
+
+/**
+ * V13: 跨库孤儿检测 — 每次启动扫描各表 belong_entity_uuid 是否为 FamilyGraph 中真实存在的 person UUID。
+ * 发现悬挂指针只报告不自动修复（无法自动确定正确归属，需人工介入）。
+ */
+export async function detectOrphanEntityUUIDs(db: any, fgDbPath?: string): Promise<{
+  memories: number; vaultLog: number; conversations: number;
+  blackDiamond: number; knowledgeBase: number; fgPersonCount: number;
+}> {
+  const result = { memories: 0, vaultLog: 0, conversations: 0, blackDiamond: 0, knowledgeBase: 0, fgPersonCount: 0 };
+  try {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const fgPath = fgDbPath || join(dirname(dirname(__dirname)), 'data', 'webui', 'knowledge', 'family_graph.db');
+    if (!existsSync(fgPath)) { console.warn('[OrphanDetect] FG DB 不存在，跳过'); return result; }
+    const initSqlJs = (await import('sql.js')).default;
+    const SQL = await initSqlJs();
+    const fgDb = new SQL.Database(readFileSync(fgPath));
+    const validUuids = new Set<string>();
+    const fgRows = fgDb.exec("SELECT uuid FROM nodes WHERE type = 'person' AND uuid IS NOT NULL");
+    if (fgRows.length > 0 && fgRows[0].values) {
+      for (const [uuid] of fgRows[0].values) validUuids.add(String(uuid));
+    }
+    result.fgPersonCount = validUuids.size;
+    fgDb.close();
+    if (validUuids.size === 0) { console.warn('[OrphanDetect] FG 无 person 节点，跳过'); return result; }
+
+    const tables = [
+      { name: 'memories', key: 'memories' as const },
+      { name: 'vault_log', key: 'vaultLog' as const },
+      { name: 'conversations', key: 'conversations' as const },
+      { name: 'black_diamond', key: 'blackDiamond' as const },
+      { name: 'knowledge_base', key: 'knowledgeBase' as const },
+    ];
+    for (const { name, key } of tables) {
+      try {
+        const labeled = db.exec(`SELECT DISTINCT belong_entity_uuid FROM ${name} WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''`);
+        let orphanCnt = 0;
+        if (labeled.length > 0 && labeled[0].values) {
+          for (const [uuid] of labeled[0].values) {
+            if (!validUuids.has(String(uuid))) {
+              const rowCnt = db.exec(`SELECT COUNT(*) FROM ${name} WHERE belong_entity_uuid = ?`, [String(uuid)]);
+              orphanCnt += rowCnt.length > 0 && rowCnt[0]?.values?.[0] ? (rowCnt[0].values[0][0] as number) : 0;
+            }
+          }
+        }
+        result[key] = orphanCnt;
+      } catch { /* skip */ }
+    }
+
+    const totalOrphans = result.memories + result.vaultLog + result.conversations + result.blackDiamond + result.knowledgeBase;
+    if (totalOrphans > 0) {
+      console.warn(`[OrphanDetect] ⚠️ 悬挂指针: mem=${result.memories} vault=${result.vaultLog} conv=${result.conversations} bd=${result.blackDiamond} kb=${result.knowledgeBase} (FG ${result.fgPersonCount}人)`);
+    } else {
+      console.log(`[OrphanDetect] ✅ 五表无悬挂指针 (FG ${result.fgPersonCount}人)`);
+    }
+  } catch (e) { console.warn('[OrphanDetect] 失败:', e); }
+  return result;
+}
+
+/**
+ * V13: 知识库净化迁移 — 将 805 条梦境 landmark + 2 条对话归纳从 knowledge_base
+ * 转移到 vault_log（金库），遵循金库的 UUID 标注和钙化升降级规则。
+ * 以后 knowledge_base 仅保留用户上传的文件/文档知识（md/txt/person/architecture）。
+ *
+ * 此迁移每次启动都检查（幂等：id 冲突自动跳过）。
+ */
+export async function migrateKnowledgeBaseToVault(db: any, fgDbPath?: string): Promise<{ landmark: number; inducted: number; deleted: number }> {
+  const result = { landmark: 0, inducted: 0, deleted: 0 };
+  const t0 = Date.now();
+
+  try {
+    // ── 1. 迁移 landmark (梦境沉淀) → vault_log ──
+    const landmarks = db.exec(
+      "SELECT id, title, content, tags, belong_entity_uuid, classification, created_at FROM knowledge_base WHERE source_type = 'landmark'"
+    );
+    if (landmarks.length > 0 && landmarks[0].values) {
+      for (const [kbId, title, content, tags, euuid, cls, createdAt] of landmarks[0].values) {
+        const vlId = 'vl_lm_' + String(kbId).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 20);
+        const detail = `${String(title || '记忆地标')}: ${String(content || '').substring(0, 80)}`;
+        const tagsJson = String(tags || '[]');
+        const uuid = euuid && String(euuid).length > 0 ? String(euuid) : null;
+        db.run(
+          "INSERT OR IGNORE INTO vault_log (id, operation, source_type, detail, content_md, belong_entity_uuid, created_at) VALUES (?, 'landmark', 'knowledge_base', ?, ?, ?, ?)",
+          [vlId, detail, String(content || '').substring(0, 500), uuid, String(createdAt)],
+        );
+        result.landmark++;
+      }
+    }
+
+    // ── 2. 迁移对话自动归纳 (auto_inducted) → vault_log ──
+    const inducted = db.exec(
+      "SELECT id, title, content, belong_entity_uuid, created_at FROM knowledge_base WHERE source_type = 'research' AND tags LIKE '%auto_inducted%'"
+    );
+    if (inducted.length > 0 && inducted[0].values) {
+      for (const [kbId, title, content, euuid, createdAt] of inducted[0].values) {
+        const vlId = 'vl_migrate_induct_' + String(kbId).substring(0, 12);
+        const uuid = euuid && String(euuid).length > 0 ? String(euuid) : null;
+        db.run(
+          "INSERT OR IGNORE INTO vault_log (id, operation, source_type, detail, content_md, belong_entity_uuid, created_at) VALUES (?, 'auto_induct', 'knowledge_base', ?, ?, ?, ?)",
+          [vlId, String(title || ''), String(content || '').substring(0, 500), uuid, String(createdAt)],
+        );
+        result.inducted++;
+      }
+    }
+
+    // ── 3. 删除已迁移的记录 + 测试残留 ──
+    const delLandmark = db.run("DELETE FROM knowledge_base WHERE source_type = 'landmark'");
+    const delInduct = db.run("DELETE FROM knowledge_base WHERE source_type = 'research' AND tags LIKE '%auto_inducted%'");
+    const delTest = db.run("DELETE FROM knowledge_base WHERE source_type = 'text'");
+    result.deleted = result.landmark + result.inducted + 2; // +2 test entries
+
+    // ── 4. 为新迁移的 landmark vault_log 条目回填 UUID ──
+    // 使用 detail/content_md 中的人名 + 默认玉瑶策略
+    try {
+      const fgPath = fgDbPath || join(dirname(dirname(__dirname)), 'data', 'webui', 'knowledge', 'family_graph.db');
+      const { existsSync, readFileSync } = await import('node:fs');
+      if (existsSync(fgPath)) {
+        const initSqlJs = (await import('sql.js')).default;
+        const SQL = await initSqlJs();
+        const fgBuf = readFileSync(fgPath);
+        const fgDb = new SQL.Database(fgBuf);
+        const peopleRows = fgDb.exec(
+          "SELECT name, uuid FROM nodes WHERE type = 'person' AND uuid IS NOT NULL AND uuid LIKE 'TXS-%' AND LENGTH(name) >= 2"
+        );
+        if (peopleRows.length > 0 && peopleRows[0].values) {
+          // 人名匹配
+          for (const [name, uuid] of peopleRows[0].values) {
+            db.run(
+              `UPDATE vault_log SET belong_entity_uuid = '${String(uuid)}' WHERE belong_entity_uuid IS NULL AND detail LIKE '%${String(name)}%' AND operation = 'landmark'`
+            );
+          }
+          // 默认玉瑶
+          const yaoyao = [...peopleRows[0].values].find(([n]: any) => n === '玉瑶');
+          const yaoyaoUuid = yaoyao ? String(yaoyao[1]) : 'TXS-000000001';
+          db.run(
+            `UPDATE vault_log SET belong_entity_uuid = '${yaoyaoUuid}' WHERE belong_entity_uuid IS NULL AND operation = 'landmark'`
+          );
+        }
+        fgDb.close();
+      }
+    } catch (e4) { /* UUID 回填失败不阻塞 */ }
+
+    const elapsed = Date.now() - t0;
+    console.log(`[Migration] 知识库净化: landmark${result.landmark}条+归纳${result.inducted}条 → vault_log (${elapsed}ms)`);
+  } catch (e) {
+    console.warn('[Migration] 知识库净化失败:', e);
   }
 
   return result;

@@ -19,16 +19,20 @@ function noteId(): string {
 
 export class YuyaoMemoryService {
   private sqlite: SQLiteAdapter;
-  constructor(sqlite: SQLiteAdapter) { this.sqlite = sqlite; }
+  private entityUuid: string | null;
+  constructor(sqlite: SQLiteAdapter, entityUuid?: string) { this.sqlite = sqlite; this.entityUuid = entityUuid || null; }
+
+  /** V13: 设置当前会话的实体UUID（由 chat.ts 每轮更新） */
+  setEntityUuid(uuid: string | null): void { this.entityUuid = uuid; }
 
   storeObjectLocation(key: string, location: string, dgId?: string, dnaId?: string): void {
     this.sqlite.writeRaw("UPDATE memories SET is_valid=0 WHERE note_key=? AND sub_type='object_location' AND is_valid=1", key);
     const id = noteId();
     const now = new Date().toISOString();
     this.sqlite.writeRaw(
-      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at)
-       VALUES(?,'note','object_location',?,?,1,?,?,?,?,'{}',0,0,'note.memory','note_zone',?)`,
-      id, key, location, dgId ?? null, dnaId ?? null, now, Date.now(), now,
+      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at,belong_entity_uuid)
+       VALUES(?,'note','object_location',?,?,1,?,?,?,?,'{}',0,0,'note.memory','note_zone',?,?)`,
+      id, key, location, dgId ?? null, dnaId ?? null, now, Date.now(), now, this.entityUuid,
     );
   }
 
@@ -45,9 +49,9 @@ export class YuyaoMemoryService {
     const id = noteId();
     const now = new Date().toISOString();
     this.sqlite.writeRaw(
-      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at)
-       VALUES(?,'note','fact',?,?,1,?,?,?,?,'{}',0,0,'note.memory','note_zone',?)`,
-      id, key, fact, dgId ?? null, dnaId ?? null, now, Date.now(), now,
+      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at,belong_entity_uuid)
+       VALUES(?,'note','fact',?,?,1,?,?,?,?,'{}',0,0,'note.memory','note_zone',?,?)`,
+      id, key, fact, dgId ?? null, dnaId ?? null, now, Date.now(), now, this.entityUuid,
     );
   }
 
@@ -63,9 +67,9 @@ export class YuyaoMemoryService {
     const id = noteId();
     const now = new Date().toISOString();
     this.sqlite.writeRaw(
-      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,remind_at,reminded,repeat_rule,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at)
-       VALUES(?,'note','reminder',?,?,1,?,0,?,?,?,?,?,'{}',0,0,'note.memory','note_zone',?)`,
-      id, text, text, remindAt, repeatRule ?? null, dgId ?? null, dnaId ?? null, now, Date.now(), now,
+      `INSERT INTO memories(id,memory_type,sub_type,note_key,raw_input,is_valid,remind_at,reminded,repeat_rule,dialog_group_id,dna_root_id,created_at,seq_pos,perception_json,calcium_score,calcium_level,locus_path,leaf_zone,strength_updated_at,belong_entity_uuid)
+       VALUES(?,'note','reminder',?,?,1,?,0,?,?,?,?,?,'{}',0,0,'note.memory','note_zone',?,?)`,
+      id, text, text, remindAt, repeatRule ?? null, dgId ?? null, dnaId ?? null, now, Date.now(), now, this.entityUuid,
     );
     return { id, memory_type: 'note', sub_type: 'reminder', note_key: text, raw_input: text,
       is_valid: 1, remind_at: remindAt, reminded: 0, repeat_rule: repeatRule ?? null,

@@ -92,11 +92,20 @@ export function logVaultOperation(
   targetId?: string,
   detail?: string,
   contentMd?: string,
+  belongEntityUuid?: string | null,
 ): void {
   const id = 'vl_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+  // V13: 写入 belong_entity_uuid — 确保金库记忆可被 UUID 检索系统找到
+  let euuid = belongEntityUuid || null;
+  if (!euuid && sourceId) {
+    try {
+      const mem = sqlite.queryAll("SELECT belong_entity_uuid FROM memories WHERE id = ?", [sourceId]) as any[];
+      if (mem.length > 0) euuid = mem[0]?.belong_entity_uuid || null;
+    } catch { /* 回查失败不阻塞 */ }
+  }
   sqlite.writeRaw(
-    'INSERT INTO vault_log (id, operation, source_type, source_id, target_id, detail, content_md, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    id, operation, sourceType || null, sourceId || null, targetId || null, detail || null, contentMd || null, new Date().toISOString(),
+    'INSERT INTO vault_log (id, operation, source_type, source_id, target_id, detail, content_md, created_at, belong_entity_uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    id, operation, sourceType || null, sourceId || null, targetId || null, detail || null, contentMd || null, new Date().toISOString(), euuid,
   );
 }
 
@@ -184,9 +193,17 @@ export function addBlackDiamond(
       }
     } catch { /* 解析失败则 l2_norm=NULL */ }
   }
+  // V13: 回查 memories.belong_entity_uuid 确保黑钻标注实体归属
+  let _bdeuuid: string | null = null;
+  if (params.source_id) {
+    try {
+      const memRow = sqlite.queryAll('SELECT belong_entity_uuid FROM memories WHERE id = ?', [params.source_id]) as any[];
+      _bdeuuid = memRow?.[0]?.belong_entity_uuid || null;
+    } catch { /* 回查不阻塞 */ }
+  }
   sqlite.writeRaw(
-    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, l2_norm, namespace)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO black_diamond (id, summary, emotion_tag, source_id, calcium_level, recall_count, tags, notes, created_at, updated_at, emotion_vector, l2_norm, namespace, belong_entity_uuid)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     params.summary,
     params.emotion_tag || null,
@@ -199,6 +216,7 @@ export function addBlackDiamond(
     params.emotion_vector || null,
     _l2norm,
     params.namespace || 'default',
+    _bdeuuid,
   );
   return getBlackDiamond(sqlite, id)!;
 }

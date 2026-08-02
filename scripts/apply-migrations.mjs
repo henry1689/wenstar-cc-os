@@ -1,19 +1,29 @@
 // S1-S3: 将 MigrationManager v8/v9/v10 应用到真实 DB
 // 不改任何 .ts 代码，只执行已有 migration 函数
+// SCRIPT-GOV-A2d-Batch-2c-phase-a: 治理门控 (CRITICAL, migrate)
 
 import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
+import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);
+const {validateGate,recordGovernanceDecision}=require('./_governance-gate.cjs');
+var G={};for(var _i=2;_i<process.argv.length;_i++){var _a=process.argv[_i];if(_a==="--apply")G.apply=1;else if(_a==="--operator"&&process.argv[_i+1])G.op=process.argv[++_i];else if(_a==="--reason"&&process.argv[_i+1])G.reason=process.argv[++_i];else if(_a==="--ticket"&&process.argv[_i+1])G.ticket=process.argv[++_i];else if(_a==="--confirm"&&process.argv[_i+1])G.confirm=process.argv[++_i];else if(_a==="--scope"&&process.argv[_i+1])G.scope=process.argv[++_i];else if(_a==="--report-path"&&process.argv[_i+1])G.rpt=process.argv[++_i];else if(_a==="--world"&&process.argv[_i+1])G.world=process.argv[++_i];else if(_a==="--help"){console.log("Usage: node apply-migrations.mjs [--apply] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] [--world <segment>]");process.exit(0)}}
+var M=G.apply?"apply":"dry-run",DR=!G.apply;
 
 const DB = resolve('data/webui/fusion_memory.db');
 
-// 复制 DB 做安全备份
-const BACKUP = DB + '.bak.' + Date.now();
-readFileSync(DB); // 验证可读
-writeFileSync(BACKUP, readFileSync(DB));
-console.log('备份: '+BACKUP);
-
 // 手动执行 v8/v9/v10 的 SQL（与 MigrationManager.ts 中完全一致，跳过版本检查）
 async function main() {
+  // ── 预检门控 ──
+  if(!DR){var C={scriptId:"apply-migrations",riskLevel:"CRITICAL",operationType:"migrate",mode:M,environment:"local",operator:{operatorId:G.op||"",reason:G.reason||"",ticket:G.ticket||null},scope:{selector:G.scope||"table:schema_version",limit:0,batchSize:0,since:null,until:null},confirmation:{required:true,provided:!!G.confirm,tokenDigest:G.confirm||null},backup:{required:true,created:false,backupId:null,backupPath:null,verified:false},irreversibleConfirmation:!!G.confirm,reportPath:G.rpt||null,worldSegment:G.world||null};var V=validateGate(C);var PE=V.errors.filter(function(e){return["R008","R009","R010","R013"].indexOf(e.rule)===-1});if(PE.length>0){var DE=["","======================================================================","  SCRIPT EXECUTION CONTRACT DENIED","======================================================================","  Script:  apply-migrations.mjs","  Risk:    CRITICAL","  Mode:    apply","  Operation: migrate","","  Issues:"];PE.forEach(function(e){DE.push("    ["+e.rule+"] "+e.message)});DE.push("","  Refusing to continue.","======================================================================","");console.error(DE.join("\n"));recordGovernanceDecision(C,V);process.exit(2)}}
+
+  if(DR){console.log("[DRY-RUN] apply-migrations — 将执行 DDL 迁移:\n  v8: memory_associations + dag_retrieval_log 建表\n  v9: memories 表 foresight 字段 (5列)\n  v10: search_index 建表 + n-gram 存量回填\n  额外: global_uid 回填 + belong_entity_uuid 回填\n\n使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际迁移。\n");process.exit(0)}
+
+  // ── 治理通过 → 创建备份 ──
+  const BACKUP = DB + '.bak.' + Date.now();
+  readFileSync(DB); // 验证可读
+  writeFileSync(BACKUP, readFileSync(DB));
+  console.log('备份: '+BACKUP);
+
   const initSqlJs = (await import('sql.js')).default;
   const SQL = await initSqlJs();
   const db = new SQL.Database(readFileSync(DB));
@@ -114,11 +124,15 @@ async function main() {
   }
 
   // 回填 belong_entity_uuid
+  // DATA-AUTH-B: 原硬编码映射已移除。回填逻辑保留但需人工配置实体名→UUID 映射后方可执行。
+  // 将 name→uuid 对填入 SYNTHETIC_PERSONA_MAP 数组即可启用回填：
+  //   ['名称模式', '实体UUID']
+  // 首次运行会因 synthetic 名称不匹配真实数据而成为安全的 no-op。
   const euuidNulls = db.exec("SELECT count(*) FROM memories WHERE belong_entity_uuid IS NULL OR belong_entity_uuid=''")[0].values[0][0];
   if (euuidNulls > 300) {
     console.log('回填 belong_entity_uuid...');
-    const people = [['熊梓铭','uuid-ziming'],['梓铭','uuid-ziming'],['诗韵','uuid-shirley'],['玉瑶','uuid-yaoyao'],['瑶瑶','uuid-yaoyao'],['鸿艺','uuid-hongyi'],['梓玥','uuid-ziyue'],['王全芬','uuid-wangqf'],['徐诗雨','uuid-shiyu'],['诗雨','uuid-shiyu']];
-    for (const [n,u] of people) db.run("UPDATE memories SET belong_entity_uuid=? WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid='')",[u,'%'+n+'%']);
+    const SYNTHETIC_PERSONA_MAP = [['SyntheticEntityTemplate-01','uuid-placeholder-aa'],['SyntheticEntityTemplate-02','uuid-placeholder-bb']];
+    for (const [n,u] of SYNTHETIC_PERSONA_MAP) db.run("UPDATE memories SET belong_entity_uuid=? WHERE raw_input LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid='')",[u,'%'+n+'%']);
     console.log('回填 belong_entity_uuid 完成');
   }
 

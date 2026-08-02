@@ -240,8 +240,8 @@ export class SleepTimeConsolidator {
         if (elasticScore < threshold) continue;
 
         sqlite.writeRaw(
-          `INSERT OR IGNORE INTO memories (id, raw_input, calcium_score, seq_pos, created_at, memory_kind)
-           VALUES (?, ?, ?, ?, ?, 'episodic')`,
+          `INSERT OR IGNORE INTO memories (id, raw_input, calcium_score, seq_pos, created_at, memory_kind, belong_entity_uuid)
+           VALUES (?, ?, ?, ?, ?, 'episodic', NULL)`,
           [String((row as any).id), _content, (row as any).calcium_score,
            (row as any).seq_pos || 0, (row as any).timestamp || new Date().toISOString()]
         );
@@ -391,8 +391,8 @@ export class SleepTimeConsolidator {
         const knId = `sem_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
 
         sqlite.writeRaw(
-          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type)
-           VALUES (?, ?, ?, 'dream_behavior', ?, ?, ?, 1, '梦境洞察', 0, 'other')`,
+          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, belong_entity_uuid)
+           VALUES (?, ?, ?, 'dream_behavior', ?, ?, ?, 1, '梦境洞察', 0, 'other', NULL)`,
           [knId, `${category}: ${name}`, finalContent,
            JSON.stringify(['auto_inducted', 'semantic', category, name, 'multi_source']),
            new Date().toISOString(), new Date().toISOString()]
@@ -420,8 +420,8 @@ export class SleepTimeConsolidator {
         const finalContent = fusedSummary || content;
 
         sqlite.writeRaw(
-          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type)
-           VALUES (?, ?, ?, 'dream_behavior', ?, ?, ?, 1, '梦境洞察', 0, 'other')`,
+          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, belong_entity_uuid)
+           VALUES (?, ?, ?, 'dream_behavior', ?, ?, ?, 1, '梦境洞察', 0, 'other', NULL)`,
           [knId, `话题归纳: ${word}`, finalContent,
            JSON.stringify(['auto_inducted', 'semantic', 'topic', word, 'multi_source']),
            new Date().toISOString(), new Date().toISOString()]
@@ -599,8 +599,8 @@ export class SleepTimeConsolidator {
           sqlite.writeRaw(
             `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_json, calcium_score, calcium_level,
              locus_path, leaf_zone, effective_strength, created_at, lifecycle_state, memory_kind, recall_count,
-             last_recalled_at, source_type, strength_updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?)`,
+             last_recalled_at, source_type, strength_updated_at, belong_entity_uuid)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?, NULL)`,
             [entryId, seqPos, summary.substring(0, MEMORY_CONFIG.sleepConsolidation.secondBrainSummaryMaxLen), '{}',
              MEMORY_CONFIG.sleepConsolidation.secondBrainInitCalcium, 1,
              'knowledge_vault', 'language_semantic_zone',
@@ -744,8 +744,8 @@ export class SleepTimeConsolidator {
 
         const knId = `sysc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
         sqlite.writeRaw(
-          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type)
-           VALUES (?, ?, ?, 'systems_consolidation', ?, ?, ?, 1, '系统巩固', 0, 'other')`,
+          `INSERT INTO knowledge_base (id, title, content, source_type, tags, created_at, updated_at, locked, classification, classification_pending, interaction_type, belong_entity_uuid)
+           VALUES (?, ?, ?, 'systems_consolidation', ?, ?, ?, 1, '系统巩固', 0, 'other', NULL)`,
           [knId, `巩固记忆: ${raw}`, `钙化 ${(mem as any).calcium_score?.toFixed(2)} 的持久记忆:\n${raw}`,
            JSON.stringify(['systems_consolidation', 'hippocampal_replay']),
            new Date().toISOString(), new Date().toISOString()]

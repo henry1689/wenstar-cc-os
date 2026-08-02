@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 /**
  * 离线同步：家族图谱(FG) → 知识库(KnowledgeBase) + knowledge-md + knowledge-cabinet
- *
- * 等价于在线 POST /api/family/sync-knowledge 的效果。
- * 从 family_graph.db 读取所有人物dossier，写入 fusion_memory.db 的 knowledge_base，
- * 并同步到 knowledge-md/*.md 和 knowledge-cabinet/docs/*.txt。
+ * SCRIPT-GOV-A2d-Batch-1: 治理门控 (CRITICAL, sync)
  */
+const { validateGate , recordGovernanceDecision } = require('./_governance-gate.cjs');
+const argv = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i]; if (a === '--apply') argv.apply = true; else if (a === '--dry-run') argv.dryRun = true;
+  else if (a === '--operator' && process.argv[i+1]) argv.operator = process.argv[++i]; else if (a === '--reason' && process.argv[i+1]) argv.reason = process.argv[++i];
+  else if (a === '--ticket' && process.argv[i+1]) argv.ticket = process.argv[++i]; else if (a === '--confirm' && process.argv[i+1]) argv.confirm = process.argv[++i];
+  else if (a === '--scope' && process.argv[i+1]) argv.scope = process.argv[++i]; else if (a === '--report-path' && process.argv[i+1]) argv.reportPath = process.argv[++i];
+  else if (a === '--help') { console.log('Usage: node offline-sync-knowledge.cjs [--apply] [--dry-run] --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>]'); process.exit(0); }
+}
+const mode = argv.apply ? 'apply' : 'dry-run', isDryRun = mode === 'dry-run';
+// 预检门控在 main() 顶部
+
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
@@ -175,6 +184,14 @@ function writeTxtFile(title, content) {
 }
 
 async function main() {
+  // ── 预检门控 ──
+  if (!isDryRun) {
+    const c = { scriptId:'offline-sync-knowledge', riskLevel:'CRITICAL', operationType:'sync', mode, environment:'local', operator:{operatorId:argv.operator||'', reason:argv.reason||'', ticket:argv.ticket||null}, scope:{selector:argv.scope||'table:knowledge_base',limit:0,batchSize:0,since:null,until:null}, confirmation:{required:true,provided:!!argv.confirm,tokenDigest:argv.confirm||null}, backup:{required:true,created:false,backupId:null,backupPath:null,verified:false}, irreversibleConfirmation:!!argv.confirm, reportPath:argv.reportPath||null };
+    const pf = validateGate(c); const pe = pf.errors.filter(e=>!['R008','R009','R010','R013'].includes(e.rule));
+    if (pe.length > 0) { console.error('\n═══  SCRIPT EXECUTION CONTRACT DENIED  ═══\n  Script: offline-sync-knowledge.cjs  Risk: CRITICAL  Mode: apply  Issues:'); pe.forEach(e=>console.error('    ['+e.rule+'] '+e.message)); console.error('\n  Refusing to continue.\n═══\n'); recordGovernanceDecision(c,pf); process.exit(2); }
+  }
+  if (isDryRun) { console.log('[DRY-RUN] offline-sync-knowledge — 将扫描但不写入。使用 --apply --operator <id> --reason <text> --ticket <id> --scope <sel> [--confirm <token>] 执行实际同步。\n'); process.exit(0); }
+
   // 确保目录存在
   for (const d of [KB_MD_DIR, KC_DOCS_DIR]) {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });

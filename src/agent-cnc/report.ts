@@ -13,6 +13,8 @@ import type {
   FileRiskInfo,
 } from './types.js';
 import { timestamp, ensureDir } from './utils.js';
+import type { AuditResult } from './audit.js';
+import type { GuardHistorySummary } from './guard-history.js';
 
 /**
  * 构建完整的 Evidence Report
@@ -51,7 +53,11 @@ export function buildReport(params: {
 /**
  * 生成 Markdown 报告内容
  */
-export function renderMarkdown(report: EvidenceReport): string {
+export function renderMarkdown(
+  report: EvidenceReport,
+  auditResult?: AuditResult,
+  historySummary?: GuardHistorySummary,
+): string {
   const lines: string[] = [];
 
   lines.push('# Agent CNC Evidence Report');
@@ -220,7 +226,84 @@ export function renderMarkdown(report: EvidenceReport): string {
   }
   lines.push('');
 
+  // 10. Guard History / Bypass Audit (R22-D)
+  renderAuditSection(lines, auditResult, historySummary);
+
   return lines.join('\n');
+}
+
+/**
+ * 渲染 Guard History / Bypass Audit 章节 (R22-D)
+ */
+function renderAuditSection(
+  lines: string[],
+  auditResult?: AuditResult,
+  historySummary?: GuardHistorySummary,
+): void {
+  lines.push('## 10. Guard History / Bypass Audit');
+  lines.push('');
+
+  if (!auditResult) {
+    lines.push('_(审计未执行 — 从 latest-result.json 读取的报告没有实时审计数据。运行 `audit` 以检查 bypass。)_');
+    lines.push('');
+    return;
+  }
+
+  const statusLabel = auditResult.passed ? 'PASS' : 'FAIL';
+  lines.push(`- **Audit Status:** ${statusLabel}`);
+  lines.push(`- **Checked Files:** ${auditResult.checked_files.length}`);
+  lines.push(`- **High-Risk Files:** ${auditResult.high_risk_files.length}`);
+  lines.push(`- **Considered Guard Events:** ${auditResult.considered_events}`);
+  lines.push('');
+
+  if (auditResult.matched_event_ids.length > 0) {
+    lines.push('**Matched Guard Events:**');
+    for (const id of auditResult.matched_event_ids) {
+      lines.push(`- \`${id}\``);
+    }
+    lines.push('');
+  }
+
+  // 审计发现 (R22-C findings)
+  if (auditResult.findings.length > 0) {
+    lines.push('### Findings');
+    lines.push('');
+    for (const f of auditResult.findings) {
+      const icon = f.severity === 'BLOCKER' ? '🔴' : f.severity === 'HIGH' ? '🟡' : 'ℹ️';
+      lines.push(`- ${icon} **${f.type}** [${f.severity}]`);
+      lines.push(`  - ${f.message}`);
+      if (f.files && f.files.length > 0) {
+        lines.push(`  - Files: ${f.files.join(', ')}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // History 摘要
+  if (historySummary && historySummary.total > 0) {
+    lines.push('### Guard History Summary');
+    lines.push('');
+    lines.push(`| Metric | Count |`);
+    lines.push(`|:---|---:|`);
+    lines.push(`| Total Events | ${historySummary.total} |`);
+    lines.push(`| PASS | ${historySummary.pass} |`);
+    lines.push(`| FAIL | ${historySummary.fail} |`);
+    lines.push(`| HIGH Risk | ${historySummary.high} |`);
+    lines.push(`| MEDIUM Risk | ${historySummary.medium} |`);
+    lines.push(`| LOW Risk | ${historySummary.low} |`);
+    lines.push(`| Plan Required | ${historySummary.planRequired} |`);
+    lines.push(`| Plan Found | ${historySummary.planFound} |`);
+    if (historySummary.earliestTimestamp && historySummary.latestTimestamp) {
+      lines.push(`| Earliest Event | ${historySummary.earliestTimestamp} |`);
+      lines.push(`| Latest Event | ${historySummary.latestTimestamp} |`);
+    }
+    lines.push('');
+  }
+
+  if (auditResult.warnings.length > 0) {
+    lines.push(`_History parse warnings: ${auditResult.warnings.length}_`);
+    lines.push('');
+  }
 }
 
 /**
@@ -229,6 +312,8 @@ export function renderMarkdown(report: EvidenceReport): string {
 export function saveReport(
   rootDir: string,
   report: EvidenceReport,
+  auditResult?: AuditResult,
+  historySummary?: GuardHistorySummary,
 ): { mdPath: string; jsonPath: string } {
   const reportsDir = path.join(rootDir, '.agent-cnc', 'reports');
   ensureDir(reportsDir);
@@ -236,7 +321,7 @@ export function saveReport(
   const ts = timestamp();
 
   // Markdown 报告
-  const mdContent = renderMarkdown(report);
+  const mdContent = renderMarkdown(report, auditResult, historySummary);
   const mdFileName = `evidence-report-${ts}.md`;
   const mdPath = path.join(reportsDir, mdFileName);
   fs.writeFileSync(mdPath, mdContent, 'utf-8');
