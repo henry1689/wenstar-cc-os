@@ -74,8 +74,30 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             memoryFragments.push('【' + _tag + '重要记忆】' + _t);
           }
         }
+        // V5.3: 记忆不足时降级检索 conversations
+        if (memoryFragments.length < 5) {
+          try {
+            const _convRows = _sqlite.queryAll(
+              "SELECT dialog_group_id, content, role, timestamp FROM conversations WHERE belong_entity_uuid = ? ORDER BY timestamp DESC LIMIT 80",
+              [_entityUuid]
+            ) || [];
+            const _seenGroups = {};
+            const _convTopics = [];
+            for (let _ci = 0; _ci < _convRows.length && _convTopics.length < 10; _ci++) {
+              if (_seenGroups[_convRows[_ci].dialog_group_id]) continue;
+              _seenGroups[_convRows[_ci].dialog_group_id] = true;
+              const _t = (_convRows[_ci].content || '').substring(0, 100);
+              if (_t.length > 4 && !memoryFragments.some(function(f) { return f.includes(_t.substring(0, 20)); }))
+                _convTopics.push('【对话·' + _meetingEntityName + '】' + _t);
+            }
+            for (let _ti = 0; _ti < _convTopics.length; _ti++) {
+              memoryFragments.push(_convTopics[_ti]);
+            }
+            if (_convTopics.length > 0) console.log('[EntityMem] V5.3对话降级: ' + _convTopics.length + ' 条');
+          } catch (_ce) { /* non-critical */ }
+        }
       }
-    } catch (_e) { /* 实体记忆检索失败不阻塞 */ }
+    } catch (_e) { /* non-critical */ }
     return {
       isTopicShift: false, isFollowUp: false, hasContinuationMarkers: false,
       isCasualChat: true, isLimitedRetrieval: false, hasNewEntity: false, hasPersonEntity: false,

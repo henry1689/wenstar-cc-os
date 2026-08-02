@@ -69,7 +69,7 @@ for (const doc of XSY_DOCS) {
 }
 
 // ── 3. 验证 ──
-const after = fusion.prepare("SELECT id, title, classification, belong_entity_uuid FROM knowledge_base WHERE belong_entity_uuid = ?", XSY_UUID).all();
+const after = fusion.prepare("SELECT id, title, classification, belong_entity_uuid FROM knowledge_base WHERE belong_entity_uuid = ?").all(XSY_UUID);
 console.log('\n=== 徐诗雨 UUID 知识库文档（修复后） ===');
 after.forEach(d => console.log('  [' + (d.classification||'?') + '] ' + d.title));
 
