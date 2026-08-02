@@ -278,17 +278,7 @@ if (s8.includes('V10.5')) {
   console.log('[Patch] ⚠️ server-chat-routes 未找到 _triggerMeetingFromBytes');
 }
 
-// ── KB 闸门修复 (替代 Patch 4，处理 CRLF) ──
-try {
-  const { execSync: _es } = require("child_process");
-  _es("node scripts/fix-kb-gates.cjs", { cwd: __dirname, stdio: "inherit" });
-} catch (_ke) { console.log("[Patch] KB闸门修复跳过:", _ke.message); }
-
-// ── Edge清理 ──
-try { require("child_process").execSync("node scripts/clean-all-person-edges.cjs",{cwd:__dirname,stdio:"inherit"}); } catch(_e1){console.log("[Patch] Edge清理跳过:",_e1.message);}
-
-// ── 记忆重建：从 conversations 重建 memories 锚点 ──
-try { require("child_process").execSync("node scripts/rebuild-memories-from-convs.cjs",{cwd:__dirname,stdio:"inherit"}); } catch(_e1){console.log("[Patch] 记忆重建跳过:",_e1.message);}
-
-// ── 徐诗雨 KB 清理：修复错误归属 + 更新旧描述 ──
-try { require("child_process").execSync("node scripts/fix-xsy-kb.cjs",{cwd:__dirname,stdio:"inherit"}); } catch(_e1){console.log("[Patch] KB清理跳过:",_e1.message);}
+// ── KB 闸门修复 (已移至 start.cjs，此处跳过) ──
+// ── Edge清理 (已移至 start.cjs，此处跳过) ──
+// ── 记忆重建 (已移至 start.cjs，此处跳过) ──
+// ── KB清理 (已移至 start.cjs，此处跳过) ──

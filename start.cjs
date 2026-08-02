@@ -41,6 +41,22 @@ try {
   execSync('node scripts/backfill-memory-uuid-v2.cjs', { cwd: __dirname, stdio: 'inherit' });
 } catch (e) { console.warn('[Start] UUID 回填失败（不影响启动）:', e.message); }
 
+// 🆕 V5.3: Edge清理 — 每人仅保留家族边+用户边
+try {
+  execSync('node scripts/clean-all-person-edges.cjs', { cwd: __dirname, stdio: 'inherit' });
+} catch (e) { console.warn('[Start] Edge清理失败（不影响启动）:', e.message); }
+
+// 🆕 V5.3: 记忆重建 — 从 conversations 重建 memories 锚点
+try {
+  console.log('[Start] 记忆重建...');
+  execSync('node scripts/rebuild-memories-from-convs.cjs', { cwd: __dirname, stdio: 'inherit' });
+} catch (e) { console.warn('[Start] 记忆重建失败（不影响启动）:', e.message); }
+
+// 🆕 V5.3: 徐诗雨 KB 清理 — 修复错误归属文档+更新旧描述
+try {
+  execSync('node scripts/fix-xsy-kb.cjs', { cwd: __dirname, stdio: 'inherit' });
+} catch (e) { console.warn('[Start] KB清理失败（不影响启动）:', e.message); }
+
 // 启动 server.ts
 const memLimit = process.env.TIANQUAN_LITE === 'true' ? '--max-old-space-size=10240' : '--max-old-space-size=12288';
 const child = spawn('npx', ['tsx', 'src/webui/server.ts'], { shell: true,
