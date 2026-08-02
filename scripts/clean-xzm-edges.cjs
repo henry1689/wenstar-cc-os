@@ -19,11 +19,7 @@ if (xzmEnt) {
   console.log('entity_relations: ' + before.c + '→' + after.c);
 }
 
-// ── 2. 确保 我 节点存在 ──
-fg.prepare("INSERT OR IGNORE INTO nodes (id,type,name,properties,uuid,category,security_level,entity_source,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-  .run('SELF-00001', 'person', '我', JSON.stringify({relation_to_user:'本人'}), null, 'U', 0, 'system', 'active', now, now);
-
-// ── 3. 清空熊梓铭所有边 ──
+// ── 2. 清空熊梓铭所有边 ──
 const nid = fg.prepare("SELECT id FROM nodes WHERE name='熊梓铭'").get().id;
 fg.prepare('DELETE FROM edges WHERE source_id=?').run(nid);
 fg.prepare('DELETE FROM edges WHERE target_id=?').run(nid);
@@ -41,7 +37,6 @@ const edges = [
   ['f1c6bb', nid, fen, 'parent_of'],
   ['ek17847136470308d8', nid, yue, 'elder_sister_of'],
   ['yk17847136470302d', yue, nid, 'younger_sister_of'],
-  ['msbaf5pf-t4vbv2', 'SELF-00001', nid, 'acquaintance_of'],
 ];
 
 const ins = fg.prepare('INSERT OR IGNORE INTO edges (id,source_id,target_id,relation,properties,created_at,updated_at) VALUES (?,?,?,?,?,?,?)');
