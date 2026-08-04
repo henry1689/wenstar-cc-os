@@ -460,15 +460,18 @@ async function loadConversation(){
   }catch(e){console.warn('[Conv] 加载历史失败:',e)}
 }
 
-// ── 清除聊天记录 ──
+// ── 清除聊天记录（V17: +DOM兜底 +reload兜底）
 async function clearChat(){
   if(!confirm('确定清除所有聊天记录？对话记忆仍保存在金库中，但本地聊天历史会清空。'))return;
   try{
     const r=await fetch('/api/chat/clear',{method:'POST'});
     if(!r.ok)throw Error('HTTP '+r.status);
-    chat.innerHTML='<div class="wc"><div class="ic">🌙</div><h2>文曲星 · 玉 瑶</h2><p>聊天记录已清除</p><div style="font-size:8px;color:var(--ts);margin-top:4px">─── ✦ 重新开始吧 ✦ ───</div></div>';
-    tc.textContent='0 轮';
+    try{
+      if(typeof chat!=='undefined'&&chat)chat.innerHTML='<div class=\"wc\"><div class=\"ic\">🌙</div><h2>文曲星 · 玉 瑶</h2><p>聊天记录已清除</p><div style=\"font-size:8px;color:var(--ts);margin-top:4px\">─── ✦ 重新开始吧 ✦ ───</div></div>';
+      if(typeof tc!=='undefined'&&tc)tc.textContent='0 轮';
+    }catch(e){}
     toast('✅ 聊天记录已清除');
+    setTimeout(function(){location.reload()},800);
   }catch(e){console.error(e);toast('❌ 清除失败');}
 }
 
