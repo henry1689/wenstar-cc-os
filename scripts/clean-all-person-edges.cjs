@@ -1,12 +1,13 @@
 /**
- * clean-all-person-edges.cjs — 清理所有人物冗余边，仅保留家族+用户边
- * 每次启动前由 prestart-patch.ts 调用
+ * V17: 人物档案维护 + 垃圾边清理
+ * 仅操作 family_graph.db（唯一引擎，无竞争）。Entity_relations 已迁入 SQLiteAdapter。
+ * 职责: dossier 补全 / relation_to_user 设置 / 垃圾边清理。
+ * 🔴 V17: 不再删除+重建边 — 边管理由 FamilyGraph 自身负责。
  */
 const Database = require('better-sqlite3');
 const path = require('path');
 const BASE = path.resolve(__dirname, '..');
 const fg = new Database(path.join(BASE, 'data/webui/knowledge/family_graph.db'));
-const fusion = new Database(path.join(BASE, 'data/webui/fusion_memory.db'));
 const now = new Date().toISOString();
 
 // 保留规则: 每条配置 {name, relation, keeps:[{target,rel}], dossierUpdates?, relationUpdate?}
@@ -92,41 +93,28 @@ for (const person of PERSONS) {
   if (person.relationUpdate) props.relation_to_user = person.relationUpdate;
   fg.prepare('UPDATE nodes SET properties = ? WHERE name = ?').run(JSON.stringify(props), person.name);
 
-  // 2. 边清理
-  const before = new Set();
-  fg.prepare('SELECT id FROM edges WHERE source_id = ?').all(node.id).forEach(e => before.add(e.id));
-  fg.prepare('SELECT id FROM edges WHERE target_id = ?').all(node.id).forEach(e => before.add(e.id));
-
-  fg.prepare('DELETE FROM edges WHERE source_id = ?').run(node.id);
-  fg.prepare('DELETE FROM edges WHERE target_id = ?').run(node.id);
-
-  // 3. 重建保留边
-  for (const ke of person.keeps) {
-    const tn = fg.prepare("SELECT id FROM nodes WHERE name = ?").get(ke.target);
-    if (!tn) continue;
-    let sid, tid;
-    if (ke.rel.includes('sister_of') || ke.rel === 'child_of') { tid = node.id; sid = tn.id; }
-    else { sid = node.id; tid = tn.id; }
-    fg.prepare('INSERT INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-      .run(require('crypto').randomUUID(), sid, tid, ke.rel, '{}', now, now);
+  // 2. V17: 垃圾边清理 + 方向修复
+  const garbage = ['grandmother_of','grandfather_of','grandchild_of','grandparent_of'];
+  for (const gr of garbage) {
+    fg.prepare('DELETE FROM edges WHERE (source_id = ? OR target_id = ?) AND relation = ?').run(node.id, node.id, gr);
   }
-
-  const after = new Set();
-  fg.prepare('SELECT id FROM edges WHERE source_id = ?').all(node.id).forEach(e => after.add(e.id));
-  fg.prepare('SELECT id FROM edges WHERE target_id = ?').all(node.id).forEach(e => after.add(e.id));
-
-  // 4. entity_relations 清理 — 🔴 V16: 已迁移至 SQLiteAdapter._fixEntityRelations()
-  //    better-sqlite3 对 fusion_memory.db 的写入会与 sql.js export() 竞争导致数据丢失
-  // const ent = fusion.prepare("SELECT id FROM entities WHERE name = ?").get(person.name);
-  // if (ent) {
-  //   fusion.prepare('DELETE FROM entity_relations WHERE entity_a_id = ? OR entity_b_id = ?').run(ent.id, ent.id);
-  //   const me = fusion.prepare("SELECT id FROM entities WHERE name = ?").get('我');
-  //   if (me) { ... fusion.prepare('INSERT OR IGNORE INTO entity_relations ...').run(...); }
-  // }
-
-  console.log('  ' + person.name + ': ' + before.size + '→' + after.size + '条边');
+  // 删除重复方向边（仅保留 child_of，清除错误方向的 parent_of/mother_of/father_of）
+  fg.prepare("DELETE FROM edges WHERE source_id = ? AND relation = 'parent_of'").run(node.id);
+  fg.prepare("DELETE FROM edges WHERE source_id = ? AND relation = 'mother_of'").run(node.id);
+  fg.prepare("DELETE FROM edges WHERE source_id = ? AND relation = 'father_of'").run(node.id);
+  // 确保正确的 keeps 存在
+  for (const ke of person.keeps) {
+    const tn = fg.prepare('SELECT id FROM nodes WHERE name = ?').get(ke.target);
+    if (!tn) continue;
+    // child_of: source=child(person) → target=parent(ke.target)
+    // sister_of: source=sibling(person) → target=sibling(ke.target)
+    // Both: person → target (source=node, target=tn)
+    let sid = node.id, tid = tn.id;
+    // 删除 person-target 之间的旧边（含错误方向），再插入正确边
+    fg.prepare('DELETE FROM edges WHERE ((source_id=? AND target_id=?) OR (source_id=? AND target_id=?)) AND (relation LIKE ? OR relation LIKE ?)').run(node.id, tn.id, tn.id, node.id, '%sister%', '%child%');
+    fg.prepare('INSERT OR IGNORE INTO edges(id,source_id,target_id,relation,properties,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(require('crypto').randomUUID(), sid, tid, ke.rel, '{}', now, now);
+  }
 }
 
 fg.close();
-fusion.close();
-console.log('✅ 全部清理完成');
+console.log('✅ V17 档案补全+边修复+垃圾清理 完成');
