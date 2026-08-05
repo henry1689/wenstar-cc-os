@@ -352,7 +352,7 @@ describe('[AUDIT-B] InMemoryAuditSink', () => {
     });
     sink.record(event);
 
-    const events = sink.getEvents();
+    const events = [...sink.getEvents()];
     expect(events).toHaveLength(1);
     expect(events[0].eventId).toBe('m2');
 

@@ -81,7 +81,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
               "SELECT dialog_group_id, content, role, timestamp FROM conversations WHERE belong_entity_uuid = ? ORDER BY timestamp DESC LIMIT 80",
               [_entityUuid]
             ) || [];
-            const _seenGroups = {};
+            const _seenGroups: Record<string, boolean> = {};
             const _convTopics = [];
             for (let _ci = 0; _ci < _convRows.length && _convTopics.length < 10; _ci++) {
               if (_seenGroups[_convRows[_ci].dialog_group_id]) continue;

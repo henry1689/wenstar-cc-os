@@ -111,6 +111,12 @@ export interface PersonProfile {
   asked_questions?: string[];
   /** 画像完整度（0-1，自动计算） */
   completeness?: number;
+  /** 🔧 V10.5: 角色扮演档案扁平访问（兼容 dossier.roleplayProfile） */
+  roleplayProfile?: {
+    names?: string[];
+    persona?: string;
+    boundaries?: string;
+  };
 
   // ── v1.1 新增: 6 模块结构化档案 + 辅助字段 ──
   /** 结构化人事档案（6 模块） */
@@ -306,6 +312,12 @@ export interface PersonDossier {
     timeline?: Array<{ period: string; role: string; detail?: string; sourceRef?: string }>;
     currentOccupation?: string; currentWorkplace?: string;
     maritalTimeline?: Array<{ date: string; event: string }>;
+  };
+  /** 🔧 V10.5: 角色扮演档案（仅情趣互动场景的称谓/设定，不影响正式身份） */
+  roleplayProfile?: {
+    names?: string[];
+    persona?: string;
+    boundaries?: string;
   };
   /** V6: 归档旧模块（卷宗只增不删） */
   _deprecated?: Record<string, any>;

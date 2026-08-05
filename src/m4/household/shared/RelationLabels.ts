@@ -86,7 +86,7 @@ export function getRelationLabel(relation: string, isOutgoing: boolean): string 
  * 新增/修正实体时，只改此处的 FIXES 映射即可，全局生效。
  */
 const RELATION_FIXES: Record<string, string> = {
-  '徐诗雨': '同事——高峰电业营业部跟单员',
+  '徐诗雨': '同事——熊勇的下属（高峰电业）',
   '徐诗韵': '密友——通过姐姐诗雨认识',
   '徐诗涵': '密友——通过姐姐诗雨认识',
   '熊梓铭': '熊勇的女儿（心理学专业学生）',

@@ -472,9 +472,17 @@ export class SQLiteAdapter {
         const vDb = new (SQL2 as any).Database(verifyBuf);
         const vRes = (vDb as any).exec("SELECT COUNT(*) as c FROM memories WHERE belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
         const vCount = (vRes.length && vRes[0]?.values?.[0]?.[0]) ? Number(vRes[0].values[0][0]) : 0;
+        // V18: ANCHOR 重建结果观测 — 重建产物恒带 UUID（INSERT 前已跳过空 UUID）。
+        //     空 UUID 锚点的真正检测点在 _rebuildMemoryAnchors() 的 DELETE 之前（见该函数 V18 注释）。
+        const aRes = (vDb as any).exec("SELECT COUNT(*) as c FROM memories WHERE id LIKE '%\\_ANCHOR' ESCAPE '\\' AND belong_entity_uuid IS NOT NULL AND belong_entity_uuid != ''");
+        const aTotal = (aRes.length && aRes[0]?.values?.[0]?.[0]) ? Number(aRes[0].values[0][0]) : 0;
+        const aAllRes = (vDb as any).exec("SELECT COUNT(*) as c FROM memories WHERE id LIKE '%\\_ANCHOR' ESCAPE '\\'");
+        const aAll = (aAllRes.length && aAllRes[0]?.values?.[0]?.[0]) ? Number(aAllRes[0].values[0][0]) : 0;
         (vDb as any).close();
         const icon = vCount >= 600 ? '✅' : '🔴';
+        const aIcon = (aAll > 0 && aTotal === aAll) ? '✅' : '🔴';
         console.log(`[SQLiteAdapter] ${icon} 磁盘验证: ${vCount}条有UUID (重读磁盘)`);
+        console.log(`[SQLiteAdapter] ${aIcon} ANCHOR重建结果: ${aTotal}/${aAll} 锚点带UUID`);
       }
     } catch (err) { console.warn('[SQLiteAdapter] 锚点重建失败:', (err as Error)?.message); }
   }
@@ -1677,6 +1685,18 @@ export class SQLiteAdapter {
     const now = new Date().toISOString();
     const RP_RE = /爸爸|爷爷|女儿|儿子|哥哥|叔叔|妈妈|妹妹|姐姐|爹爹|主人|老公|老婆/;
 
+    // V18: 重建前存量空 UUID 锚点统计 — DELETE 之前检测，暴露运行时 flush 写入的空 UUID 锚点
+    //     （重建产物恒带 UUID，只有重建前残留的空 UUID 锚点能反映运行时对话闭组未归实体）
+    try {
+      const preRes = this.db.exec(
+        "SELECT COUNT(*) FROM memories WHERE id LIKE '%\\_ANCHOR' ESCAPE '\\' AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '')"
+      );
+      const preNull = (preRes.length && preRes[0]?.values?.[0]?.[0]) ? Number(preRes[0].values[0][0]) : 0;
+      if (preNull > 0) {
+        console.warn(`[SQLiteAdapter] ⚠️ ANCHOR存量: 重建前发现 ${preNull} 条空UUID锚点 — 运行时对话闭组未归实体`);
+      }
+    } catch { /* 统计失败不阻塞 */ }
+
     // 清理旧 ANCHOR
     try { this.db.run("DELETE FROM memories WHERE id LIKE '%_ANCHOR' OR id LIKE '%_CHUNK%'"); } catch {}
 
@@ -1960,6 +1980,10 @@ export class SQLiteAdapter {
       validStartMs: obj.valid_start_ms ?? null,
       validUntilMs: obj.valid_until_ms ?? null,
       foresightStatus: obj.foresight_status ?? null,
+      // V18: 补齐 belongEntityUuid — 此前 rowToRecord 遗漏该字段，
+      //   导致 runDecayMaintenance 等"读-改-写"路径 write() 回写时 belongEntityUuid=undefined→NULL，
+      //   全库 memories UUID 被清空（徐诗雨/熊梓铭记忆归零根因）。
+      belongEntityUuid: obj.belong_entity_uuid ?? null,
     };
   }
 

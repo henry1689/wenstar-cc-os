@@ -170,12 +170,11 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       // 🆕 Phase 2: 分级注入 — Level 3/4 只注入高置信度命中
       const _topScore = knResults[0]?.matchScore ?? 0;
       const _minScore = _searchLevel <= 1 ? 0.05 : (_searchLevel === 2 ? 0.10 : 0.20);
-      const _topHits = knResults.filter((k: any) => k.matchScore >= _minScore);
+      let _topHits = knResults.filter((k: any) => k.matchScore >= _minScore);
 
-      
-        // V5.3: 会晤模式下按 entity UUID 过滤 KB 结果
+      // V5.3: 会晤模式下按 entity UUID 过滤 KB 结果
         if (_meetingEntityUuid) {
-          _topHits = _topHits.filter(function(k) {
+          _topHits = _topHits.filter(function(k: any) {
             var ku = k.belong_entity_uuid || null;
             return !ku || ku === _meetingEntityUuid;
           });

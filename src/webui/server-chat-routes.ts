@@ -65,8 +65,9 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     }
     // 安全序列化：防止循环引用导致 JSON.stringify 抛异常
     const safeResult = _sanitizeForJSON(result);
+    const safeObject = (safeResult && typeof safeResult === 'object' && !Array.isArray(safeResult)) ? safeResult : {};
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ...safeResult, audio_url }));
+    res.end(JSON.stringify({ ...(safeObject as Record<string, unknown>), audio_url }));
     } catch (err) {
       console.error('[ChatRoute] /api/chat 异常:', (err as Error)?.message || err);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

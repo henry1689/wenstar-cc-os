@@ -82,6 +82,23 @@ export async function flushDialogGroup(
             entityUuid = fg.getUUIDByName?.(ctx.ctx.characterName) ?? null;
           }
         }
+        // V18: FG 解析失败时降级 — 从 conversations 表取该对话组已标注的实体 UUID
+        //      🔧 S4-FIX: 改用 seq_pos 定位（conversations 每轮插入即带 belong_entity_uuid），
+        //      不依赖 dialog_group_id 三段回填时序（回填在本函数尾部才执行，此前 dialog_group_id 恒为 NULL）
+        if (!entityUuid) {
+          const seqs = (dg.rounds || [])
+            .map((r: any) => r.seqPos)
+            .filter((s: any) => typeof s === 'number' && s > 0)
+            .flatMap((s: number) => [s, s + 1]);
+          if (seqs.length > 0) {
+            const convRow = sql.queryAll?.(
+              "SELECT belong_entity_uuid FROM conversations WHERE seq_pos IN (" + seqs.join(',') + ") AND belong_entity_uuid IS NOT NULL AND belong_entity_uuid != '' LIMIT 1"
+            );
+            if (convRow && (convRow as any[]).length > 0) {
+              entityUuid = (convRow[0] as any)?.belong_entity_uuid ?? null;
+            }
+          }
+        }
       } catch { /* UUID 解析不阻塞 */ }
     }
 
