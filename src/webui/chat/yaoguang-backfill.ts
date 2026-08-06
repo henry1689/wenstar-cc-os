@@ -16,6 +16,9 @@ import { fillObjectiveDims } from '../../m2/YaoguangNormalizer.js';
 import { encodePerceptionV40 } from '../../m2/PerceptionVector40DCodec.js';
 
 export interface YaoguangBackfillJob {
+  /** 🔴 S4-P1 修复：调用方 ChatContext（含 storage，用于写 perception_40d 列）。
+   *  由 enqueueYaoguangBackfill 注入，调用方无需传。 */
+  ctx?: any;
   /** DNA 根码（瑶光 wf_perception_filter 硬性要求，非空） */
   dnaRootId: string;
   /** 全局锚点 */
@@ -68,42 +71,45 @@ async function _processNext(): Promise<void> {
   try {
     while (_queue.length > 0) {
       const job = _queue.shift()!;
-      const mh = _getMasterHarris(job as any);
-      // 1. 客户端未就绪 → 跳过（保持 M3 语义维 40D）
-      if (!mh?.tianquanReady) {
-        console.warn('[YaoguangBackfill] 天权 RPC 未就绪，跳过本轮回填');
+      try {
+        // 🔴 S4-P1 修复：用 job.ctx 解析 sqlite / masterHarris（此前 ctx 被丢弃 → 回填永不落库）
+        const mh = _getMasterHarris(job.ctx);
+        // 1. 客户端未就绪 → 跳过（保持 M3 语义维 40D）
+        if (!mh?.tianquanReady) {
+          console.warn('[YaoguangBackfill] 天权 RPC 未就绪，跳过本轮回填');
+          continue;
+        }
+        // 2. 拉瑶光客观 40D（include_yaoling=false，快且轻）
+        const res = await mh.collect40DSnapshot(
+          {
+            dna_root_id: job.dnaRootId,
+            global_uid: job.globalUid,
+            location_fingerprint: job.locationFingerprint,
+            scene_tags: job.sceneTags,
+            interpersonal_labels: job.interpersonalLabels,
+            raw_input_text: job.rawInputText,
+            scene_desc: job.rawInputText,
+          },
+          { include_yaoling: false, timeout_ms: 30_000 },
+        );
+        // 3. 失败/无 objective → 跳过
+        const objective = res?.yaoguang?.snapshot?.objective as
+          | Record<string, { standard_value?: number; standard_range?: [number, number] }>
+          | undefined;
+        if (res?.code !== 0 || !objective) {
+          console.warn('[YaoguangBackfill] 瑶光返回失败或缺失 objective，跳过');
+          continue;
+        }
+        // 4. 融合：M3 语义维 + 瑶光客观维 → 写回各 memory
+        const merged = fillObjectiveDims(job.p40Semantic, objective);
+        for (const memoryId of job.memoryIds) {
+          await _writeP40(job.ctx, memoryId, merged);
+        }
+        console.log(`[YaoguangBackfill] ✅ ${job.dnaRootId} 客观维回填完成（${job.memoryIds.length} 条）`);
+      } finally {
+        // 🔴 S4-P3 修复：无论成功/跳过/异常，都释放单飞去重（防泄漏）
         _inFlight.delete(job.dnaRootId);
-        continue;
       }
-      // 2. 拉瑶光客观 40D（include_yaoling=false，快且轻）
-      const res = await mh.collect40DSnapshot(
-        {
-          dna_root_id: job.dnaRootId,
-          global_uid: job.globalUid,
-          location_fingerprint: job.locationFingerprint,
-          scene_tags: job.sceneTags,
-          interpersonal_labels: job.interpersonalLabels,
-          raw_input_text: job.rawInputText,
-          scene_desc: job.rawInputText,
-        },
-        { include_yaoling: false, timeout_ms: 30_000 },
-      );
-      // 3. 失败/无 objective → 跳过
-      const objective = res?.yaoguang?.snapshot?.objective as
-        | Record<string, { standard_value?: number; standard_range?: [number, number] }>
-        | undefined;
-      if (res?.code !== 0 || !objective) {
-        console.warn('[YaoguangBackfill] 瑶光返回失败或缺失 objective，跳过');
-        _inFlight.delete(job.dnaRootId);
-        continue;
-      }
-      // 4. 融合：M3 语义维 + 瑶光客观维 → 写回各 memory
-      const merged = fillObjectiveDims(job.p40Semantic, objective);
-      for (const memoryId of job.memoryIds) {
-        await _writeP40(job as any, memoryId, merged);
-      }
-      console.log(`[YaoguangBackfill] ✅ ${job.dnaRootId} 客观维回填完成（${job.memoryIds.length} 条）`);
-      _inFlight.delete(job.dnaRootId);
     }
   } catch (e) {
     console.warn('[YaoguangBackfill] 处理异常:', (e as Error)?.message);
@@ -123,6 +129,8 @@ export function enqueueYaoguangBackfill(ctx: any, job: YaoguangBackfillJob): voi
   if (_inFlight.has(job.dnaRootId) || _queue.some(j => j.dnaRootId === job.dnaRootId)) {
     return;
   }
+  // 🔴 S4-P1 修复：ctx 合入 job（_processNext 用 job.ctx 解析 sqlite / masterHarris）
+  job.ctx = ctx;
   _inFlight.add(job.dnaRootId);
   _queue.push(job);
   void _processNext();

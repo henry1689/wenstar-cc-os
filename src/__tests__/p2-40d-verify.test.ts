@@ -35,18 +35,23 @@ describe('P2: M3 直接产出 40D 语义维', () => {
     expect(Number.isNaN(normalizeStandardValue(undefined, [0, 1]))).toBe(true);
   });
 
-  it('fillObjectiveDims 保留 M3 语义维 + 填充瑶光客观维', () => {
+  it('fillObjectiveDims 填充瑶光客观维 + 语义维以 M3 为准', () => {
     const base = createEmptyPerceptionV40();
-    base.d35_sincerity = 0.8;
+    base.d35_sincerity = 0.8; // M3 语义维
+    base.d12_enjoyment = 0.3; // M3 语义维（D12）
     const objective = {
       d1: { standard_value: 0.9, standard_range: [0.5, 1.6] as [number, number] },
-      d12: { standard_value: 50, standard_range: [25, 65] as [number, number] },
-      d36: { standard_value: 0.2, standard_range: [-1, 1] as [number, number] },
+      d10: { standard_value: 5, standard_range: [0, 20] as [number, number] },
+      d12: { standard_value: 50, standard_range: [25, 65] as [number, number] }, // 语义维，应跳过
+      d36: { standard_value: 0.2, standard_range: [-1, 1] as [number, number] }, // 语义维，应跳过
     };
     const merged = fillObjectiveDims(base, objective);
+    // 瑶光客观维填充（D1 血乳酸、D10 欲望）
     expect(merged.d01_muscle_load).toBeCloseTo(0.364, 3);
-    expect(merged.d12_enjoyment).toBeCloseTo(0.625, 3);
-    expect(merged.d36_dominance).toBeCloseTo(0.6, 3);
+    expect(merged.d10_desire_drive).toBeCloseTo(0.25, 3);
+    // 语义维以 M3 为准（瑶光不覆盖 D12/D36，保持 base 值）
+    expect(merged.d12_enjoyment).toBe(0.3);
+    expect(merged.d36_dominance).toBe(0);
     expect(merged.d35_sincerity).toBe(0.8);
   });
 });
