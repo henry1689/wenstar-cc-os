@@ -137,8 +137,12 @@ export interface EnhancedDNA {
   raw_input: string;
   entity_genes: EntityGene[];
 
-  /** 注入的 24 维感知层 */
+  /** 注入的 24 维感知层 — 降级为投影层（由 40D 语义维反投影 + 24D 独有维原生） */
   perception: Perception24D;
+
+  /** V3: 40D 感知向量 — M3 直接产出的主向量（语义维 D09-D20/D33-D40 + 客观维由瑶光填充）。
+   *  可选：analyze() 阶段未填，M3LogicOrchestrator.decide() 末尾统一填充。 */
+  perceptionV40?: import('./perception-40d.js').PerceptionV40;
 
   /** 钙质强度分数 (0.0 ~ 1.0) */
   calcium_score: number;
