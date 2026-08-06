@@ -284,42 +284,59 @@ export class UUIDGatekeeper {
     return false;
   }
 
+  /** 🔴 户籍管理法: UUID 级可见性判定（deny-by-default）。
+   *  有 belong_entity_uuid → 必须在白名单；无归属 → 仅户主钥匙场景（会话层空）可见。 */
+  private _isUuidVisible(uuid: string | null | undefined): boolean {
+    if (!uuid) {
+      // 无归属记录：仅户主钥匙场景（无会晤实体激活，即会话层空）可见
+      return this.sessionEntities.size === 0 && this.tempGrants.size === 0;
+    }
+    return this.isInWhitelist(uuid);
+  }
+
   /**
    * 过滤记忆列表（DNA[] 类型）
+   * 🔴 户籍管理法 V-1/V-2 修复: UUID 优先判定（belong_entity_uuid 权威列），
+   * 不再"任一名字命中即整条放行"。无 UUID 旧数据按名字兜底，但仍需经 _isUuidVisible。
    */
-  filterMemories<T extends { fg_entity_names?: string; entity_genes?: any; raw_input?: string }>(
+  filterMemories<T extends { fg_entity_names?: string; entity_genes?: any; raw_input?: string; belong_entity_uuid?: string | null }>(
     memories: T[]
   ): T[] {
     const allowed: T[] = [];
     for (const m of memories) {
-      // 先查 fg_entity_names（逗号分隔的人名）
-      const fgNames = (m as any).fg_entity_names || '';
-      if (this.filterByEntityNames(fgNames)) {
-        allowed.push(m);
-        this.sessionStats.allowed++;
-      } else {
-        // 次级检查：entity_genes JSON 中的 entity name
-        let entityNames: string[] = [];
-        try {
-          const genes = typeof (m as any).entity_genes === 'string'
-            ? JSON.parse((m as any).entity_genes)
-            : (m as any).entity_genes;
-          if (Array.isArray(genes)) {
-            entityNames = genes.map((g: any) => g.name).filter(Boolean);
-          }
-        } catch { /* 解析失败不影响过滤 */ }
-
-        const hasMatch = entityNames.some(name => {
-          const uuid = this._resolveUUID(name);
-          return uuid && this.isInWhitelist(uuid);
-        });
-
-        if (hasMatch) {
+      // ① 有 belong_entity_uuid → UUID 级判定（权威）
+      const buuid = (m as any).belong_entity_uuid;
+      if (buuid) {
+        if (this._isUuidVisible(buuid)) {
           allowed.push(m);
           this.sessionStats.allowed++;
         } else {
           this.sessionStats.blocked++;
         }
+        continue;
+      }
+
+      // ② 无 UUID 旧数据：名字兜底（entity_genes 任一命中白名单），但需全体在可见范围
+      let entityNames: string[] = [];
+      try {
+        const genes = typeof (m as any).entity_genes === 'string'
+          ? JSON.parse((m as any).entity_genes)
+          : (m as any).entity_genes;
+        if (Array.isArray(genes)) {
+          entityNames = genes.map((g: any) => g.name).filter(Boolean);
+        }
+      } catch { /* 解析失败不影响过滤 */ }
+
+      const hasMatch = entityNames.some(name => {
+        const uuid = this._resolveUUID(name);
+        return uuid && this.isInWhitelist(uuid);
+      });
+      // 无 UUID 且有人名命中 → 仅户主钥匙场景放行（防会晤中无归属记忆注入）
+      if (hasMatch && this.sessionEntities.size === 0) {
+        allowed.push(m);
+        this.sessionStats.allowed++;
+      } else {
+        this.sessionStats.blocked++;
       }
     }
     return allowed;
@@ -327,11 +344,12 @@ export class UUIDGatekeeper {
 
   /**
    * 过滤 FG 成员列表（family_context / social_context 中的 {entity: string} 数组）
+   * 🔴 户籍管理法 V-3 修复: 陌生人（不在白名单）一律拒绝，消除拦/放语义分裂。
    */
   filterFGMembers<T extends { entity: string }>(members: T[]): T[] {
     return members.filter(m => {
       const uuid = this._resolveUUID(m.entity);
-      const allowed = !uuid || this.isInWhitelist(uuid);
+      const allowed = this._isUuidVisible(uuid);
       if (allowed) this.sessionStats.allowed++;
       else this.sessionStats.blocked++;
       return allowed;
@@ -341,14 +359,14 @@ export class UUIDGatekeeper {
   /**
    * 限制实体名列表为白名单内的人物。
    * 用于 KnowledgeContextBuilder 的 entity overlap 搜索。
-   * 无实体 UUID 映射的人物（陌生人/未登记）始终放行。
+   * 🔴 户籍管理法 V-3 修复: 陌生人（不在白名单）一律拒绝，与 filterByEntityNames 同口径。
    */
   restrictEntityNames(entityNames: string[]): string[] {
     if (!entityNames || entityNames.length === 0) return [];
 
     return entityNames.filter(name => {
       const uuid = this._resolveUUID(name);
-      return !uuid || this.isInWhitelist(uuid);
+      return this._isUuidVisible(uuid);
     });
   }
 
