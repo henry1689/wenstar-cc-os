@@ -13,6 +13,7 @@ import type { Perception24D } from '../m3/types/perception.js';
 import { map24DTo40D, decodePerceptionV40, cosineSimilarity40D } from '../m2/PerceptionVector40DCodec.js';
 import { isPerception40DEnabled } from '../config/perception-40d-config.js';
 import { PERCEPTION_40D_KEYS } from '../m3/types/perception-40d.js';
+import type { PerceptionV40 } from '../m3/types/perception-40d.js';
 
 // ── V12.0 新管线模块 ──
 import { weightedRRF, buildIdToItem, DEFAULT_RRF_CONFIG, type RRFConfig } from './RRFFusion.js';
@@ -467,6 +468,8 @@ export async function searchV13(
   opts: SearchOptions = {},
   pipelineConfig?: Partial<FullSearchPipelineConfig>,
   dagRepo?: MemoryAssociationRepository | null,
+  /** V3: M3 直接产出的 40D 感知向量 — 优先用作 40D 查询向量（与 24D 同源） */
+  perceptionV40?: PerceptionV40 | null,
 ): Promise<SearchResultV13> {
   const t0 = Date.now();
   const cfg = { ...DEFAULT_FULL_PIPELINE_CONFIG, ...pipelineConfig };
@@ -598,9 +601,11 @@ export async function searchV13(
   // ═══════════ L6.5 · 40D 情感重排（V20 混合检索）═══════════
   // 在 MMR/最终排序前，用 40D 扇区加权相似度重排候选，让 40D 记忆优先。
   // 候选 id 匹配 memories.id（emotion/keyword/locus/entity 路）或 global_uid（spine 路）。
-  if (isPerception40DEnabled() && perception && candidates.length > 1) {
+  if (isPerception40DEnabled() && (perceptionV40 || perception) && candidates.length > 1) {
     try {
-      const q40 = map24DTo40D(perception);
+      // V3: M3 产出的 perceptionV40 优先；缺失时回退 24D 派生
+      const q40 = perceptionV40 ?? (perception ? map24DTo40D(perception) : null);
+      if (!q40) throw new Error('无 40D 查询向量');
       const ids = candidates.map(c => c.id).slice(0, 100);
       const placeholders = ids.map(() => '?').join(',');
       const rows = db.exec(
