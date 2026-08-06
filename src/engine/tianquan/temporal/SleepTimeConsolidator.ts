@@ -526,11 +526,18 @@ export class SleepTimeConsolidator {
           .sort((a, b) => b[1].size - a[1].size)
           .slice(0, 5);
         for (const [name, days] of topEntities) {
+          // 🔴 户籍管理法: 跨会话梦境按实体名解析 UUID 打标（纳入 UUID 监管）
+          let _owner: string | null = null;
+          try {
+            const _fgG = (sqlite as any).familyGraph;
+            _owner = _fgG?.getUUIDByName?.(name) ?? null;
+          } catch { /* 解析失败 → null（公共） */ }
           sqlite.writeRaw(
-            `INSERT OR IGNORE INTO dream_logs (id, summary, emotion_tag, source, tags, created_at)
-             VALUES (?, ?, ?, 'cross_session', ?, ?)`,
+            `INSERT OR IGNORE INTO dream_logs (id, summary, emotion_tag, source, tags, belong_entity_uuid, created_at)
+             VALUES (?, ?, ?, 'cross_session', ?, ?, ?)`,
             ['xl_' + name, `跨会话实体: ${name} 在 ${days.size} 天中被提及`, '中性',
              JSON.stringify(['cross_session', name]),
+             _owner,
              new Date().toISOString()]
           );
           links++;
