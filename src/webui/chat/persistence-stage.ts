@@ -15,9 +15,12 @@
 import type { DNA } from '../../m1/types/dna.js';
 import type { Perception24D } from '../../m3/types/perception.js';
 import { encodeEmotionVector, encodeEmotionVectorWithFingerprint } from '../../m2/EmotionVectorCodec.js';
-import { map24DTo40D } from '../../m2/PerceptionVector40DCodec.js';
+import { encodePerceptionV40 } from '../../m2/PerceptionVector40DCodec.js';
+import { buildFallbackV40 } from '../../m2/YaoguangNormalizer.js';
+import type { PerceptionV40 } from '../../m3/types/perception-40d.js';
 import type { M3Decision } from '../../m3/types/perception.js';
 import { detectForesight } from '../../m3/ForesightDetector.js';
+import { enqueueYaoguangBackfill } from './yaoguang-backfill.js';
 import type { ChatContext } from '../chat.js';
 
 export interface PersistInput {
@@ -53,30 +56,22 @@ function buildPerceptionJson(p: Perception24D, text?: string): string {
   return encodeEmotionVector(p);
 }
 
-/** V20: 40D 双轨 — 从 24D 派生 40D 写 perception_40d 列（独立列，避免与 perception_v2 增量对象冲突） */
+/**
+ * V3: 写 perception_40d 列 — M3 直接产出的 40D 语义维（严格走 24D 原路径）。
+ * 优先用 `perceptionV40`（M3 decide 产出，与 24D 同源）；缺失时回退 buildFallbackV40。
+ * 客观维（D01-D08/D21-D32）由瑶光异步回填（yaoguang-backfill），此处语义维已就绪。
+ */
 function writePerceptionV40Dual(
   sqlite: { writeRaw(sql: string, ...params: unknown[]): void },
   id: string,
   p: Perception24D,
+  perceptionV40?: PerceptionV40,
 ): void {
   try {
-    const p40 = map24DTo40D(p);
-    const keys = [
-      'd01_muscle_load','d02_pain_level','d03_nerve_arousal','d04_endocrine_hormones',
-      'd05_pheromone','d06_metabolic_cycle','d07_self_heal','d08_sensory_env',
-      'd09_self_identity','d10_desire_drive','d11_fear_fatigue','d12_enjoyment',
-      'd13_empathy','d14_self_protection','d15_partner_attachment','d16_partner_protection',
-      'd17_family_belonging','d18_family_protection','d19_social_fit','d20_team_protection',
-      'd21_private_space','d22_home_environment','d23_workplace','d24_public_space',
-      'd25_spatiotemporal','d26_seasonal_climate','d27_micro_physiology','d28_nature_expansion',
-      'd29_social_refinement','d30_spiritual_growth','d31_quantum_coupling','d32_global_overview',
-      'd33_sexual_attraction','d34_energy_merge','d35_sincerity','d36_dominance',
-      'd37_moral_judgment','d38_humor','d39_dependency','d40_possessiveness',
-    ];
-    const arr = keys.map(k => (p40 as unknown as Record<string, number>)[k] ?? 0);
+    const p40 = perceptionV40 ?? buildFallbackV40(p);
     sqlite.writeRaw(
       'UPDATE memories SET perception_40d = ? WHERE id = ?',
-      JSON.stringify(arr),
+      encodePerceptionV40(p40),
       id,
     );
   } catch (e) {
@@ -177,8 +172,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     })) {
       hadError = true;
     }
-    // V20: 40D 双轨 — 用户消息写 perception_40d
-    writePerceptionV40Dual(sqlite, idUser, input.p);
+    // V3: 40D — 用户消息写 perception_40d（M3 直接产出的语义维，瑶光客观维异步回填）
+    writePerceptionV40Dual(sqlite, idUser, input.p, input.decision.enhanced.perceptionV40);
 
     // 写助理回复 — 剥离场景描写后再存储
     //     LLM 的回复含"（我趴在浴缸边…）"等动作描写。这是生成产物，不是语义记忆。
@@ -204,8 +199,28 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     })) {
       hadError = true;
     }
-    // V20: 40D 双轨 — 助理回复写 perception_40d
-    writePerceptionV40Dual(sqlite, idAssist, input.p);
+    // V3: 40D — 助理回复写 perception_40d（M3 直接产出的语义维，瑶光客观维异步回填）
+    writePerceptionV40Dual(sqlite, idAssist, input.p, input.decision.enhanced.perceptionV40);
+
+    // ── V3: 瑶光客观维异步回填（fire-and-forget，绝不同步阻塞 chat） ──
+    // M3 已直接产出 40D 语义维写入 perception_40d；此处异步补 D01-D08/D21-D32 客观维。
+    try {
+      const v40Semantic = input.decision.enhanced.perceptionV40 ?? buildFallbackV40(input.p);
+      enqueueYaoguangBackfill(input.ctx, {
+        dnaRootId: (input.dna as any).dna_root_id ?? input.dna.branch_id ?? 'TT00000001M01SYS0000000',
+        globalUid: input.dna.global_uid,
+        locationFingerprint: input.dna.location_fingerprint ?? '0'.repeat(32),
+        sceneTags: input.dna.scene_tags,
+        interpersonalLabels: input.dna.entity_genes
+          ?.filter((g: any) => g.type === 'person' && g.name !== '我')
+          .map((g: any) => g.name),
+        rawInputText: input.message,
+        memoryIds: [idUser, idAssist],
+        p40Semantic: v40Semantic,
+      });
+    } catch (e) {
+      console.warn('[Persist] 瑶光回填入队跳过:', (e as Error)?.message);
+    }
   } catch (e: any) {
     console.error('[Persist] ❌ 砂金库写入异常:', e?.message);
     hadError = true;
