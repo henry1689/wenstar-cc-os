@@ -273,9 +273,11 @@ export class SQLiteAdapter {
       this.db.run("CREATE INDEX IF NOT EXISTS idx_person_aliases_alias ON person_aliases(alias)");
     } catch (e) { console.warn('[SQLite] person_aliases 表创建失败:', e); }
     // M7 梦境日志独立表（替代写入黑钻，避免摘要混入永久回忆）
+    // 🔴 户籍管理法（第二条 适用范围）: dream_logs 纳入 UUID 监管，加 belong_entity_uuid 列。
     try {
-      this.db.run("CREATE TABLE IF NOT EXISTS dream_logs (id TEXT PRIMARY KEY, summary TEXT, emotion_tag TEXT, source TEXT, tags TEXT, created_at TEXT NOT NULL)")
+      this.db.run("CREATE TABLE IF NOT EXISTS dream_logs (id TEXT PRIMARY KEY, summary TEXT, emotion_tag TEXT, source TEXT, tags TEXT, belong_entity_uuid TEXT, created_at TEXT NOT NULL)")
       this.db.run("CREATE INDEX IF NOT EXISTS idx_dream_logs_created ON dream_logs(created_at)")
+      try { this.db.run("ALTER TABLE dream_logs ADD COLUMN belong_entity_uuid TEXT"); } catch { /* 列已存在 */ }
     } catch (e) { console.warn("[SQLite] dream_logs 表创建失败:", e); }
 
     // 🆕 V10.0 P1-1: 核心表索引（已有数据库运行时补建）

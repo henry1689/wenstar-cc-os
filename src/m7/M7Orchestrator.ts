@@ -218,7 +218,8 @@ export class M7Orchestrator {
       );
       if (existing && existing.length > 0) return;
 
-      const all = sqlite.queryAll('SELECT id, raw_input, calcium_level, calcium_score, perception_json FROM memories ORDER BY created_at DESC LIMIT 200');
+      // 🔴 户籍管理法: 查询带 belong_entity_uuid，梦境打标（纳入 UUID 监管）
+      const all = sqlite.queryAll('SELECT id, raw_input, calcium_level, calcium_score, perception_json, belong_entity_uuid FROM memories ORDER BY created_at DESC LIMIT 200');
       if (!all || all.length === 0) return;
 
       // 筛选高情绪记忆（钙质≥0.4）
@@ -237,14 +238,19 @@ export class M7Orchestrator {
       }
 
       // 写入 dream_logs（替代原写入黑钻，避免系统摘要混入永久回忆）
+      // 🔴 户籍管理法: 梦境打标 belong_entity_uuid。若源记忆同属一个实体则打该实体，
+      // 否则 null（跨实体/公共梦境，不注入特定实体会晤）。
+      const _ownerUuids = new Set(highEmo.map((m: any) => (m as any).belong_entity_uuid || null).filter(Boolean));
+      const _dreamOwner = _ownerUuids.size === 1 ? [..._ownerUuids][0] : null;
       for (const [emotion, data] of Object.entries(groups)) {
         const now = new Date().toISOString();
         const summary = '【梦境】高情绪_' + emotion + ': ' + data.count + '次 · ' + data.samples.join(' | ');
         sqlite.writeRaw(
-          'INSERT OR IGNORE INTO dream_logs (id, summary, emotion_tag, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT OR IGNORE INTO dream_logs (id, summary, emotion_tag, source, tags, belong_entity_uuid, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
           'dh_' + crypto.createHash('md5').update(summary).digest('hex').substring(0, 12),
           summary, emotion, 'dream_high_emotion',
           JSON.stringify(['dream_high_emotion', emotion, '梦境自动沉淀']),
+          _dreamOwner,
           now
         );
       }
