@@ -11,6 +11,7 @@ import initSqlJs from 'sql.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSqlClause } from '../governance/police/UUIDPoliceFilter.js';
 import type { Perception24D } from '../m3/types/perception.js';
 import type { EntityGene } from '../m1/types/dna.js';
 import type {
@@ -775,16 +776,15 @@ export class SQLiteAdapter {
     }
   }
 
-  /** V13: 构建 entityUuid SQL 过滤子句（占位符返回到主 SQL 中拼接） */
-  private _entityUuidClause(entityUuids?: string[]): { clause: string; params: string[] } {
-    if (!entityUuids || entityUuids.length === 0) {
-      return { clause: '', params: [] };
-    }
-    const phs = entityUuids.map(() => '?').join(',');
-    return {
-      clause: ` AND (belong_entity_uuid IN (${phs}) OR belong_entity_uuid IS NULL)`,
-      params: entityUuids,
-    };
+  /** V13: 构建 entityUuid SQL 过滤子句（占位符返回到主 SQL 中拼接）。
+   *  🔴 户籍管理法：委托 UUIDPoliceFilter.buildSqlClause。
+   *   - 空白名单 → AND 1=0（fail-closed，杜绝"无过滤"）
+   *   - 默认 deny-by-default（allowUnowned=false，杜绝 OR IS NULL 逃生口） */
+  private _entityUuidClause(entityUuids?: string[], allowUnowned = false): { clause: string; params: string[] } {
+    return buildSqlClause({
+      visibleUuids: new Set((entityUuids || []).filter(Boolean)),
+      allowUnowned,
+    });
   }
 
   // ─── 读取 ───
