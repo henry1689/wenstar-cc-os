@@ -456,19 +456,18 @@ export class SQLiteAdapter {
       } catch (_bfErr) { console.warn('[Backfill] 自动回填失败:', (_bfErr as Error)?.message); }
     }
 
-    // 🔴 V20: 40D 启动补全 — 根治 sql.js 整库覆写问题
-    //   根因：backfill 用 better-sqlite3 写磁盘，sql.js 加载内存态不含该数据，
-    //   第一次 flushNow()/export() 整库覆写磁盘 → backfill 数据丢失。
-    //   此处在 sql.js 内存态内补全 40D（从 24D 派生），flush 时随库持久，不再被覆盖。
-    try {
-      this._backfillPerception40D();
-    } catch (_p40Err) { console.warn('[V20] 40D 补全失败:', (_p40Err as Error)?.message); }
-
     // 🔴 V17: 锚点重建 + 完整性检查 — init() 最末端，确保所有上游修复完成后执行
     //   必须在 Backfill 落盘之后执行，否则 Backfill 的 flushNow() 会覆盖锚点重建的写入
     try {
       const anchored = this._rebuildMemoryAnchors();
       if (anchored > 0) console.log(`[SQLiteAdapter] memories锚点: ${anchored}条`);
+      // 🔴 V20: 40D 启动补全 — 必须在锚点重建之后执行
+      //   锚点重建走 write() 的 INSERT（不含 perception_40d），会把锚点行的 40D 清空，
+      //   故补全放到重建后，覆盖全部行（含新锚点），flush 时随库持久。
+      //   同时根治 sql.js 整库覆写（backfill 磁盘写入被内存态覆盖）。
+      try {
+        this._backfillPerception40D();
+      } catch (_p40Err) { console.warn('[V20] 40D 补全失败:', (_p40Err as Error)?.message); }
       this._runIntegrityChecks();
       // 强制落盘
       if (this._dirtyCount > 0) { this.flushNow(); }
@@ -591,6 +590,8 @@ export class SQLiteAdapter {
     this.ensureReady();
     // P0-2: 统一走 EmotionVectorCodec 编解码
     const pJson = encodeEmotionVector(record.perception);
+    // V20: 40D 双轨 — write() 同步保留 perception_40d（防读-改-写清空）
+    const p40Json = record.perceptionV40 ? encodePerceptionV40(record.perceptionV40) : null;
 
     // P0-4: 钙化分边界强制校验
     const cs = Math.max(MEMORY_CONFIG.recall.calciumMin, Math.min(MEMORY_CONFIG.recall.calciumMax, record.calcium_score));
@@ -600,7 +601,7 @@ export class SQLiteAdapter {
 
     this.runSql(
       `INSERT OR REPLACE INTO memories
-      (id, seq_pos, created_at, perception_json,
+      (id, seq_pos, created_at, perception_json, perception_40d,
        calcium_score, calcium_level,
        locus_path, leaf_zone, raw_input,
        memory_kind, lifecycle_state, confidence_score, stability_score,
@@ -618,7 +619,7 @@ export class SQLiteAdapter {
        global_uid, belong_entity_uuid, location_fingerprint,
        is_foresight, valid_until_ms, foresight_status,
        l2_norm)
-      VALUES (?, ?, ?, ?,
+      VALUES (?, ?, ?, ?, ?,
               ?, ?,
               ?, ?, ?,
               ?, ?, ?, ?,
@@ -636,7 +637,7 @@ export class SQLiteAdapter {
               ?, ?, ?,
               ?, ?, ?, ?)`,
       [
-        record.id, record.seq_pos, record.created_at, pJson,
+        record.id, record.seq_pos, record.created_at, pJson, p40Json,
         cs, cl,
         record.locus_path, record.leaf_zone, record.raw_input,
         record.memory_kind, record.lifecycle_state, record.confidence_score, record.stability_score,
