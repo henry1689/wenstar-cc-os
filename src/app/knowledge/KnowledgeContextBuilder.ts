@@ -148,6 +148,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       _entitySearchMsg || searchMsg || message, sceneTags,
       { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy },
       _searchLevel <= 2 ? 5 : 3,  // Level 1-2 多取几条，Level 3-4 少取
+      // 🔴 户籍管理法（第九条 搜索闸门）: 会晤模式按当前实体过滤知识库，
+      // 杜绝"梓铭简介"（belong=梓铭）泄漏给徐诗雨（belong=徐诗雨）。
+      _meetingEntityUuid || undefined,
     );
 
     // S3 混合检索增强
