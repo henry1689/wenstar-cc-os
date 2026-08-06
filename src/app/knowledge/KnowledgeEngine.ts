@@ -7,6 +7,7 @@
  * - API 不可用时自动降级为纯 LIKE
  */
 import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
+import { buildSqlClause } from '../../governance/police/UUIDPoliceFilter.js';
 import type { KnowledgeItem } from './types.js';
 import type { Perception24D } from '../../m3/types/perception.js';
 import { parseFile } from './FileUploadService.js';
@@ -494,9 +495,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       const params: any[] = [`%${kw}%`, `%${kw}%`];
       if (interactionType) { sql += ` AND interaction_type = ?`; params.push(interactionType); }
       // V13: entityUuid 过滤 — 精准隔离人物知识
+      // 🔴 户籍管理法：收编 → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
       if (belongEntityUuid) {
-        sql += ` AND (belong_entity_uuid = ? OR belong_entity_uuid IS NULL)`;
-        params.push(belongEntityUuid);
+        const _police = buildSqlClause({ visibleUuids: new Set([belongEntityUuid]) });
+        sql += _police.clause;
+        params.push(..._police.params);
       }
       sql += ` ORDER BY updated_at DESC LIMIT ?`; params.push(lim);
       return sqlite.queryAll(sql, params).map(rowToEntry);
