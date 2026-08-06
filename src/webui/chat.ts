@@ -752,6 +752,12 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     )) {
       const _exitUuid = ctx._entityMeeting.getEntityUUID();
       const exitResult = await ctx._entityMeeting.exit();
+      // 🔴 户籍管理法（第九条 搜索闸门·收口）: 退出会晤时清除会话实体 UUID，
+      // 恢复户主钥匙视角（不再限制知识库检索范围）。
+      try {
+        const { setSessionEntityUuid } = await import('../app/knowledge/KnowledgeEngine.js');
+        setSessionEntityUuid(null);
+      } catch { /* 非关键 */ }
       // 🆕 V10.11: 保存情感快照 — 下次进入同一实体会晤时恢复情感基调
       if (_exitUuid) {
         try {
@@ -792,6 +798,13 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     let _meetingEntityName: string | null = null;
     if (ctx._entityMeeting?.isActive()) {
       try {
+        // 🔴 户籍管理法（第九条 搜索闸门·收口）: 会晤激活时设置会话实体 UUID，
+        // KnowledgeEngine.weightedSearch 强制按此过滤知识库（杜绝他人档案泄漏）。
+        const _meetUuid = ctx._entityMeeting.getEntityUUID?.() ?? null;
+        if (_meetUuid) {
+          const { setSessionEntityUuid } = await import('../app/knowledge/KnowledgeEngine.js');
+          setSessionEntityUuid(_meetUuid);
+        }
         _meetingEntityName = ctx._entityMeeting.getEntityName();
         if (_meetingEntityName) {
           const { buildEntityContext } = await import('../m4/household/EntityContextBuilder.js');

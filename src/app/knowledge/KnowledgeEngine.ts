@@ -131,6 +131,13 @@ const searchCache = new LocalCache<string, KnowledgeItem[]>({ ttlMs: 30_000, nam
 const embedProvider = createLocalEmbedding();
 let _indexReady = false;
 
+// 🔴 户籍管理法（第九条 搜索闸门·收口）: 会话实体 UUID（模块级，单用户系统）。
+// 会晤激活时由 chat.ts 设置，weightedSearch 内部用 belongEntityUuid ?? _sessionEntityUuid 强制过滤，
+// 所有知识库检索调用点（含 PFC/KnowledgeAccessFacade）自动受益，杜绝"梓铭简介"泄漏给徐诗雨。
+let _sessionEntityUuid: string | null = null;
+export function setSessionEntityUuid(uuid: string | null): void { _sessionEntityUuid = uuid; }
+export function getSessionEntityUuid(): string | null { return _sessionEntityUuid; }
+
 function rowToEntry(r: Record<string, any>): KnowledgeItem {
   return {
     id: r.id as string,
@@ -809,9 +816,12 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     // 🛡️ V10.1: 使用共享 SourceTypePolicy (FILE + ANALYSIS)
     const srcFilter = RETRIEVABLE_SQL_IN();
     // 🆕 V4.0: 去掉了 LIMIT 50，改为全表扫描（459行全扫约50ms，SQLite 无压力）
-    const uuidFilter = belongEntityUuid ? `AND belong_entity_uuid = ?` : '';
-    const allRows: any[] = belongEntityUuid
-      ? sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') AND belong_entity_uuid = ? ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`, [belongEntityUuid])
+    // 🔴 户籍管理法（第九条 搜索闸门·收口）: 会晤模式强制按会话实体 UUID 过滤。
+    // 公共资料（belong_entity_uuid IS NULL）始终可见（用户明确允许）；
+    // 人物专属知识（如"梓铭简介"belong=梓铭）对徐诗雨（belong=徐诗雨）不可见。
+    const _effUuid = belongEntityUuid ?? _sessionEntityUuid ?? null;
+    const allRows: any[] = _effUuid
+      ? sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') AND (belong_entity_uuid = ? OR belong_entity_uuid IS NULL OR belong_entity_uuid = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`, [_effUuid])
       : sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`);
     if (!allRows.length) {
       console.log('[KBw] 空库');
