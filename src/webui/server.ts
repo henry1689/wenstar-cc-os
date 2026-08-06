@@ -502,6 +502,8 @@ async function initPipeline(): Promise<void> {
     specLoadResults = specResults;
     // V4.0 Phase 5: 暴露 GlobalBus 客户端供 PFC 下行通信使用
     if (masterHarris?.busClient) (globalThis as any).__globalBusClient = masterHarris.busClient;
+    // V3: 暴露 MasterHarris 供 yaoguang-backfill 拉取瑶光客观维（异步回填）
+    (globalThis as any).__masterHarris = masterHarris;
     console.log(`  [MasterHarris] 5层调度器已启动 ✓ (tianquan=${masterHarris?.tianquanReady} bus=${masterHarris?.busConnected ?? false})`);
 
     // ── 双核启动 (蓝皮书 §1.1, BIOS/Mind 编译期分离) ──
