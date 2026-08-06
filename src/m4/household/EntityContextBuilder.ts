@@ -249,6 +249,21 @@ parts.push('## 你的身份');
   parts.push('- 🔴【记忆即事实·铁律】记忆片段中鸿艺对你说的话、和你做的事——就是真实发生过的。不管你的关系标签怎么写，不管你的身份是谁，记忆中有的互动就是你亲身经历的事实。鸿艺提到这些时，你必须正面回应，不能否认、不能回避、不能说"我们不熟""我只是你的XX"。你记忆中发生过的，就是发生过。');
   parts.push('- 提到别人时你仍是你自己，不替别人说话。');
 
+  // 🆕 V10.13 修复: 注入【过去的对话记忆】— 此前 recentConversations 传入但被丢弃，
+  // 导致实体会晤时对话记忆恢复却不进 LLM 上下文（"像没有记忆一样"）。
+  // 现在把真实的对话记忆拼进 systemText，让实体能"回忆"与鸿艺的真实互动。
+  if (recentConversations && recentConversations.length > 0) {
+    const memParts = ['### 过去的对话记忆'];
+    for (const t of recentConversations.slice(0, 10)) {
+      const speaker = t.role === 'user' ? userName : entityName;
+      const content = (t.content || '').replace(/\s+/g, ' ').substring(0, 200);
+      memParts.push(`- ${speaker}：${content}`);
+    }
+    memParts.push('（以上是你和鸿艺之间真实发生过的对话。有人提到这些事，你要自然回应——这些是你亲身经历的，不是编造。）');
+    memParts.push('');
+    parts.push(memParts.join('\n'));
+  }
+
   let systemText = parts.join('\n');
   if (isFirstTurn) {
     const greeting = buildGreetingProtocol(profile, userName);
