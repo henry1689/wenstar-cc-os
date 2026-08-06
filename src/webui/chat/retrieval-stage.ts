@@ -492,11 +492,14 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     const _sqlite = ctx.storage.getSQLite();
     if (_sqlite && typeof _sqlite.queryAll === 'function') {
       // V13: 加上 entity UUID 过滤，不跨人物泄露重要记忆
+      // 🔴 户籍管理法：收编 → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
       let _sandQuery = "SELECT raw_input, calcium_level FROM memories WHERE leaf_zone='user' AND calcium_level >= 2";
       const _sandParams: any[] = [];
       if (_activeEntityUuids.length > 0) {
-        _sandQuery += ` AND (belong_entity_uuid IN (${_activeEntityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`;
-        _sandParams.push(..._activeEntityUuids);
+        const { buildSqlClause: _policeClause } = await import('../../governance/police/UUIDPoliceFilter.js');
+        const _police = _policeClause({ visibleUuids: new Set(_activeEntityUuids) });
+        _sandQuery += _police.clause;
+        _sandParams.push(..._police.params);
       }
       _sandQuery += ' ORDER BY calcium_score DESC LIMIT 10';
       const _sandRows = _sqlite.queryAll(_sandQuery, _sandParams) || [];
