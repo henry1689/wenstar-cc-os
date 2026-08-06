@@ -62,14 +62,14 @@ function writePerceptionV40Dual(
   try {
     const p40 = map24DTo40D(p);
     const keys = [
-      'd01_muscle_fatigue','d02_pain_level','d03_nerve_arousal','d04_hormones',
+      'd01_muscle_load','d02_pain_level','d03_nerve_arousal','d04_endocrine_hormones',
       'd05_pheromone','d06_metabolic_cycle','d07_self_heal','d08_sensory_env',
-      'd09_self_identity','d10_desire','d11_fear_anxiety','d12_pleasure',
-      'd13_empathy','d14_self_protect','d15_partner_attachment','d16_partner_protect',
-      'd17_family_belonging','d18_family_protect','d19_social_fit','d20_team_protect',
-      'd21_private_space','d22_home_atmosphere','d23_workplace','d24_public_space',
-      'd25_space_distance','d26_season_climate','d27_micro_physiology','d28_nature_expand',
-      'd29_social_refine','d30_culture_growth','d31_subjective_objective','d32_global_overview',
+      'd09_self_identity','d10_desire_drive','d11_fear_fatigue','d12_enjoyment',
+      'd13_empathy','d14_self_protection','d15_partner_attachment','d16_partner_protection',
+      'd17_family_belonging','d18_family_protection','d19_social_fit','d20_team_protection',
+      'd21_private_space','d22_home_environment','d23_workplace','d24_public_space',
+      'd25_spatiotemporal','d26_seasonal_climate','d27_micro_physiology','d28_nature_expansion',
+      'd29_social_refinement','d30_spiritual_growth','d31_quantum_coupling','d32_global_overview',
       'd33_sexual_attraction','d34_energy_merge','d35_sincerity','d36_dominance',
       'd37_moral_judgment','d38_humor','d39_dependency','d40_possessiveness',
     ];
