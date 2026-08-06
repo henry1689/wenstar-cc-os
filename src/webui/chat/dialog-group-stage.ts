@@ -6,6 +6,7 @@
  */
 import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
 import { computeCalcium } from '../../m2/math.js';
+import { map24DTo40D, encodePerceptionV40 } from '../../m2/PerceptionVector40DCodec.js';
 // V13.0: 在线 DAG 建边（feature flag 控制，不阻塞闭组主流程）
 let _dagEdgeBuilders: { entity: any; causal: any; repo: any } | null = null;
 let _lastGroupCtx: any = null;  // V13: 上一个闭组上下文（供因果边构建）
@@ -65,6 +66,11 @@ export async function flushDialogGroup(
       p.etiquette||0, p.belonging||0, p.sexual_attraction||0, p.sensory_craving||0,
       p.energy_merge||0, p.possessiveness||0, p.ecstasy||0, p.safety||0.5,
     ]);
+    // V20: 40D 双轨 — 从 24D 派生 40D（会晤/核心记忆的 40D 补全，与 persistence-stage 一致）
+    const vec40 = (p: any): string => {
+      try { return encodePerceptionV40(map24DTo40D(p as any)); }
+      catch { return 'null'; }
+    };
     const pVec = vec24(peakP);
 
     // V13: 解析实体 UUID（从 dg.entities 取第一个 person 名查 FamilyGraph）
@@ -105,8 +111,8 @@ export async function flushDialogGroup(
     // 写入核心锚点（高钙化分，带anchor_score标记）
     const anchorId = dg.id + '_ANCHOR';
     sql.writeRaw(
-      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      anchorId, -(dg.rounds.length + 100), now, pVec, anchorCalcium,
+      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      anchorId, -(dg.rounds.length + 100), now, pVec, vec40(peakP), anchorCalcium,
       calciumLevel(anchorCalcium), dg.locusPath || 'general',
       'language_semantic_zone', anchorText, 0.5 + anchorCalcium * 0.3, now,
       decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, anchorCalcium, entityUuid
@@ -123,8 +129,8 @@ export async function flushDialogGroup(
       const roundP = dg.perceptions[i] || peakP;
       const chunkCalcium = Math.round(computeCalcium(roundP as any).score * 1000) / 1000;
       sql.writeRaw(
-        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        chunkId, -dg.rounds.length - i, now, vec24(roundP), chunkCalcium,
+        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        chunkId, -dg.rounds.length - i, now, vec24(roundP), vec40(roundP), chunkCalcium,
         calciumLevel(chunkCalcium), dg.locusPath || 'general',
         'language_semantic_zone', chunkText, 0.3 + chunkCalcium * 0.2, now,
         decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, entityUuid
