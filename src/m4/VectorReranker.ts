@@ -16,6 +16,8 @@
  */
 
 import type { Perception24D } from '../m3/types/perception.js';
+import { decodePerceptionV40, cosineSimilarity40D, arrayToPerceptionV40 } from '../m2/PerceptionVector40DCodec.js';
+import { isPerception40DEnabled } from '../config/perception-40d-config.js';
 
 // ── 可配置加权参数 ──
 export interface RerankerConfig {
@@ -61,6 +63,7 @@ export interface MemoryCandidate {
   text: string;                               // 记忆文本
   source: 'conversation' | 'memory' | 'black_diamond' | 'knowledge_base';
   perceptionJson?: string | null;             // JSON: Perception24D
+  perception40d?: string | null;              // V20: JSON: PerceptionV40（40D 数组，混合检索优先用）
   calciumScore?: number;
   calciumLevel?: number;
   confidenceScore?: number;
@@ -139,6 +142,7 @@ export function rankByVector(
   candidates: MemoryCandidate[],
   queryVec: number[],
   mode: SearchMode = 'balanced',
+  queryVec40D?: number[] | null,
 ): RankedMemory[] {
   if (candidates.length === 0) return [];
 
@@ -149,7 +153,27 @@ export function rankByVector(
     // 1. 钙化门槛过滤
     if ((item.calciumLevel ?? 1) < cfg.minCalciumLevel) continue;
 
-    // 2. 解析存储的感知向量
+    // V20: 混合检索 — 开关开启且有 40D 感知向量则走 40D 扇区加权余弦，无则回退 24D
+    const p40 = isPerception40DEnabled() ? decodePerceptionV40(item.perception40d) : null;
+    const q40 = p40 && queryVec40D && queryVec40D.length === 40 ? arrayToPerceptionV40(queryVec40D) : null;
+    if (p40 && q40) {
+      const sim40 = cosineSimilarity40D(q40, p40);
+      const decay = item.createdAt
+        ? Math.exp(-cfg.decayLambda * ((Date.now() - new Date(item.createdAt).getTime()) / 86_400_000))
+        : 1;
+      const confidence = 1 + ((item.confidenceScore ?? 0.5) - 0.5) * cfg.confidenceBeta;
+      const calcium = (item.calciumScore ?? 1) / 10;
+      let score = cfg.emotionWeight * sim40
+                + cfg.fullDimWeight * sim40
+                + cfg.calciumWeight * calcium
+                + cfg.confidenceBeta * confidence
+                + 0.10 * decay;
+      if ((item.effectiveStrength ?? 1) < 0.3) score *= 0.7;
+      results.push({ item, score: Math.min(score, 1), emotionSim: sim40, fullSim: sim40, decay });
+      continue;
+    }
+
+    // 2b. 无 40D → 回退 24D 路径
     const storedVec = parseStoredVector(item.perceptionJson);
     if (!storedVec) {
       // 无向量信息 → 只能用钙化分做基础得分

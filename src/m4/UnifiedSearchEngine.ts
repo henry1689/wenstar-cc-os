@@ -11,6 +11,8 @@ import { buildNgrams } from './SearchIndexBuilder.js';
 import { rankByVector, perceptionToArray, type MemoryCandidate, type RankedMemory, type SearchMode } from './VectorReranker.js';
 import type { Perception24D } from '../m3/types/perception.js';
 import { map24DTo40D, decodePerceptionV40, cosineSimilarity40D } from '../m2/PerceptionVector40DCodec.js';
+import { isPerception40DEnabled } from '../config/perception-40d-config.js';
+import { PERCEPTION_40D_KEYS } from '../m3/types/perception-40d.js';
 
 // ── V12.0 新管线模块 ──
 import { weightedRRF, buildIdToItem, DEFAULT_RRF_CONFIG, type RRFConfig } from './RRFFusion.js';
@@ -236,8 +238,10 @@ export function search(
 
   // ═══════════ 第2层: 32D向量精排 ═══════════
   const queryVec = perception ? perceptionToArray(perception) : new Array(24).fill(0.5);
+  // V20: 混合检索 — 生成 40D 查询向量（原始值，由 cosineSimilarity40D 统一归一化，避免双极性维二次平移）
+  const queryVec40D = perception ? PERCEPTION_40D_KEYS.map(k => map24DTo40D(perception)[k]) : null;
 
-  const ranked = rankByVector(enriched, queryVec, mode);
+  const ranked = rankByVector(enriched, queryVec, mode, queryVec40D);
 
   // ═══════════ 格式化输出 ═══════════
   const items: string[] = [];
@@ -594,7 +598,7 @@ export async function searchV13(
   // ═══════════ L6.5 · 40D 情感重排（V20 混合检索）═══════════
   // 在 MMR/最终排序前，用 40D 扇区加权相似度重排候选，让 40D 记忆优先。
   // 候选 id 匹配 memories.id（emotion/keyword/locus/entity 路）或 global_uid（spine 路）。
-  if (perception && candidates.length > 1) {
+  if (isPerception40DEnabled() && perception && candidates.length > 1) {
     try {
       const q40 = map24DTo40D(perception);
       const ids = candidates.map(c => c.id).slice(0, 100);
