@@ -122,6 +122,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         const _entityResults = await ctx.knowledgeBase.weightedSearch(
           _entitySearchMsg, dna.scene_tags || [],
           { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, 3,
+          // 🔴 户籍管理法（第九条 搜索闸门）: 按当前会晤实体过滤知识库。
+          // 徐诗雨只能搜到 belong_entity_uuid=徐诗雨 的知识，杜绝梓铭自传（belong=梓铭）泄漏。
+          _meetingEntityUuid || undefined,
         );
         if (_entityResults && _entityResults.length > 0) {
           const _entityContent = _entityResults.map((k: any) =>
