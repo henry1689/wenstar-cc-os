@@ -740,7 +740,13 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     }
 
     // V4.0 会议退出检测
-    if (ctx._entityMeeting?.isActive() && /^(?:散会|结束.*会议|会议.*结束|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见).*$/.test(message.trim())) {
+    // 🆕 V10.12 修复: 补充"切回玉瑶"意图（和玉瑶聊聊/切回玉瑶/回到玉瑶/找玉瑶）—
+    // 玉瑶是默认角色，从会晤切回玉瑶 = 退出会晤。此前只认散会/拜拜/再见，导致"和玉瑶聊聊"卡在会晤中。
+    if (ctx._entityMeeting?.isActive() && (
+      /^(?:散会|结束.*会议|会议.*结束|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见).*$/.test(message.trim())
+      || /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
+      || /^(?:切回|回到|换回|变回)\s*(?:玉瑶|瑶瑶|瑶儿)\s*$/.test(message.trim())
+    )) {
       const _exitUuid = ctx._entityMeeting.getEntityUUID();
       const exitResult = await ctx._entityMeeting.exit();
       // 🆕 V10.11: 保存情感快照 — 下次进入同一实体会晤时恢复情感基调
