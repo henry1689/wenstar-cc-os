@@ -795,9 +795,26 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           const isFirstTurn = ctx._entityMeeting.isFirstTurn?.() ?? false;
 
           // 🆕 V4.0: 查询与该实体的近期对话历史
+          // 🆕 V10.13 修复: 优先按 belong_entity_uuid 查会晤对话（更精准），
+          // searchConversations（content LIKE）作为兜底。
           let recentConversations: Array<{ role: string; content: string; timestamp: string }> = [];
           try {
-            if (ctx.conversationDB && typeof ctx.conversationDB.searchConversations === 'function') {
+            const _muuid = ctx._entityMeeting?.getEntityUUID?.();
+            // ① 优先: EntityContextStore 按 UUID 查该实体的会晤对话（真实归属）
+            if (_muuid && ctx.storage?.getSQLite) {
+              const { EntityContextStore: _ECS } = await import('../app/entity/EntityContextStore.js');
+              const _store = new _ECS(ctx.storage.getSQLite());
+              const _turns = _store.queryEntityContext(_muuid, 10);
+              if (_turns && _turns.length > 0) {
+                recentConversations = _turns.map((t: any) => ({
+                  role: t.role || 'user',
+                  content: (t.content || '').substring(0, 200),
+                  timestamp: t.timestamp || '',
+                }));
+              }
+            }
+            // ② 兜底: searchConversations（content LIKE）
+            if (recentConversations.length === 0 && ctx.conversationDB && typeof ctx.conversationDB.searchConversations === 'function') {
               const cRows = ctx.conversationDB.searchConversations(_meetingEntityName, 10, true);
               if (cRows && cRows.length > 0) {
                 recentConversations = cRows.map((r: any) => ({
