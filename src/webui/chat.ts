@@ -85,6 +85,7 @@ import { alignmentGuard } from '../app/alignment/VectorAlignmentGuard.js';
 
 import { autoPromoteCandidatesV2 } from '../app/vault/VaultManager.js';
 import { EntityMeeting } from '../m4/household/EntityMeeting.js';
+import { filterPrivateConversations } from '../m4/household/EntityPrivacyFilter.js';
 
 
 // 全局异步任务队列（VAD 谱曲等不阻塞主回复的后台任务）
@@ -838,6 +839,17 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               }
             }
           } catch (_convErr) { /* 对话历史查询失败不阻塞 */ }
+
+          // 🔴 V10.14 隐私隔离: 过滤涉及其他实体私密情感的对话记忆
+          // 世界规则：每个人的聊天记录通过 UUID 绝对隔离，绝不互通。
+          // 徐诗雨只能看到自己的隐私，不能通过注入的记忆知道熊梓铭/玉瑶等人的私密互动。
+          if (recentConversations.length > 0) {
+            recentConversations = filterPrivateConversations(
+              recentConversations,
+              _meetingEntityName,
+              ctx.m4.getFamilyGraph?.(),
+            );
+          }
 
           const ecResult = buildEntityContext(ctx.m4.getFamilyGraph?.(), {
             entityName: _meetingEntityName,

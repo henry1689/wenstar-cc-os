@@ -76,6 +76,31 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             memoryFragments.push('【' + _tag + '重要记忆】' + _t);
           }
         }
+        // 🔴 V10.14 隐私隔离: 过滤会晤实体记忆中的他人私密内容
+        // 世界规则：每个人的聊天记录通过 UUID 绝对隔离，绝不互通。
+        // 徐诗雨的记忆即使提到熊梓铭/玉瑶，涉及私人情感的也要剔除。
+        if (_meetingEntityName && memoryFragments.length > 0) {
+          try {
+            const { isIntimateAboutOthers } = await import('../../m4/household/EntityPrivacyFilter.js');
+            const _fg2 = ctx.m4?.getFamilyGraph?.();
+            const _allNames = _fg2?.getAllPersonNames?.() || [];
+            const _otherEntities = _allNames.filter((n: string) => n && n !== _meetingEntityName);
+            const _before = memoryFragments.length;
+            // memoryFragments 是函数参数（const），原地过滤
+            for (let _fi = memoryFragments.length - 1; _fi >= 0; _fi--) {
+              const _f = memoryFragments[_fi];
+              // 只过滤"会晤实体记忆/对话"类（【徐诗雨的记忆】/【金库记忆】/【对话·徐诗雨】）
+              if (!_f.includes('记忆') && !_f.includes('对话·') && !_f.includes('重要记忆')) continue;
+              const _body = _f.replace(/^【[^】]*】/, '');  // 去掉前缀标签
+              if (isIntimateAboutOthers(_body, _meetingEntityName, _otherEntities)) {
+                memoryFragments.splice(_fi, 1);
+              }
+            }
+            if (memoryFragments.length < _before) {
+              console.log(`[PrivacyFilter] ${_meetingEntityName}会晤记忆过滤: ${_before}→${memoryFragments.length} 条（剔除他人私密）`);
+            }
+          } catch (_pfErr) { /* 过滤失败不阻塞 */ }
+        }
         // V5.3: 记忆不足时降级检索 conversations
         if (memoryFragments.length < 5) {
           try {
