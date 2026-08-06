@@ -48,6 +48,17 @@ S1 全局审视 → S2 方案定稿 → S3 实施 → S4 架构评审 → S4.5 �
 
 动文件 A 之前，先 `grep -rn "问题模式" src/`——全仓库的同类问题一起修，否则就是补丁。
 
+### 🔴 铁律 0.4：UUID 户籍管理法 — 全链路 UUID 强关联
+
+**依据**：《UUID户籍管理法 WS-HUKOU-LAW-V1.0》（`D:\wenstar\docs\UUID户籍管理法-WS-HUKOU-LAW-V1.0.md`）+ 太虚境户籍管理法 V2.1
+
+任何数据操作（写入/读取/检索/注入 LLM/输出）必须：
+1. **先确定当前户口**（belong_entity_uuid）：会晤模式强制 = 会晤实体 UUID，禁止 entity_genes 推断覆盖
+2. **五道闸门必挂**：写入（persistence-stage）/ 搜索（_entityUuidClause）/ 组织LLM资料（finalKnowledgeText）/ 上下文提取（EntityContextManager）/ 最后输出（LLM边界+HTTP响应）
+3. **禁止 reintroduce `OR belong_entity_uuid IS NULL`** 逃生口
+4. **新代码必须走 `UUIDPoliceFilter`**（`src/governance/police/`），禁止手写 UUID SQL
+5. **deny-by-default**：不在白名单 = 拒绝；无归属记录仅户主钥匙（用户本人）可见
+
 ---
 
 ## 🔴 永久行为规则（自动执行，无需调用技能）

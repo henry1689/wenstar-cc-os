@@ -12,7 +12,8 @@
 
 | 层级 | 文件 | 版本 | 效力 |
 |:--|------|:--|:--|
-| ① | [《太虚境户籍管理法》](taixu-household-registration-law.md) | V2.1 | 最高法律 |
+| ① | [《太虚境户籍管理法》](taixu-household-registration-law.md) | V2.1 | 最高法律（实体身份登记）|
+| ①' | [《UUID户籍管理法》](../../../../../wenstar/docs/UUID户籍管理法-WS-HUKOU-LAW-V1.0.md) | V1.0 | 管线执法法（数据流动隔离）|
 | ② | [fg-kinship-redlines.md](redlines/fg-kinship-redlines.md) | V3.5 | FG 操作铁律 |
 | ③ | [household-registration-blueprint.md](household-registration-blueprint.md) | V4.0 | 户籍制蓝皮书 |
 | ④ | [pae-profile-acquisition-engine.md](pae-profile-acquisition-engine.md) | V3.3 | PAE 技术文档 |
