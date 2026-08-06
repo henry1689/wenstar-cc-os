@@ -353,6 +353,32 @@ const MIGRATIONS: Migration[] = [
       console.log(`[Migration] v10 ✅ search_index 建表 + 存量回填共 ${rebuilt} 条 n-gram`);
     },
   },
+  // V21: state_spines 放宽 dimension_id CHECK 1-32 → 1-40（40D 统一）
+  {
+    version: 11,
+    description: 'V21 40D: state_spines dimension_id CHECK 放宽 1-32 → 1-40（重建表）',
+    apply: (db: any) => {
+      try {
+        // SQLite 无法 ALTER CHECK 约束 → 重建表（新建 1-40 约束 → 复制 → 删旧 → 改名）
+        db.run('ALTER TABLE state_spines RENAME TO state_spines_old');
+        db.run(`CREATE TABLE state_spines (
+          global_uid          TEXT NOT NULL,
+          dimension_id        INTEGER NOT NULL CHECK(dimension_id BETWEEN 1 AND 40),
+          value               REAL NOT NULL,
+          consistency_mark    TEXT NOT NULL DEFAULT 'consistent',
+          location_fingerprint TEXT,
+          timestamp_ms        INTEGER NOT NULL,
+          checksum            TEXT,
+          dna_branch          BLOB,
+          PRIMARY KEY (global_uid, dimension_id)
+        ) WITHOUT ROWID`);
+        db.run('INSERT INTO state_spines (global_uid, dimension_id, value, consistency_mark, location_fingerprint, timestamp_ms, checksum, dna_branch) SELECT global_uid, dimension_id, value, consistency_mark, location_fingerprint, timestamp_ms, checksum, dna_branch FROM state_spines_old');
+        db.run('DROP TABLE state_spines_old');
+        db.run('CREATE INDEX IF NOT EXISTS idx_spines_dim ON state_spines(dimension_id, timestamp_ms)');
+        console.log('[Migration] v11 ✅ state_spines CHECK 放宽到 1-40');
+      } catch (e) { console.warn('[Migration] v11 state_spines 重建失败:', e); }
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════
