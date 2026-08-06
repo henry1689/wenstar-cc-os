@@ -164,6 +164,32 @@ export class MasterHarris extends EventEmitter {
   /** 直接向瑶光发指令 */
   async sendToYaoguang(cmd: string, payload: Record<string, unknown>) { if (this._bus?.connected) return this._bus.sendCommand('g', cmd, payload); throw new Error('总线离线'); }
 
+  /**
+   * V3: collect40DSnapshot 透传 — M3 只取瑶光客观维（include_yaoling=false，快且轻）。
+   * 经天权 RPC 中继（collect_40d_snapshot）拉取瑶光 40D medical 原始值，
+   * 归一化由太虚 YaoguangNormalizer 完成。瑶光不可达/未就绪 → 返回 null（优雅降级）。
+   */
+  async collect40DSnapshot(
+    constraints: Record<string, unknown> = {},
+    opts: { include_yaoling?: boolean; timeout_ms?: number } = {},
+  ): Promise<import('./TianquanRPCClient.js').Tribody40DResult | null> {
+    if (!this._tianquan?.isReady) {
+      console.warn('[MasterHarris] collect40DSnapshot 跳过 — 天权 RPC 未就绪');
+      return null;
+    }
+    try {
+      return await this._tianquan.collect40DSnapshot({
+        constraints,
+        include_yaoguang: true,
+        include_yaoling: opts.include_yaoling ?? false,
+        timeout_ms: opts.timeout_ms ?? 30_000,
+      });
+    } catch (e) {
+      console.warn('[MasterHarris] collect40DSnapshot 失败:', (e as Error)?.message);
+      return null;
+    }
+  }
+
   async health(): Promise<HealthStatus | null> { return this._tianquan?.isReady ? this._tianquan.health() : null; }
   async lintCheck(root: string): Promise<LintReport> { if (!this._tianquan?.isReady) throw new Error('天权离线'); return this._tianquan.lintCheck(root); }
   async archParse(root: string): Promise<ArchReport> { if (!this._tianquan?.isReady) throw new Error('天权离线'); return this._tianquan.archParse(root); }
