@@ -16,6 +16,22 @@ export interface SQLAuditReport { code: number; tables: number; indexes: number;
 export interface SnapshotResult { code: number; snapshot_id: string; file_count: number; saved_to: string; timestamp: string; }
 export interface SpecResult { code: number; spec_id: string; size_bytes: number; content: string; }
 export interface WorkflowListResult { code: number; workflows: Record<string, { version: string; description: string; mode: string; domain: string; route_tag: string; phases: number; nodes: number; nodes_with_executor: number; node_ids: string[]; guard_rules: number; required_constraints: string[]; error?: string; }>; }
+/** 三体 40D 采集结果 — 天权中继透传的瑶光/瑶灵原始快照（归一化在太虚 codec 层完成）。code: 0=全成 / 1=部分失败 / -1=网关异常 */
+export interface Tribody40DResult {
+  code: number;
+  collected_at?: string;
+  elapsed_ms?: number;
+  yaoguang?: Record<string, unknown> | null;
+  yaoling?: Record<string, unknown> | null;
+  errors?: string[];
+  error?: string; // 网关异常时的字段（code=-1 时出现）
+}
+export interface Collect40DParams {
+  constraints?: Record<string, unknown>;
+  include_yaoguang?: boolean;
+  include_yaoling?: boolean;
+  timeout_ms?: number;
+}
 
 export interface TianquanRPCConfig { pythonPath: string; serverScript: string; timeout: number; reconnectDelay: number; maxReconnectAttempts: number; debug: boolean; }
 
@@ -89,6 +105,8 @@ export class TianquanRPCClient extends EventEmitter {
   async generateSnapshot(projectRoot: string): Promise<SnapshotResult> { return this._call('generate_snapshot', { project_root: projectRoot }) as Promise<SnapshotResult>; }
   async getSpec(): Promise<SpecResult> { return this._call('get_spec', {}) as Promise<SpecResult>; }
   async listWorkflows(): Promise<WorkflowListResult> { return this._call('list_workflows', {}) as Promise<WorkflowListResult>; }
+  /** 三体 40D 采集 — 经天权 RPC 中继拉取瑶光/瑶灵 40D 原始快照（软连接，只读）。服务端最坏 ~47s，per-call 超时放宽到 60s */
+  async collect40DSnapshot(params: Collect40DParams = {}): Promise<Tribody40DResult> { return this._call('collect_40d_snapshot', params, 60_000) as Promise<Tribody40DResult>; }
 
   private _handleMessage(data: Record<string, unknown>) {
     if (data.type === 'ready') { this._ready = true; this._readyInfo = data as unknown as RPCReady; this._reconnectAttempts = 0; this.emit('ready', this._readyInfo); return; }
@@ -96,12 +114,13 @@ export class TianquanRPCClient extends EventEmitter {
     if (reqId && this._pending.has(reqId)) { const { resolve, reject, timer } = this._pending.get(reqId)!; clearTimeout(timer); this._pending.delete(reqId); data.error ? reject(new TianquanRPCError(data.error as string, 'unknown')) : resolve(data.result); }
   }
 
-  private async _call(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async _call(method: string, params: Record<string, unknown>, perCallTimeout?: number): Promise<unknown> {
     if (!this._ready) throw new TianquanNotReadyError();
     return new Promise((resolve, reject) => {
       this._reqCounter++;
       const reqId = `ts:${this._reqCounter}`;
-      const timer = setTimeout(() => { this._pending.delete(reqId); reject(new TianquanRPCError(`RPC超时: ${method}`, method)); }, this._config.timeout);
+      const timeoutMs = perCallTimeout ?? this._config.timeout;
+      const timer = setTimeout(() => { this._pending.delete(reqId); reject(new TianquanRPCError(`RPC超时: ${method}`, method)); }, timeoutMs);
       this._pending.set(reqId, { resolve, reject, timer });
       try { this._process!.stdin!.write(JSON.stringify({ id: reqId, method, params }) + '\n'); } catch (e) { clearTimeout(timer); this._pending.delete(reqId); reject(new TianquanRPCError(`写入失败: ${(e as Error).message}`, method)); }
     });
