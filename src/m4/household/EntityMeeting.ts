@@ -597,7 +597,7 @@ export class EntityMeeting {
     // 退出或无关信号
     if (/^(?:散会|结束.*会议|瑶瑶|玉瑶|瑶儿|拜拜|再见|先这样|下了)\s*$/.test(msg)) return null;
 
-    // 🛡️ V10.0: 仅以下极端明确的情况才切换
+    // 🛡️ V10.0: 明确切换句式（"换XX"类）
     for (const name of sorted) {
       // ✅ "换XX来" / "换XX吧"
       if (new RegExp(`^换\\s*${name}\\s*(?:来|吧|过来)?\\s*$`).test(msg)) return name;
@@ -607,7 +607,20 @@ export class EntityMeeting {
       if (new RegExp(`(?:不聊了|先这样吧|今天就到这|今天就到这里|散会)\\s*[,，]?\\s*(?:叫|换|找|让)\\s*${name}`).test(msg)) return name;
     }
 
-    // ❌ 删除：不再用 detectUserIntent 作为兜底——那会导致提及任何名字都切换
+    // 🆕 V10.12 修复: 自然语言切换 — 复用 detectUserIntent 的明确切换模式
+    // 会晤中用户说"找XX聊聊"/"和XX谈谈"/"叫XX过来"/"让XX也来"等，应切换到该实体。
+    // 关键保护: 只认"明确切换意图"句式，排除纯提及（如"阿珍呢"/"看到XX了吗"）。
+    const intent = EntityMeeting.detectUserIntent(msg, sorted);
+    if (intent && intent.length === 1) {
+      const target = intent[0];
+      // 明确切换动词（找/和/叫/让/换/想 等）
+      const hasExplicitSwitch = /(?:找|和|跟|叫|让|喊|换|想|要|以|用|见)/.test(msg);
+      const hasTail = /(?:聊聊|谈谈|说说话|说几句|说点事|聊一下|聊天|来|过来|出来|身份|角色|也来)/.test(msg);
+      // "XX在吗/在不" — 用户想确认 XX 在线并切换（如"熊梓铭在吗"）
+      const isPresenceCheck = /在吗|在不|在不在/.test(msg) && msg.length <= target.length + 4;
+      if ((hasExplicitSwitch && hasTail) || isPresenceCheck) return target;
+    }
+
     return null;
   }
 
