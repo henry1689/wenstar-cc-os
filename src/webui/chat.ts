@@ -705,9 +705,11 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     let clueReply: string | null = null;
 
     // ── V4.0 门阀白名单: 根据当前会话对象设定检索权限（三层白名单·始终激活）──
+    // 🔴 户籍管理法 V-4 修复: 会话层白名单唯一写者 = EntityMeeting（会晤激活时 addSessionEntity）。
+    // 删除 setSessionEntities（它每次 clear 会话层，导致会晤实体被消息提到的人顶替出白名单）。
+    // 非会晤提及的人用 addSessionEntity（并集，不 clear），避免误踢会晤实体。
     if (ctx._gatekeeper) {
       try {
-          // V4.0: 会话层 = 消息中提到的所有 FG 人物（支持多人会晤）
           const personUUIDs: string[] = [];
           for (const gene of (dna.entity_genes || [])) {
             if (gene.type === 'person' && gene.name && gene.name !== '我') {
@@ -715,10 +717,10 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               if (uuid) personUUIDs.push(uuid);
             }
           }
-          if (personUUIDs.length > 0) {
-            ctx._gatekeeper.setSessionEntities(personUUIDs);
+          // 仅非会晤模式：把消息提到的人加入会话层（并集），会晤模式由 EntityMeeting 管理
+          if (personUUIDs.length > 0 && !ctx._entityMeeting?.isActive?.()) {
+            for (const _u of personUUIDs) ctx._gatekeeper.addSessionEntity(_u);
           }
-          // 无人提及 → 不改变会话层（保持基础层过滤）
         // 同步设置 M4Orchestrator 的门阀（记忆检索过滤用）
         ctx.m4.setGatekeeper?.(ctx._gatekeeper);
       } catch (_gErr) { /* 门阀设置失败不影响对话 */ }

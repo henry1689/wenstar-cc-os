@@ -104,13 +104,26 @@ export async function persistConversation(input: PersistInput): Promise<void> {
 
   // ── Step 2: conversations.db（对话历史库） ──
   // P0-4+P1-2: 统一实体归属解析 — EntityOwnershipResolver 单一入口
+  // 🔴 户籍管理法（第五条 会晤写入强制）: 会晤模式 belong_entity_uuid 强制 = 会晤实体 UUID，
+  // 禁止 entity_genes 推断覆盖（用户消息提到他人时不应把对话归属他人）。
+  const _meetingUUID = input.ctx._entityMeeting?.getEntityUUID?.() ?? null;
   const { resolveOwnership } = await import('../../app/entity/EntityOwnershipResolver.js');
   const _fg = input.ctx.m4?.getFamilyGraph?.();
-  const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
-  const belongUUID = _ownerResult.uuid;
-  // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）
-  const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant');
-  const asstUUID = _asstResult.uuid || belongUUID;
+  let belongUUID: string | null = null;
+  if (_meetingUUID) {
+    belongUUID = _meetingUUID;  // 会晤强制 = 会晤实体
+  } else {
+    const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
+    belongUUID = _ownerResult.uuid;
+  }
+  // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）；会晤时强制 = 会晤实体
+  let asstUUID: string | null = null;
+  if (_meetingUUID) {
+    asstUUID = _meetingUUID;
+  } else {
+    const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant');
+    asstUUID = _asstResult.uuid || belongUUID;
+  }
 
   try {
     input.ctx.conversationDB?.insertConversation('user', input.message, {
