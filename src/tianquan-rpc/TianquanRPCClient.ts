@@ -26,7 +26,7 @@ export interface Tribody40DResult {
   errors?: string[];
   error?: string; // 网关异常时的字段（code=-1 时出现）
 }
-export interface Collect40DParams {
+export interface Collect40DParams extends Record<string, unknown> {
   constraints?: Record<string, unknown>;
   include_yaoguang?: boolean;
   include_yaoling?: boolean;
