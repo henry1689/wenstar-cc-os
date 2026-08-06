@@ -56,6 +56,10 @@ import type {
   CalciumLevel,
   M3Context,
 } from './types/perception.js';
+// V3: 40D 感知向量 — M3 直接产出 40D 语义维（24D 投影）
+import { createEmptyPerceptionV40, PERCEPTION_40D_KEYS } from './types/perception-40d.js';
+import type { PerceptionV40 } from './types/perception-40d.js';
+import { MAP_24_TO_40 } from '../m2/PerceptionVector40DCodec.js';
 
 // ════════════════════════════════════════════════════════
 // 第一层：情感极性词表
@@ -591,6 +595,31 @@ export class PerceptionAnalyzer {
     enhanced.calcium_score = calcium.score;
     enhanced.calcium_level = calcium.level;
     return enhanced;
+  }
+
+  /**
+   * V3: M3 直接产出 40D — 将最终调整后的 24D 投影到 40D 语义维。
+   *
+   * 必须在 injectContext() 之后调用（由 M3LogicOrchestrator.decide 负责时机），
+   * 保证 24D/40D 语义维同源、永不发散（"严格走 24D 原路径"的本质）。
+   *
+   * 覆盖维度（24D 词表可直接投影）：
+   *   D09 self_identity / D12 enjoyment / D14 self_protection / D15 partner_attachment
+   *   D17 family_belonging / D19 social_fit / D33-D40 伴侣纹理（sexual_attraction/energy_merge/
+   *   sincerity/dominance/moral_judgment/humor/dependency/possessiveness）
+   *
+   * 客观维（D01-D08 肉身 / D10/D11/D13/D16/D18/D20 / D21-D32 时空成长）由瑶光异步填充，
+   * 此处置 0 占位。D36/D37 双极 [-1,1] 原样保留，其余钳 [0,1]。
+   */
+  buildPerceptionV40(p: Perception24D): PerceptionV40 {
+    const p40 = createEmptyPerceptionV40();
+    for (const { key24, dim40 } of MAP_24_TO_40) {
+      const key40 = PERCEPTION_40D_KEYS[dim40 - 1];
+      const v = p[key24] ?? 0;
+      // D36/37 双极 [-1,1] 原样存，其余钳 [0,1]
+      p40[key40] = (dim40 === 36 || dim40 === 37) ? clamp(v, -1, 1) : clamp(v, 0, 1);
+    }
+    return p40;
   }
 
   /**
