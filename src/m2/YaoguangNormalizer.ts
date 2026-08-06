@@ -78,7 +78,17 @@ export function normalizeYaoguangObjective(
   return out;
 }
 
-/** 语义维基底 + 瑶光客观维合并：只覆盖有 finite 值的维，保留 M3 语义维 */
+/**
+ * 语义维集合（M3 词表直接产出，源泉为 WenstarOS M3）：
+ *   D09/D12/D14/D15/D17/D19/D33-D40
+ * 🔴 铁律：语义维以 M3 为准，瑶光只补客观维（D01-D08/D10/D11/D13/D16/D18/D20/D21-D32）。
+ * 若瑶光对语义维也给值，M3 语义优先，不覆盖。
+ */
+const SEMANTIC_DIMS = new Set([
+  9, 12, 14, 15, 17, 19, 33, 34, 35, 36, 37, 38, 39, 40,
+]);
+
+/** 语义维基底 + 瑶光客观维合并：只覆盖瑶光客观维（语义维以 M3 为准） */
 export function fillObjectiveDims(
   base: PerceptionV40,
   objective: Record<string, YaoguangDim> | null | undefined,
@@ -86,6 +96,8 @@ export function fillObjectiveDims(
   const merged: PerceptionV40 = { ...base };
   if (!objective) return merged;
   for (let dim = 1; dim <= 40; dim++) {
+    // 🔴 语义维（M3 源泉）跳过 — 瑶光不覆盖
+    if (SEMANTIC_DIMS.has(dim)) continue;
     const entry = objective[`d${dim}`];
     if (!entry) continue;
     const normalized = normalizeStandardValue(
