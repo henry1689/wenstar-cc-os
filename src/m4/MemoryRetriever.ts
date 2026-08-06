@@ -306,11 +306,14 @@ export class MemoryRetriever {
         const entityKws = entities.filter(function(e) { return e.name.length > 0 && e.type !== 'self'; }).map(function(e) { return e.name; });
         const kbKeywords = [...entityKws, locusPath.split('.').pop() || ''].filter(Boolean).join(' ');
         if (kbKeywords.length > 2) {
+          // 🔴 户籍管理法（第九条 搜索闸门）: 知识库检索按当前会晤实体 UUID 过滤，
+          // 杜绝"梓铭简介"（belong=梓铭）泄漏给徐诗雨。无归属(公共)资料可放行。
+          const _kbUuid = options?.entityUuids?.[0] ?? undefined;
           const kbResults = await this.knowledgeBase.weightedSearch(kbKeywords, sceneTags, {
             pleasure: options.perception.pleasure,
             arousal: options.perception.arousal,
             intimacy: options.perception.intimacy,
-          }, limit - merged.length);
+          }, limit - merged.length, _kbUuid);
           for (const kb of kbResults) {
             if (!seen.has('kb_' + kb.id)) {
               seen.add('kb_' + kb.id);
