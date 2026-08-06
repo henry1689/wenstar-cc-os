@@ -468,6 +468,10 @@ export class SQLiteAdapter {
       try {
         this._backfillPerception40D();
       } catch (_p40Err) { console.warn('[V20] 40D 补全失败:', (_p40Err as Error)?.message); }
+      // V21: 三库（state_spines/knowledge_base/black_diamond）40D 补齐
+      try {
+        this._backfillLibs40D();
+      } catch (_libErr) { console.warn('[V21] 三库 40D 补齐失败:', (_libErr as Error)?.message); }
       this._runIntegrityChecks();
       // 强制落盘
       if (this._dirtyCount > 0) { this.flushNow(); }
@@ -1747,6 +1751,88 @@ export class SQLiteAdapter {
       return updated;
     } catch (e) {
       console.warn('[V20] 40D 补全异常:', (e as Error)?.message);
+      return 0;
+    }
+  }
+
+  /**
+   * 🔴 V21: 三库 40D 启动补全 — state_spines / knowledge_base / black_diamond。
+   * 与 _backfillPerception40D 同模式（sql.js 内存态内补全 → flush 随库持久）。
+   * 幂等：只处理缺 40D 的行。
+   *   1. state_spines: 补 dimension_id 25-40（值 0 占位，待瑶光/瑶灵数据源）
+   *   2. knowledge_base: emotion_vector 24 数组 → 40D（14 维映射 + 26 维 0）
+   *   3. black_diamond: emotion_vector（存时间戳异常）→ 40D 默认数组
+   */
+  private _backfillLibs40D(): number {
+    if (!this.db) return 0;
+    let total = 0;
+    try {
+      // ── 1. state_spines 补 25-40 维 ──
+      try {
+        const maxDim = this.db.exec("SELECT MAX(dimension_id) m FROM state_spines")[0]?.values?.[0]?.[0] ?? 0;
+        if (Number(maxDim) < 40) {
+          const uids = this.db.exec("SELECT DISTINCT global_uid FROM state_spines WHERE dimension_id IN (1,2,3)")[0]?.values ?? [];
+          for (const [uid] of uids) {
+            for (let d = Number(maxDim) + 1; d <= 40; d++) {
+              this.db.run(
+                "INSERT OR REPLACE INTO state_spines (global_uid, dimension_id, value, consistency_mark, location_fingerprint, timestamp_ms, checksum) VALUES (?, ?, 0, 'consistent', 'backfill_40d', ?, '')",
+                [String(uid), d, Date.now()]
+              );
+              total++;
+            }
+          }
+          if (total > 0) console.log(`[V21] state_spines 40D 补齐: ${total} 行 (25-40维)`);
+        }
+      } catch (e) { console.warn('[V21] state_spines 40D 补齐异常:', (e as Error)?.message); }
+
+      // ── 2. knowledge_base emotion_vector 24→40D ──
+      try {
+        const kbRows = this.db.exec(
+          "SELECT id, emotion_vector FROM knowledge_base WHERE emotion_vector IS NOT NULL AND emotion_vector != ''"
+        )[0]?.values ?? [];
+        const KEYS24 = ['pleasure','arousal','dominance','aggression','sincerity','humor','factual','logical','certainty','abstract','temporal_focus','self_ref','intimacy','power_diff','dependency','moral_judgment','etiquette','belonging','sexual_attraction','sensory_craving','energy_merge','possessiveness','ecstasy','safety'];
+        const MAP = [
+          { k: 'self_ref', d: 9 }, { k: 'pleasure', d: 12 }, { k: 'safety', d: 14 },
+          { k: 'intimacy', d: 15 }, { k: 'belonging', d: 17 }, { k: 'etiquette', d: 19 },
+          { k: 'sexual_attraction', d: 33 }, { k: 'energy_merge', d: 34 }, { k: 'sincerity', d: 35 },
+          { k: 'dominance', d: 36 }, { k: 'moral_judgment', d: 37 }, { k: 'humor', d: 38 },
+          { k: 'dependency', d: 39 }, { k: 'possessiveness', d: 40 },
+        ];
+        let kbUpdated = 0;
+        for (const [id, evRaw] of kbRows) {
+          try {
+            const parsed = JSON.parse(String(evRaw));
+            if (!Array.isArray(parsed) || parsed.length !== 24) continue;
+            const p24: Record<string, number> = {};
+            for (let i = 0; i < 24; i++) p24[KEYS24[i]] = Number(parsed[i]) || 0;
+            const p40 = new Array(40).fill(0);
+            for (const { k, d } of MAP) { if (isFinite(p24[k])) p40[d - 1] = p24[k]; }
+            this.db.run("UPDATE knowledge_base SET emotion_vector = ? WHERE id = ?", [JSON.stringify(p40), String(id)]);
+            kbUpdated++;
+          } catch { /* 跳过坏行 */ }
+        }
+        if (kbUpdated > 0) console.log(`[V21] knowledge_base 40D 补齐: ${kbUpdated} 条`);
+      } catch (e) { console.warn('[V21] knowledge_base 40D 补齐异常:', (e as Error)?.message); }
+
+      // ── 3. black_diamond emotion_vector 修复为 40D ──
+      try {
+        const bdRows = this.db.exec("SELECT id, emotion_vector FROM black_diamond")[0]?.values ?? [];
+        let bdUpdated = 0;
+        for (const [id, evRaw] of bdRows) {
+          try {
+            const parsed = JSON.parse(String(evRaw));
+            if (Array.isArray(parsed) && parsed.length === 40) continue; // 已是 40D
+            // 非 40D（时间戳/24D/空）→ 写 40D 默认数组
+            this.db.run("UPDATE black_diamond SET emotion_vector = ? WHERE id = ?", [JSON.stringify(new Array(40).fill(0)), String(id)]);
+            bdUpdated++;
+          } catch { /* 空/坏 → 写默认 */ }
+        }
+        if (bdUpdated > 0) console.log(`[V21] black_diamond 40D 补齐: ${bdUpdated} 条`);
+      } catch (e) { console.warn('[V21] black_diamond 40D 补齐异常:', (e as Error)?.message); }
+
+      return total;
+    } catch (e) {
+      console.warn('[V21] 三库 40D 补齐异常:', (e as Error)?.message);
       return 0;
     }
   }
