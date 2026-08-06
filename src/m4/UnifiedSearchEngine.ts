@@ -11,7 +11,7 @@ import { buildNgrams } from './SearchIndexBuilder.js';
 import { rankByVector, perceptionToArray, type MemoryCandidate, type RankedMemory, type SearchMode } from './VectorReranker.js';
 import type { Perception24D } from '../m3/types/perception.js';
 import { map24DTo40D, decodePerceptionV40, cosineSimilarity40D } from '../m2/PerceptionVector40DCodec.js';
-import { isPerception40DEnabled } from '../config/perception-40d-config.js';
+import { isPerception40DEnabled, isPerception40DOnly } from '../config/perception-40d-config.js';
 import { PERCEPTION_40D_KEYS } from '../m3/types/perception-40d.js';
 import type { PerceptionV40 } from '../m3/types/perception-40d.js';
 
@@ -237,8 +237,12 @@ export function search(
     hitsBySource.knowledge_base = enriched.filter(c => c.source === 'knowledge_base').length;
   }
 
-  // ═══════════ 第2层: 32D向量精排 ═══════════
-  const queryVec = perception ? perceptionToArray(perception) : new Array(24).fill(0.5);
+  // ═══════════ 第2层: 40D 向量精排 ═══════════
+  // V3.1: 40D 主模式（PERCEPTION_40D_ONLY）— 全面停止 24D 精排，只用 40D 余弦。
+  // queryVec 用中性值（不参与 24D 排序），queryVec40D 正常生成供 40D 扇区加权余弦。
+  const queryVec = isPerception40DOnly()
+    ? new Array(24).fill(0.5)
+    : (perception ? perceptionToArray(perception) : new Array(24).fill(0.5));
   // V20: 混合检索 — 生成 40D 查询向量（原始值，由 cosineSimilarity40D 统一归一化，避免双极性维二次平移）
   const queryVec40D = perception ? PERCEPTION_40D_KEYS.map(k => map24DTo40D(perception)[k]) : null;
 

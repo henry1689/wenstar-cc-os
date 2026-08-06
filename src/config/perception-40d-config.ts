@@ -21,3 +21,9 @@ export function isPerception40DEnabled(): boolean {
 export function isPerception40DCollectEnabled(): boolean {
   return ConfigService.getBool('PERCEPTION_40D_COLLECT', true);
 }
+
+/** V3.1: 40D 主模式 — 全面停止 24D 独立运行，检索只走 40D（默认 false = 双轨混合）
+ *  true：检索跳过 24D 精排，只用 40D 余弦；24D 仅作 M3 内部语义引擎（源泉） */
+export function isPerception40DOnly(): boolean {
+  return ConfigService.getBool('PERCEPTION_40D_ONLY', false);
+}
