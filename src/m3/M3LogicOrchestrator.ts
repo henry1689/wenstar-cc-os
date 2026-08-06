@@ -73,6 +73,10 @@ export class M3LogicOrchestrator {
     enhanced.calcium_score = calcium.score;
     enhanced.calcium_level = calcium.level;
 
+    // Phase 3.5: V3 — M3 直接产出 40D（在 injectContext 之后、决策路由之前，
+    // 与 24D 同源同路径：40D 语义维 = 注入上下文后的最终 24D 投影）
+    enhanced.perceptionV40 = this.analyzer.buildPerceptionV40(enhanced.perception);
+
     // Phase 4: 决策路由
     const actions = this.route(enhanced);
 
