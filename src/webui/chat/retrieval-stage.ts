@@ -18,6 +18,8 @@ export interface RetrievalInput {
   _meetingEntityName?: string | null;
   dna: DNA;
   p: Perception24D;
+  /** V3: M3 直接产出的 40D 感知向量 — 透传给 searchV13 作为 40D 查询向量 */
+  p40?: import('../../m3/types/perception-40d.js').PerceptionV40;
   enrichedHistory: Array<{ content: string }>;
   memoryFragments: string[];
 }
@@ -357,6 +359,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
                 enableNarrativeAssembler: true,
               },
               _dagRepo,
+              input.p40,  // V3: M3 产出的 40D 感知向量（40D 查询向量）
             );
 
             // 注入 V13 叙事或普通结果到 memoryFragments

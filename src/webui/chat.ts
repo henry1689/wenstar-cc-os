@@ -670,6 +670,7 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     } = await runRetrieval({
       ctx, message, dna, p, enrichedHistory, memoryFragments,
       _meetingEntityName: _activeMeetingName,
+      p40: decision.enhanced.perceptionV40,  // V3: M3 产出的 40D 感知向量
     });
 	    // P0-1: 仿生智脑 + 知识库 + VAD 并行执行（三者均为异步网络调用，互不依赖）
     const _bionicPromise = fetchBionicMemories(message, isTopicShift, hasContinuationMarkers, memoryFragments, enrichedHistory, { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, dna.scene_tags);
