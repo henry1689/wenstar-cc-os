@@ -32,6 +32,7 @@ import {
 import type { RetrievalWeights } from './math.js';
 import { MEMORY_CONFIG } from '../config/MemoryConfig.js';
 import { encodeEmotionVector, computeL2Norm } from './EmotionVectorCodec.js';
+import { decodePerceptionV40, encodePerceptionV40 } from './PerceptionVector40DCodec.js';
 import { migrateSchema } from './MigrationManager.js';
 import { createHash } from 'node:crypto';
 
@@ -195,6 +196,7 @@ export class SQLiteAdapter {
     try { this.db.run("ALTER TABLE memories ADD COLUMN memory_kind TEXT DEFAULT 'episodic'"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN lifecycle_state TEXT DEFAULT 'candidate'"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN perception_v2 TEXT"); } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE memories ADD COLUMN perception_40d TEXT"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN confidence_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN stability_score REAL DEFAULT 0.5"); } catch { /* 列已存在 */ }
     try { this.db.run("ALTER TABLE memories ADD COLUMN last_verified_at TEXT"); } catch { /* 列已存在 */ }
@@ -454,6 +456,14 @@ export class SQLiteAdapter {
       } catch (_bfErr) { console.warn('[Backfill] 自动回填失败:', (_bfErr as Error)?.message); }
     }
 
+    // 🔴 V20: 40D 启动补全 — 根治 sql.js 整库覆写问题
+    //   根因：backfill 用 better-sqlite3 写磁盘，sql.js 加载内存态不含该数据，
+    //   第一次 flushNow()/export() 整库覆写磁盘 → backfill 数据丢失。
+    //   此处在 sql.js 内存态内补全 40D（从 24D 派生），flush 时随库持久，不再被覆盖。
+    try {
+      this._backfillPerception40D();
+    } catch (_p40Err) { console.warn('[V20] 40D 补全失败:', (_p40Err as Error)?.message); }
+
     // 🔴 V17: 锚点重建 + 完整性检查 — init() 最末端，确保所有上游修复完成后执行
     //   必须在 Backfill 落盘之后执行，否则 Backfill 的 flushNow() 会覆盖锚点重建的写入
     try {
@@ -701,21 +711,23 @@ export class SQLiteAdapter {
     validUntilMs?: number | null;     // V13: 有效截止时间(ms)
     foresightStatus?: string | null;  // V13: 前瞻状态
     namespace?: string | null;        // BATCH-23: memory namespace scope
+    perceptionV40?: string | null;    // V20: 40D感知向量(JSON数组40元素)，写 perception_40d 列（双轨）
   }): boolean {
     this.ensureReady();
     try {
       this.runSql(
         `INSERT OR REPLACE INTO memories
-        (id, seq_pos, created_at, perception_json, calcium_score, calcium_level,
+        (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level,
          locus_path, leaf_zone, raw_input, memory_kind, lifecycle_state,
          confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
 	         global_uid, location_fingerprint, belong_entity_uuid,
 		         is_foresight, valid_until_ms, foresight_status, namespace)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
+          opts.perceptionV40 ?? null,
           opts.calciumScore, opts.calciumLevel,
           opts.locusPath, opts.leafZone, (opts.rawInput.length > 4000 ? console.warn(`[SQLiteAdapter] raw_input 超长: ${opts.rawInput.length} seq=${opts.seqPos}`) : null, opts.rawInput),
           opts.memoryKind ?? 'episodic',
@@ -1680,6 +1692,64 @@ export class SQLiteAdapter {
    * 消除原 rebuild-memories-from-convs.cjs 绕过 SQLiteAdapter 的双写竞争。
    * 每次启动自动执行，幂等（清理旧 ANCHOR → 重建）。
    */
+  /**
+   * 🔴 V20: 40D 启动补全 — 在 sql.js 内存态内从 24D 派生 40D 写入 perception_40d。
+   * 根治 sql.js 整库覆写：backfill（better-sqlite3）写磁盘的数据被 sql.js 内存态覆盖，
+   * 此处改为「内存态内补全」→ flush 时随库持久，不再丢失。
+   * 幂等：只处理 perception_40d 为空的行。
+   */
+  private _backfillPerception40D(): number {
+    if (!this.db) return 0;
+    try {
+      // 确认列存在（新库 schema.sql 已含，旧库由 initialize ALTER 补）
+      const cols = this.db.exec("PRAGMA table_info(memories)")[0]?.values ?? [];
+      if (!cols.some((c: any) => c[1] === 'perception_40d')) return 0;
+
+      // 读取有 24D 感知但无 40D 的记忆
+      const rows = this.db.exec(
+        "SELECT id, perception_json FROM memories WHERE perception_json IS NOT NULL AND (perception_40d IS NULL OR perception_40d = '')"
+      )[0]?.values ?? [];
+
+      const KEYS24 = [
+        'pleasure','arousal','dominance','aggression','sincerity','humor',
+        'factual','logical','certainty','abstract','temporal_focus','self_ref',
+        'intimacy','power_diff','dependency','moral_judgment','etiquette','belonging',
+        'sexual_attraction','sensory_craving','energy_merge','possessiveness','ecstasy','safety',
+      ];
+      // 24D → 40D 映射（dim40 为 1-indexed D 编号）
+      const MAP = [
+        { k: 'self_ref', d: 9 }, { k: 'pleasure', d: 12 }, { k: 'safety', d: 14 },
+        { k: 'intimacy', d: 15 }, { k: 'belonging', d: 17 }, { k: 'etiquette', d: 19 },
+        { k: 'sexual_attraction', d: 33 }, { k: 'energy_merge', d: 34 }, { k: 'sincerity', d: 35 },
+        { k: 'dominance', d: 36 }, { k: 'moral_judgment', d: 37 }, { k: 'humor', d: 38 },
+        { k: 'dependency', d: 39 }, { k: 'possessiveness', d: 40 },
+      ];
+
+      let updated = 0;
+      for (const [id, pJsonRaw] of rows) {
+        try {
+          const parsed = JSON.parse(String(pJsonRaw));
+          const p24 = Array.isArray(parsed) && parsed.length === 24
+            ? (() => { const o: Record<string, number> = {}; for (let i = 0; i < 24; i++) o[KEYS24[i]] = Number(parsed[i]) || 0; return o; })()
+            : (parsed && typeof parsed === 'object' ? parsed as Record<string, number> : null);
+          if (!p24) continue;
+          const p40 = new Array(40).fill(0);
+          for (const { k, d } of MAP) {
+            const v = Number(p24[k]);
+            if (isFinite(v)) p40[d - 1] = v;
+          }
+          this.db.run("UPDATE memories SET perception_40d = ? WHERE id = ?", [JSON.stringify(p40), String(id)]);
+          updated++;
+        } catch { /* 单条失败跳过 */ }
+      }
+      if (updated > 0) console.log(`[V20] 40D 启动补全: ${updated} 条`);
+      return updated;
+    } catch (e) {
+      console.warn('[V20] 40D 补全异常:', (e as Error)?.message);
+      return 0;
+    }
+  }
+
   private _rebuildMemoryAnchors(): number {
     if (!this.db) return 0;
     const now = new Date().toISOString();
@@ -1938,6 +2008,7 @@ export class SQLiteAdapter {
       seq_pos: obj.seq_pos,
       created_at: obj.created_at,
       perception,
+      perceptionV40: decodePerceptionV40(obj.perception_40d) ?? undefined, // V20: 40D 双轨
       calcium_score: obj.calcium_score,
       calcium_level: obj.calcium_level as 0 | 1 | 2 | 3,
       raw_input: obj.raw_input,

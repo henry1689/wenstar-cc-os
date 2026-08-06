@@ -15,6 +15,7 @@
 import type { DNA } from '../../m1/types/dna.js';
 import type { Perception24D } from '../../m3/types/perception.js';
 import { encodeEmotionVector, encodeEmotionVectorWithFingerprint } from '../../m2/EmotionVectorCodec.js';
+import { map24DTo40D } from '../../m2/PerceptionVector40DCodec.js';
 import type { M3Decision } from '../../m3/types/perception.js';
 import { detectForesight } from '../../m3/ForesightDetector.js';
 import type { ChatContext } from '../chat.js';
@@ -50,6 +51,37 @@ function detectTopic(message: string): string {
 function buildPerceptionJson(p: Perception24D, text?: string): string {
   if (text) return encodeEmotionVectorWithFingerprint(p, text);
   return encodeEmotionVector(p);
+}
+
+/** V20: 40D 双轨 — 从 24D 派生 40D 写 perception_40d 列（独立列，避免与 perception_v2 增量对象冲突） */
+function writePerceptionV40Dual(
+  sqlite: { writeRaw(sql: string, ...params: unknown[]): void },
+  id: string,
+  p: Perception24D,
+): void {
+  try {
+    const p40 = map24DTo40D(p);
+    const keys = [
+      'd01_muscle_fatigue','d02_pain_level','d03_nerve_arousal','d04_hormones',
+      'd05_pheromone','d06_metabolic_cycle','d07_self_heal','d08_sensory_env',
+      'd09_self_identity','d10_desire','d11_fear_anxiety','d12_pleasure',
+      'd13_empathy','d14_self_protect','d15_partner_attachment','d16_partner_protect',
+      'd17_family_belonging','d18_family_protect','d19_social_fit','d20_team_protect',
+      'd21_private_space','d22_home_atmosphere','d23_workplace','d24_public_space',
+      'd25_space_distance','d26_season_climate','d27_micro_physiology','d28_nature_expand',
+      'd29_social_refine','d30_culture_growth','d31_subjective_objective','d32_global_overview',
+      'd33_sexual_attraction','d34_energy_merge','d35_sincerity','d36_dominance',
+      'd37_moral_judgment','d38_humor','d39_dependency','d40_possessiveness',
+    ];
+    const arr = keys.map(k => (p40 as unknown as Record<string, number>)[k] ?? 0);
+    sqlite.writeRaw(
+      'UPDATE memories SET perception_40d = ? WHERE id = ?',
+      JSON.stringify(arr),
+      id,
+    );
+  } catch (e) {
+    console.error('[Persist] ⚠️ 40D 双轨写入失败:', (e as Error)?.message);
+  }
 }
 
 /** 🔧 V10.5: 从 assistant 回复中检测说话者 UUID（自称匹配） */
@@ -145,6 +177,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     })) {
       hadError = true;
     }
+    // V20: 40D 双轨 — 用户消息写 perception_40d
+    writePerceptionV40Dual(sqlite, idUser, input.p);
 
     // 写助理回复 — 剥离场景描写后再存储
     //     LLM 的回复含"（我趴在浴缸边…）"等动作描写。这是生成产物，不是语义记忆。
@@ -170,6 +204,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     })) {
       hadError = true;
     }
+    // V20: 40D 双轨 — 助理回复写 perception_40d
+    writePerceptionV40Dual(sqlite, idAssist, input.p);
   } catch (e: any) {
     console.error('[Persist] ❌ 砂金库写入异常:', e?.message);
     hadError = true;

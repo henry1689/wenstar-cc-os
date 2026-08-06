@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS memories (
 
     -- 24维情感向量 (JSON数组)
     perception_json TEXT NOT NULL,
+    -- V20: 40D感知向量 (JSON数组40元素，双轨独立列)
+    perception_40d TEXT,
 
     -- 钙化
     calcium_score REAL NOT NULL,

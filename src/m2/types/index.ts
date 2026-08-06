@@ -68,6 +68,8 @@ export interface EmotionalMemoryRecord {
 
   /** ── 主索引：完整 24 维情感向量 ── */
   perception: Perception24D;
+  /** V20: 40D 感知向量（双轨，来自 perception_v2 列） */
+  perceptionV40?: import('../../m3/types/perception-40d.js').PerceptionV40;
   calcium_score: number;
   calcium_level: 0 | 1 | 2 | 3;
 

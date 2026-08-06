@@ -10,6 +10,7 @@
 import { buildNgrams } from './SearchIndexBuilder.js';
 import { rankByVector, perceptionToArray, type MemoryCandidate, type RankedMemory, type SearchMode } from './VectorReranker.js';
 import type { Perception24D } from '../m3/types/perception.js';
+import { map24DTo40D, decodePerceptionV40, cosineSimilarity40D } from '../m2/PerceptionVector40DCodec.js';
 
 // ── V12.0 新管线模块 ──
 import { weightedRRF, buildIdToItem, DEFAULT_RRF_CONFIG, type RRFConfig } from './RRFFusion.js';
@@ -588,6 +589,39 @@ export async function searchV13(
     }
   } else {
     _mark('L6_Foresight_skip');
+  }
+
+  // ═══════════ L6.5 · 40D 情感重排（V20 混合检索）═══════════
+  // 在 MMR/最终排序前，用 40D 扇区加权相似度重排候选，让 40D 记忆优先。
+  // 候选 id 匹配 memories.id（emotion/keyword/locus/entity 路）或 global_uid（spine 路）。
+  if (perception && candidates.length > 1) {
+    try {
+      const q40 = map24DTo40D(perception);
+      const ids = candidates.map(c => c.id).slice(0, 100);
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = db.exec(
+        `SELECT id, perception_40d FROM memories WHERE id IN (${placeholders}) OR global_uid IN (${placeholders})`,
+        [...ids, ...ids],
+      );
+      const p40Map = new Map<string, number>(); // id → sim40
+      if (rows.length && rows[0].values) {
+        for (const [id, p40d] of rows[0].values) {
+          const mem40 = decodePerceptionV40(p40d ? String(p40d) : null);
+          if (mem40) {
+            const sim40 = cosineSimilarity40D(q40, mem40);
+            const key = String(id);
+            p40Map.set(key, Math.max(p40Map.get(key) ?? 0, sim40));
+          }
+        }
+      }
+      if (p40Map.size > 0) {
+        const with40 = candidates.filter(c => p40Map.has(String(c.id)));
+        const without40 = candidates.filter(c => !p40Map.has(String(c.id)));
+        with40.sort((a, b) => (p40Map.get(String(b.id)) ?? 0) - (p40Map.get(String(a.id)) ?? 0));
+        candidates = [...with40, ...without40];
+      }
+    } catch { /* 40D 重排失败不阻塞 */ }
+    _mark('L6_5_40d');
   }
 
   if (cfg.enableMMR) {
