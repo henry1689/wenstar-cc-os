@@ -136,18 +136,9 @@ export async function buildMeetingContext(input: MeetingContextInput): Promise<M
           }
         }
 
-        // 源B: 关键词匹配 + 无UUID标注（可能为本人但未标注）
-        const _byKeyword = s1.queryAll(
-          "SELECT role, content FROM conversations WHERE content LIKE ? AND (belong_entity_uuid IS NULL OR belong_entity_uuid = '') ORDER BY timestamp DESC LIMIT 100",
-          ['%' + meetingEntityName + '%']
-        );
-        for (const r of (_byKeyword || [])) {
-          const tid = ((r.content || '') as string).substring(0, 40);
-          if (!_existingIds.has(tid)) {
-            _existingIds.add(tid);
-            allCR.push(r);
-          }
-        }
+        // 🔴 户籍管理法（第十一条）: 源B（无归属对话注入）已删除。
+        // 会晤上下文禁止注入无归属对话（belong_entity_uuid IS NULL）——这些可能是他人记忆，
+        // 违反 UUID 户籍隔离。只保留源A（belong_entity_uuid = 会晤实体 的精准对话）。
 
         // 把源A(UUID)和源B分开标记——源A是本人，评分更高
         const _uuidContentIds = new Set<string>();
