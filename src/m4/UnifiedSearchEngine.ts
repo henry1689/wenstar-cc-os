@@ -13,6 +13,7 @@ import type { Perception24D } from '../m3/types/perception.js';
 import { map24DTo40D, decodePerceptionV40, cosineSimilarity40D } from '../m2/PerceptionVector40DCodec.js';
 import { isPerception40DEnabled, isPerception40DOnly } from '../config/perception-40d-config.js';
 import { PERCEPTION_40D_KEYS } from '../m3/types/perception-40d.js';
+import { buildSqlClause } from '../governance/police/UUIDPoliceFilter.js';
 import type { PerceptionV40 } from '../m3/types/perception-40d.js';
 
 // ── V12.0 新管线模块 ──
@@ -138,12 +139,12 @@ export function search(
   if (convIds.length > 0) {
     try {
       const placeholders = convIds.map(() => '?').join(',');
-      const entityFilter = entityUuids.length > 0
-        ? `AND (belong_entity_uuid IN (${entityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`
-        : '';
+      // 🔴 户籍管理法：收编复制 SQL → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
+      const _police = buildSqlClause({ visibleUuids: new Set(entityUuids.filter(Boolean)) });
+      const entityFilter = _police.clause;
       const rows = db.exec(
         `SELECT id, content, belong_entity_uuid FROM conversations WHERE id IN (${placeholders}) ${entityFilter} LIMIT 50`,
-        [...convIds, ...entityUuids],
+        [...convIds, ..._police.params],
       );
       if (rows.length && rows[0].values) {
         for (const [id, content, euuid] of rows[0].values) {
@@ -161,13 +162,13 @@ export function search(
   if (memIds.length > 0) {
     try {
       const placeholders = memIds.map(() => '?').join(',');
-      const entityFilter = entityUuids.length > 0
-        ? `AND (belong_entity_uuid IN (${entityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`
-        : '';
+      // 🔴 户籍管理法：收编复制 SQL → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
+      const _police = buildSqlClause({ visibleUuids: new Set(entityUuids.filter(Boolean)) });
+      const entityFilter = _police.clause;
       const rows = db.exec(
         `SELECT id, raw_input, perception_json, calcium_score, calcium_level, confidence_score, effective_strength, created_at, belong_entity_uuid
          FROM memories WHERE id IN (${placeholders}) ${entityFilter} LIMIT 100`,
-        [...memIds, ...entityUuids],
+        [...memIds, ..._police.params],
       );
       if (rows.length && rows[0].values) {
         for (const [id, rawInput, pJson, caScore, caLevel, confScore, effStr, createdAt, euuid] of rows[0].values) {
@@ -189,13 +190,13 @@ export function search(
   if (bdIds.length > 0) {
     try {
       const placeholders = bdIds.map(() => '?').join(',');
-      const entityFilter = entityUuids.length > 0
-        ? `AND (belong_entity_uuid IN (${entityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`
-        : '';
+      // 🔴 户籍管理法：收编复制 SQL → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
+      const _police = buildSqlClause({ visibleUuids: new Set(entityUuids.filter(Boolean)) });
+      const entityFilter = _police.clause;
       const rows = db.exec(
         `SELECT id, summary, emotion_vector, calcium_level, created_at, belong_entity_uuid
          FROM black_diamond WHERE id IN (${placeholders}) ${entityFilter} LIMIT 50`,
-        [...bdIds, ...entityUuids],
+        [...bdIds, ..._police.params],
       );
       if (rows.length && rows[0].values) {
         for (const [id, summary, eVec, caLevel, createdAt, euuid] of rows[0].values) {
@@ -217,12 +218,12 @@ export function search(
   if (kbIds.length > 0) {
     try {
       const placeholders = kbIds.map(() => '?').join(',');
-      const entityFilter = entityUuids.length > 0
-        ? `AND (belong_entity_uuid IN (${entityUuids.map(() => '?').join(',')}) OR belong_entity_uuid IS NULL)`
-        : '';
+      // 🔴 户籍管理法：收编复制 SQL → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
+      const _police = buildSqlClause({ visibleUuids: new Set(entityUuids.filter(Boolean)) });
+      const entityFilter = _police.clause;
       const rows = db.exec(
         `SELECT id, title, content, belong_entity_uuid FROM knowledge_base WHERE id IN (${placeholders}) ${entityFilter} LIMIT 20`,
-        [...kbIds, ...entityUuids],
+        [...kbIds, ..._police.params],
       );
       if (rows.length && rows[0].values) {
         for (const [id, title, content, euuid] of rows[0].values) {
