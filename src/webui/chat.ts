@@ -1374,7 +1374,10 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 // 🆕 V10.11: MemoryInjector 统一注入 — 去重 + 优先级排序 + 预算分配（替代旧 slice(0,8) 硬截断）
 let memoryText = '';
 try {
-  const _m4Timeline = ctx_m4?.memory_summary?.timeline || [];
+  // 🔴 户籍管理法（第十条 组织LLM资料闸门）: 会晤模式禁用 M4 timeline 注入。
+  // M4 timeline 是全库情感检索结果（可能含其他实体的记忆，如熊梓铭/玉瑶），
+  // 会晤模式只允许 memoryFragments（已按 belong_entity_uuid 精准 + 隐私过滤）注入。
+  const _m4Timeline = _meetingEntityName ? [] : (ctx_m4?.memory_summary?.timeline || []);
   const _vaultHits: string[] = [];  // vault_log 结果由 retrieval-stage 并入 memoryFragments
   const { injectMemories } = await import('../m4/MemoryInjector.js');
   memoryText = injectMemories({
