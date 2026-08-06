@@ -110,11 +110,14 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   const { resolveOwnership } = await import('../../app/entity/EntityOwnershipResolver.js');
   const _fg = input.ctx.m4?.getFamilyGraph?.();
   let belongUUID: string | null = null;
+  let ownerEntityName: string | null = null;
   if (_meetingUUID) {
     belongUUID = _meetingUUID;  // 会晤强制 = 会晤实体
+    ownerEntityName = input.ctx._entityMeeting?.getEntityName?.() ?? null;
   } else {
     const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
     belongUUID = _ownerResult.uuid;
+    ownerEntityName = _ownerResult.entityName ?? null;
   }
   // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）；会晤时强制 = 会晤实体
   let asstUUID: string | null = null;
@@ -366,13 +369,13 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   }
 
   // ── V12.2: 记录最后活跃实体 — 供跨重启上下文锚定 ──
-  if (belongUUID && _ownerResult.entityName) {
+  if (belongUUID && ownerEntityName) {
     try {
       const _si = input.ctx.storage?.getSQLite?.();
       if (_si) {
         const { EntityContextStore } = await import('../../app/entity/EntityContextStore.js');
         const _store = new EntityContextStore(_si);
-        _store.saveLastActiveEntity(belongUUID, _ownerResult.entityName);
+        _store.saveLastActiveEntity(belongUUID, ownerEntityName);
       }
     } catch { /* 非关键 */ }
   }
