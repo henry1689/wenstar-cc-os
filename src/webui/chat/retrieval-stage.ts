@@ -185,6 +185,28 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             if (_convTopics.length > 0) console.log('[EntityMem] V5.3对话降级: ' + _convTopics.length + ' 条');
           } catch (_ce) { /* non-critical */ }
         }
+        // 🔴 V23 会晤长文直取: 会晤场景也要支持长文完整返回（详细/概要意图）
+        // 用户问"梓铭写的那篇纪实详细讲讲" → 直取会晤实体最长长对话全文注入。
+        // 绕过 is_compacted 归档过滤，绕过会晤记忆 100 字截断。
+        try {
+          const { detectDetailLevel: _mDetail, buildLongTextFragment: _mFrag } = await import('./long-text-retrieval.js');
+          const _mLevel = _mDetail(message);
+          if (_mLevel !== 'auto') {  // 明确概要/详细意图才直取
+            const _longRows = _sqlite.queryAll(
+              "SELECT id, content FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 ORDER BY LENGTH(content) DESC LIMIT 2",
+              [_entityUuid]
+            ) || [];
+            for (const _lr of _longRows) {
+              const _lc = String(_lr.content || '');
+              if (_lc.length <= 800) continue;
+              const _mf = _mFrag(_lc, _mLevel);
+              if (!memoryFragments.some(function(f) { return f.includes(_lc.substring(0, 20)); })) {
+                memoryFragments.push(_mf);
+                console.log(`[LongText·会晤] 直取 ${_meetingEntityName} 长文 id=${_lr.id} (${_lc.length}字, level=${_mLevel})`);
+              }
+            }
+          }
+        } catch (_mlErr) { /* 会晤长文直取失败不阻塞 */ }
       }
     } catch (_e) { /* non-critical */ }
     return {
