@@ -13,7 +13,7 @@
 /** 记忆片段（统一表示） */
 export interface MemoryItem {
   text: string;           // 记忆文本
-  source: 'diamond' | 'vault' | 'sand' | 'knowledge' | 'timeline';
+  source: 'diamond' | 'vault' | 'sand' | 'knowledge' | 'timeline' | 'work';
   priority: number;       // 0-1, 越高越重要
 }
 
@@ -49,9 +49,19 @@ export function injectMemories(opts: InjectOptions): string {
   } = opts;
 
   const items: MemoryItem[] = [];
+  // V22 作品: 完整作品文本（最多 1 篇，独立预算，不参与 250 截断）
+  let workFullText = '';
 
-  // ── 来源 1: memoryFragments（砂金+黑钻，来自 retrieval-stage） ──
+  // ── 来源 1: memoryFragments（砂金+黑钻+作品，来自 retrieval-stage） ──
   for (const frag of memoryFragments) {
+    // 🆕 V22 作品召回: 【作品】开头的 fragment 走独立预算（完整作品进上下文）
+    if (frag.startsWith('【作品】')) {
+      if (!workFullText) {
+        workFullText = frag;  // 最多保留 1 篇完整作品
+        console.log(`[MemoryInjector] 作品独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
+      }
+      continue;
+    }
     // 🆕 V10.1: 会晤模式下保留结构标签，LLM 可区分档案/记忆/家人
     const labelMatch = preserveLabels ? frag.match(/^(【[^】]+】)/) : null;
     const preservedLabel = labelMatch ? labelMatch[1] : '';
@@ -145,6 +155,14 @@ export function injectMemories(opts: InjectOptions): string {
   }
   if (kbText) {
     parts.push(kbText);
+  }
+
+  // ── V22 作品: 独立注入完整作品（1 篇上限，硬预算 6000 字符，不参与记忆截断） ──
+  if (workFullText) {
+    const WORK_BUDGET = 6000;
+    parts.push(workFullText.length > WORK_BUDGET
+      ? workFullText.substring(0, WORK_BUDGET) + '\n…(作品超长已截断)'
+      : workFullText);
   }
 
   const result = parts.join('\n\n');
