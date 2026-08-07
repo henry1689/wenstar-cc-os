@@ -93,24 +93,44 @@ export function filterText(items: TextItem[], p: PolicePolicy): string[] {
 /**
  * 最终闸门筛子：扫描【标签】前缀文本片段并过滤。
  * 对 `【XX的记忆】/【金库记忆】/【对话·XX】/【珍藏记忆】` 等标签片段，
- * 若片段携带的 UUID 不在白名单 → 剔除（fail-closed）。
+ * 若片段携带的实体不在白名单 → 剔除（fail-closed）。
  * 无标签的普通文本（系统指令/用户消息）不处理，保留。
+ *
+ * P2-A6 接线: 支持 entityNameToUuid 映射，解析【XX的记忆/对话·XX】标签中的实体名，
+ *   对齐到 UUID 后按 passes() deny-by-default 过滤。没有映射时保守保留（避免误删）。
  */
-export function screenContext(text: string, p: PolicePolicy): string {
+export function screenContext(
+  text: string,
+  p: PolicePolicy,
+  entityNameToUuid?: (name: string) => string | null,
+): string {
   if (!text || p.enforce === false) return text;
   const lines = text.split('\n');
   const kept: string[] = [];
   let filteredCount = 0;
   for (const line of lines) {
-    // 只处理带标签的记忆片段（【XX的记忆】等）
-    if (/【[^】]*的?(?:记忆|对话|档案|金库|珍藏|重要记忆|知识|简介|资料)】/.test(line)) {
-      // 标签片段无法可靠提取 UUID（文本层无 UUID 元数据），
-      // 保守策略：无 allowUnowned 时，标签片段若含其他实体名则提示过滤，
-      // 但主防线在行级/LLM 边界。这里仅统计，不做激进剔除（避免误删系统指令）。
-      // 🔴 真正的标签→UUID 对齐在 P4（LLM 边界）用结构化数据做。
+    // 只处理带实体名的标签片段（【XX的记忆】/【对话·XX】/【XX的档案】等）
+    const tagMatch = line.match(/^【([^】]*)的?(?:记忆|对话·|档案|金库|珍藏|重要记忆|知识|简介|资料)】/);
+    if (tagMatch && entityNameToUuid) {
+      // 解析标签中的实体名：如 "徐诗雨的记忆" → 徐诗雨；"对话·徐诗雨" → 徐诗雨
+      const rawName = tagMatch[1] || '';
+      const entityName = rawName.replace(/^对话·/, '').trim();
+      if (entityName && entityName !== '对话') {
+        const uuid = entityNameToUuid(entityName);
+        if (uuid) {
+          // 实体已解析到 UUID → 按白名单 deny-by-default 过滤
+          if (!passes(uuid, p)) {
+            filteredCount++;
+            continue;  // 剔除他人实体片段
+          }
+        }
+        // UUID 解析失败 → 保守保留
+      }
+      // 标签无实体名（如"重要记忆"）→ 保留
       kept.push(line);
       continue;
     }
+    // 普通文本或无标签 → 保留
     kept.push(line);
   }
   if (filteredCount > 0) {

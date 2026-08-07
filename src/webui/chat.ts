@@ -1392,6 +1392,33 @@ try {
   // 会晤模式只允许 memoryFragments（已按 belong_entity_uuid 精准 + 隐私过滤）注入。
   const _m4Timeline = _meetingEntityName ? [] : (ctx_m4?.memory_summary?.timeline || []);
   const _vaultHits: string[] = [];  // vault_log 结果由 retrieval-stage 并入 memoryFragments
+
+  // 🔴 P2-A6 接线: 会晤场景注入边界 UUIDPolice 兜底闸门
+  // 对带【XX的记忆/对话·XX】标签的 memoryFragments，按实体名→UUID 对齐到会晤白名单，
+  // 不在白名单的他人实体片段剔除（deny-by-default，最终闸门）。
+  if (_meetingEntityName && memoryFragments.length > 0) {
+    try {
+      const { screenContext: _screenCtx } = await import('../governance/police/UUIDPoliceFilter.js');
+      const _fgPolice = ctx.m4?.getFamilyGraph?.();
+      const _meetingUuidPolice = _fgPolice?.getUUIDByName?.(_meetingEntityName) ?? null;
+      if (_meetingUuidPolice) {
+        const _screenText = memoryFragments.join('\n');
+        const _filtered = _screenCtx(_screenText, {
+          visibleUuids: new Set([_meetingUuidPolice]),
+          allowUnowned: false,
+        }, (name: string) => {
+          try { return _fgPolice?.getUUIDByName?.(name) ?? null; } catch { return null; }
+        });
+        const _after = _filtered ? _filtered.split('\n').filter((s: string) => s.trim().length > 0) : [];
+        if (_after.length !== memoryFragments.length) {
+          console.log(`[UUIDPolice] 注入边界闸门: ${memoryFragments.length}→${_after.length} 条（剔除他人实体片段）`);
+        }
+        memoryFragments.length = 0;
+        memoryFragments.push(..._after);
+      }
+    } catch (_screenErr) { /* 注入边界过滤失败不阻塞 */ }
+  }
+
   const { injectMemories } = await import('../m4/MemoryInjector.js');
   memoryText = injectMemories({
     memoryFragments,
