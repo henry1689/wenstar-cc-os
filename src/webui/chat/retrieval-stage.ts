@@ -578,6 +578,14 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     }
   } catch (err) { console.warn('[UnifiedSearch] 检索失败:', (err as Error)?.message); }
 
+  // ═══════════════════════════════════════════════════════════════
+  // Foundation V1.0: 多路并行检索底座统一路由（适配器 + RRF + 近因 + MMR）
+  // 🔴 S4 影子模式（false）：旧 4 块原样执行 + 新块影子比对日志（不注入）
+  // 🔴 S5 翻转 true：新块注入，旧 KB/金库 块跳过（可回滚）
+  // ═══════════════════════════════════════════════════════════════
+  const WS_FOUNDATION_ROUTES = true;
+  if (!WS_FOUNDATION_ROUTES) {
+
   // ── 知识库直接接入检索链路（V11.0：不再依赖LLM路由触发）──
   // V12.1: 追加 belongEntityUuid 过滤，防止跨实体知识泄漏
   try {
@@ -630,8 +638,10 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       if (_goldRows.length > 0) console.log(`[GoldVault] 金库命中 ${Math.min(_goldRows.length, _glLimit)} 条`);
     }
   } catch (_gvErr) { /* 金库检索不阻塞 */ }
+  }  // 🔴 Foundation: 旧 KB+金库 作用域结束（S5 后由适配器路由接管；砂金块 S6 MemoryAdapter 再收编）
 
   // V10.0: 砂金库高钙化检索 — memories 中 calcium_level>=2 的经过加权检索
+  // 🔴 S5 后仍执行（无对应适配器，S6 MemoryAdapter 收编 memory 域后再跳过）
   try {
     const _sLimit = isTopicShift ? 3 : 1;
     const _sqlite = ctx.storage.getSQLite();
@@ -657,6 +667,26 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       }
     }
   } catch {} // 砂金检索不阻塞
+
+  // ── Foundation 统一路由块（S4 影子比对 / S5 注入） ──
+  try {
+    if (ctx.storage?.getSQLite?.() && ctx.knowledgeBase) {
+      const { runFoundationRoutes } = await import('../../m4/retrieval/orchestrate.js');
+      const _fResult = await runFoundationRoutes(ctx, message, {
+        meetingMode: !!_meetingEntityName,
+        activeEntityUuids: _activeEntityUuids,
+        isTopicShift,
+      });
+      if (WS_FOUNDATION_ROUTES) {
+        for (const _f of _fResult.fragments) {
+          if (!memoryFragments.some(f => f.includes(_f.substring(0, 20)))) memoryFragments.push(_f);
+        }
+        console.log(`[FoundationRoutes] 适配器统一路由 → ${_fResult.fragments.length} 片段 (executed=${_fResult.executed})`);
+      } else {
+        console.log(`[FoundationRoutes-shadow] 影子比对 → ${_fResult.fragments.length} 片段 (executed=${_fResult.executed}, latency=${JSON.stringify(_fResult.latency)})`);
+      }
+    }
+  } catch (_fErr) { console.warn('[FoundationRoutes] 影子/注入失败:', (_fErr as Error)?.message); }
 
   return {
     isTopicShift,
