@@ -82,11 +82,14 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           if (!_allowed) {
             console.log(`[WorkReferent] 越权拦截《${_wk.title}》 scope=${_ref.scope}（${_isMeeting ? '会晤' : '户主'}）`);
           } else {
-            const _fullText = (_wk.full_text || '').substring(0, 4000);
+            // S5-评审: 强指称（取回/续写意图）→ 全文注入；弱指称（讨论句/标题）→ 仅标题+摘要
+            const _fullText = _ref.isStrong
+              ? (_wk.full_text || '').substring(0, 4000)
+              : '【作品摘要】' + (_wk.summary || (_wk.full_text || '').substring(0, 200));
             const _tag = '【作品】《' + _wk.title + '》(' + _wk.work_type + ')\n' + _fullText;
             if (_fullText.length > 4 && !memoryFragments.some((f: string) => f.includes(_wk.title))) {
               memoryFragments.push(_tag);
-              console.log(`[WorkReferent] 指称解析命中《${_wk.title}》 scope=${_ref.scope} 注入${_fullText.length}字`);
+              console.log(`[WorkReferent] 指称解析命中《${_wk.title}》 scope=${_ref.scope} strong=${_ref.isStrong} 注入${_fullText.length}字`);
             }
           }
         }
