@@ -120,7 +120,8 @@ export class MemoryRetriever {
 
     if (keywords.size > 0) {
       try {
-        const cacheKey = [...keywords].sort().join("::");
+        // 🔴 P2-A11 修复: cacheKey 追加 entityUuids，防跨实体缓存污染
+        const cacheKey = [...keywords].sort().join("::") + '|' + (options?.entityUuids?.slice().sort().join(',') || '');
         const _cached = await keywordCache.get(cacheKey);
         if (_cached) { byKeyword.push(..._cached); }
         else {

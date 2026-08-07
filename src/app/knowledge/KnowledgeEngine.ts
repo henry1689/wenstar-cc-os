@@ -518,7 +518,8 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       return rows.map(rowToEntry);
     }
 
-    const cacheKey = trimmed + '_' + (interactionType || '') + '_' + limit;
+    // 🔴 P2-A11 修复: cacheKey 追加 belongEntityUuid，防跨会晤缓存串扰
+    const cacheKey = trimmed + '_' + (interactionType || '') + '_' + limit + '_' + (belongEntityUuid || 'all');
     const cached = await searchCache.get(cacheKey);
     if (cached) { return cached; }
 
