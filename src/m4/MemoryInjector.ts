@@ -51,14 +51,24 @@ export function injectMemories(opts: InjectOptions): string {
   const items: MemoryItem[] = [];
   // V22 作品: 完整作品文本（最多 1 篇，独立预算，不参与 250 截断）
   let workFullText = '';
+  // V23 长文: 对话原文（最多 1 条，独立预算，不参与 250 截断）
+  let longText = '';
 
-  // ── 来源 1: memoryFragments（砂金+黑钻+作品，来自 retrieval-stage） ──
+  // ── 来源 1: memoryFragments（砂金+黑钻+作品+长文，来自 retrieval-stage） ──
   for (const frag of memoryFragments) {
     // 🆕 V22 作品召回: 【作品】开头的 fragment 走独立预算（完整作品进上下文）
     if (frag.startsWith('【作品】')) {
       if (!workFullText) {
         workFullText = frag;  // 最多保留 1 篇完整作品
         console.log(`[MemoryInjector] 作品独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
+      }
+      continue;
+    }
+    // 🆕 V23 长文: 【对话原文】开头的 fragment 走独立预算（长文完整返回）
+    if (frag.startsWith('【对话原文】')) {
+      if (!longText) {
+        longText = frag;  // 最多保留 1 条长文
+        console.log(`[MemoryInjector] 长文独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
       }
       continue;
     }
@@ -166,6 +176,16 @@ export function injectMemories(opts: InjectOptions): string {
     parts.push(workFullText.length > workBudget
       ? workFullText.substring(0, workBudget) + '\n…(作品超长已截断)'
       : workFullText);
+  }
+
+  // ── V23 长文: 对话原文独立注入（1 条上限，独立预算 50%，不参与 250 截断） ──
+  // 长文片段已在 long-text-retrieval 按意图构造（detail→分段全文 / summary→摘要）。
+  // 此处确保其不被普通记忆 250 字截断吞掉，独立进上下文。
+  if (longText) {
+    const longBudget = Math.floor(maxChars * 0.5);
+    parts.push(longText.length > longBudget
+      ? longText.substring(0, longBudget) + '\n…(对话原文超长已截断)'
+      : longText);
   }
 
   const result = parts.join('\n\n');

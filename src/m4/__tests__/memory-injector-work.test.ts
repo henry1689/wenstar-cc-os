@@ -59,4 +59,30 @@ describe('MemoryInjector — 作品独立注入 (V22)', () => {
     const memBody = (memIdx >= 0 && guideIdx > memIdx) ? result.substring(memIdx + 1, guideIdx) : result.substring(memIdx + 1);
     expect(memBody.length).toBeLessThan(260);
   });
+
+  it('V23 长文【对话原文】独立注入（不参与 250 截断）', () => {
+    const longFrag = '【对话原文】第一章 星陨\n' + '那天夜里天幕裂开金缝。'.repeat(120);  // >1000字
+    const result = injectMemories({ memoryFragments: [longFrag], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
+    expect(result).toContain('【对话原文】');
+    expect(result).toContain('天幕裂开金缝');
+    // 长文完整保留（远大于 250 字普通截断）
+    const idx = result.indexOf('【对话原文】');
+    expect(result.length - idx).toBeGreaterThan(500);
+  });
+
+  it('V23 长文超预算 → 截断到独立预算（50% maxChars）', () => {
+    const huge = '【对话原文】' + '超长正文'.repeat(1500);  // >8000
+    const result = injectMemories({ memoryFragments: [huge], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 4000 });
+    const idx = result.indexOf('【对话原文】');
+    const body = result.substring(idx);
+    expect(body.length).toBeLessThanOrEqual(2000 + 40);  // 50% * 4000 = 2000 + 截断标记
+  });
+
+  it('V23 长文与普通记忆共存 → 两者都注入', () => {
+    const longFrag = '【对话原文】' + '长文内容'.repeat(150);  // >1000
+    const normal = '普通记忆'.repeat(20);  // 100字
+    const result = injectMemories({ memoryFragments: [normal, longFrag], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
+    expect(result).toContain('【对话原文】');
+    expect(result).toContain('💭');
+  });
 });
