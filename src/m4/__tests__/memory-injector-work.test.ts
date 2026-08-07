@@ -70,12 +70,22 @@ describe('MemoryInjector — 作品独立注入 (V22)', () => {
     expect(result.length - idx).toBeGreaterThan(500);
   });
 
-  it('V23 长文超预算 → 截断到独立预算（50% maxChars）', () => {
+  it('V23 长文超预算 → 截断到长文预算（max(4000, 60%maxChars)）', () => {
     const huge = '【对话原文】' + '超长正文'.repeat(1500);  // >8000
     const result = injectMemories({ memoryFragments: [huge], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 4000 });
     const idx = result.indexOf('【对话原文】');
     const body = result.substring(idx);
-    expect(body.length).toBeLessThanOrEqual(2000 + 40);  // 50% * 4000 = 2000 + 截断标记
+    // longBudget = max(4000, 60%*4000=2400) = 4000 + 截断标记
+    expect(body.length).toBeLessThanOrEqual(4000 + 40);
+  });
+
+  it('V23 长文 detail（~4300字）→ 不丢结尾（预算足够覆盖全文）', () => {
+    const novel = '【对话原文】第二章 进入实验\n' + '完整记录内容详细描述'.repeat(300);  // 10字×300=3000
+    const result = injectMemories({ memoryFragments: [novel], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
+    // longBudget = max(4000, 60%*8000=4800) = 4800，3000字全文应完整保留
+    const idx = result.indexOf('【对话原文】');
+    const body = result.substring(idx);
+    expect(body.length).toBeGreaterThan(3000);  // 完整保留（未截断）
   });
 
   it('V23 长文与普通记忆共存 → 两者都注入', () => {

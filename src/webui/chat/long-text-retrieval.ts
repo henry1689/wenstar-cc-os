@@ -42,20 +42,29 @@ export function detectDetailLevel(message: string): DetailLevel {
 
 /**
  * 直取对话全文（绕过 is_compacted 归档过滤）。
+ * 🔴 S4-评审修复: 归属校验下沉到取数层 — SQL 带 belong_entity_uuid 白名单过滤，
+ * 与 UUIDPoliceFilter.passes 语义一致（deny-by-default），杜绝 id 碰撞误取他人对话。
  * @param sqlite SQLiteAdapter（有 queryAll）
  * @param id     conversations.id
- * @returns 全文 content（找不到返回 null）
+ * @param allowedUuids 允许的 belong_entity_uuid 白名单（空 = 不限定，户主最高权限）
+ * @returns 全文 content（找不到或越权返回 null）
  */
 export function fetchLongText(
   sqlite: any,
   id: string | number,
+  allowedUuids?: string[],
 ): string | null {
   try {
     if (!sqlite || typeof sqlite.queryAll !== 'function') return null;
-    const rows = sqlite.queryAll(
-      'SELECT content FROM conversations WHERE id = ? LIMIT 1',
-      [String(id)],
-    ) as any[];
+    let sql = 'SELECT content, belong_entity_uuid FROM conversations WHERE id = ?';
+    const params: any[] = [String(id)];
+    if (allowedUuids && allowedUuids.length > 0) {
+      const marks = allowedUuids.map(() => '?').join(',');
+      sql += ` AND belong_entity_uuid IN (${marks})`;
+      params.push(...allowedUuids);
+    }
+    sql += ' LIMIT 1';
+    const rows = sqlite.queryAll(sql, params) as any[];
     if (rows && rows.length > 0 && rows[0]?.content) {
       const text = String(rows[0].content);
       return text.length > LONG_TEXT_THRESHOLD ? text : null;  // 仅长文走直取

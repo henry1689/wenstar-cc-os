@@ -167,26 +167,25 @@ export function injectMemories(opts: InjectOptions): string {
     parts.push(kbText);
   }
 
-  // ── V22 作品: 独立注入完整作品（1 篇上限，S5-评审: 纳入总预算核算） ──
-  // 评审发现: workFullText 独立追加不占 maxChars → 最坏 4800+3200+4000=12000 > 8000 溢出。
-  // 修复: 作品预算 = min(4000, maxChars * 40%)，且总输出受 maxChars 硬约束。
-  if (workFullText) {
-    const WORK_MAX_CHARS = 4000;                      // 与 retrieval-stage 强指称截断一致
-    const workBudget = Math.min(WORK_MAX_CHARS, Math.floor(maxChars * 0.4));
-    parts.push(workFullText.length > workBudget
-      ? workFullText.substring(0, workBudget) + '\n…(作品超长已截断)'
-      : workFullText);
-  }
-
-  // ── V23 长文: 对话原文独立注入（1 条上限，独立预算 50%，不参与 250 截断） ──
-  // 长文片段已在 long-text-retrieval 按意图构造（detail→分段全文 / summary→摘要）。
-  // 此处确保其不被普通记忆 250 字截断吞掉，独立进上下文。
+  // ── V22/V23 作品+长文: 优先保留（放最前，硬截断时不被砍） ──
+  // 🔴 S5-评审修复(🟡-4): 原顺序 [记忆,KB,作品,长文]，硬截断从头保留 → 长文最后被整段丢弃。
+  // 修复: 长文/作品放最前 + 长文预算提高（detail 4305 字不丢结尾）。
+  // 注: 长文与作品同时命中时，长文优先（用户当前明确要看长文）。
+  const _priorityParts: string[] = [];
   if (longText) {
-    const longBudget = Math.floor(maxChars * 0.5);
-    parts.push(longText.length > longBudget
+    const longBudget = Math.max(4000, Math.floor(maxChars * 0.6));  // 覆盖 detail 全文（4305字）
+    _priorityParts.push(longText.length > longBudget
       ? longText.substring(0, longBudget) + '\n…(对话原文超长已截断)'
       : longText);
   }
+  if (workFullText && !longText) {  // 长文已占用预算时，作品降级为摘要不完整注入
+    const WORK_MAX_CHARS = 4000;
+    const workBudget = Math.min(WORK_MAX_CHARS, Math.floor(maxChars * 0.4));
+    _priorityParts.push(workFullText.length > workBudget
+      ? workFullText.substring(0, workBudget) + '\n…(作品超长已截断)'
+      : workFullText);
+  }
+  parts.unshift(..._priorityParts);
 
   const result = parts.join('\n\n');
   if (memParts.length > 0) {

@@ -85,4 +85,31 @@ describe('fetchLongText — 直取全文', () => {
     const fake = { queryAll: () => { throw new Error('db err'); } };
     expect(fetchLongText(fake, 123)).toBeNull();
   });
+
+  it('S4-修复: 带 belong 白名单 → SQL 含过滤 + 命中返回全文', () => {
+    const longContent = '长文'.repeat(500);  // >800
+    let calledSql = '';
+    let calledParams: any[] = [];
+    const fake = {
+      queryAll: (sql: string, params: any[]) => {
+        calledSql = sql; calledParams = params;
+        return [{ content: longContent, belong_entity_uuid: 'TXS-1' }];
+      },
+    };
+    expect(fetchLongText(fake, 123, ['TXS-1', 'TXS-2'])).toBe(longContent);
+    expect(calledSql).toContain('belong_entity_uuid IN');
+    expect(calledParams).toContain('TXS-1');
+  });
+
+  it('S4-修复: belong 白名单无匹配 → 返回 null（deny-by-default）', () => {
+    const fake = { queryAll: () => [] };  // SQL 带 IN 白名单，无匹配行
+    expect(fetchLongText(fake, 123, ['OTHER'])).toBeNull();
+  });
+
+  it('S4-修复: 无白名单（户主最高权限）→ 不带 belong 过滤', () => {
+    let calledSql = '';
+    const fake = { queryAll: (sql: string) => { calledSql = sql; return [{ content: '长文'.repeat(500), belong_entity_uuid: null }]; } };
+    expect(fetchLongText(fake, 123)).not.toBeNull();
+    expect(calledSql).not.toContain('belong_entity_uuid IN');
+  });
 });

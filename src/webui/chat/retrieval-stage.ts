@@ -188,17 +188,35 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         // 🔴 V23 会晤长文直取: 会晤场景也要支持长文完整返回（详细/概要意图）
         // 用户问"梓铭写的那篇纪实详细讲讲" → 直取会晤实体最长长对话全文注入。
         // 绕过 is_compacted 归档过滤，绕过会晤记忆 100 字截断。
+        // 🔴 S4-评审修复: 注入前对全文跑 EntityPrivacyFilter，剔除涉及其他实体的私密内容，
+        //   防止整篇多KB纪实把嵌有的他人私密情感外泄给当前会晤实体。
         try {
           const { detectDetailLevel: _mDetail, buildLongTextFragment: _mFrag } = await import('./long-text-retrieval.js');
           const _mLevel = _mDetail(message);
           if (_mLevel !== 'auto') {  // 明确概要/详细意图才直取
             const _longRows = _sqlite.queryAll(
-              "SELECT id, content FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 ORDER BY LENGTH(content) DESC LIMIT 2",
+              "SELECT id, content FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 ORDER BY LENGTH(content) DESC LIMIT 1",
               [_entityUuid]
             ) || [];
+            // 隐私过滤：其他实体名（排除当前会晤实体）
+            let _otherNames: string[] = [];
+            try {
+              const _fg2 = ctx.m4?.getFamilyGraph?.();
+              _otherNames = (_fg2?.getAllPersonNames?.() || []).filter((n: string) => n && n !== _meetingEntityName);
+            } catch { /* 实体名获取失败 → 跳过过滤（保守） */ }
             for (const _lr of _longRows) {
               const _lc = String(_lr.content || '');
               if (_lc.length <= 800) continue;
+              // 隐私过滤：全文含其他实体私密内容 → 跳过注入（防泄漏）
+              if (_otherNames.length > 0) {
+                try {
+                  const { isIntimateAboutOthers: _isIntimate } = await import('../../m4/household/EntityPrivacyFilter.js');
+                  if (_isIntimate(_lc, _meetingEntityName || '', _otherNames)) {
+                    console.log(`[LongText·会晤] 隐私过滤拦截 ${_meetingEntityName} 长文 id=${_lr.id}（含他人私密）`);
+                    continue;
+                  }
+                } catch { /* 过滤失败不阻塞，但保守跳过以保隐私 */ continue; }
+              }
               const _mf = _mFrag(_lc, _mLevel);
               if (!memoryFragments.some(function(f) { return f.includes(_lc.substring(0, 20)); })) {
                 memoryFragments.push(_mf);
@@ -510,23 +528,25 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         }
 
         // ── V23 长文直取：命中长文候选时绕过截断管线，直取全文注入 ──
-        // 用户与角色聊天产生的几百上千字长文，检索命中但被 200/800 截断，LLM 无法复述中部/结尾。
-        // 此处遍历 raw 候选，对 conversation/memory 长文按 id 直取全文，按消息意图构造注入片段。
+        // 🔴 S4-评审修复:
+        //   - 仅 V11（_dbResult）raw 的 conversation 候选可直取（id 是真实 conversations.id）。
+        //   - V13 raw 的 conversation/memory 是假映射（id 是 memories UUID/work_id），
+        //     直取会静默失效或 id 碰撞误取他人对话 → 一律跳过。
+        //   - fetchLongText 带 belong 白名单校验（会晤场景传活跃实体，户主空 = 最高权限）。
         try {
           const { detectDetailLevel: _detectLevel, fetchLongText: _fetchLong, buildLongTextFragment: _buildFrag } =
             await import('./long-text-retrieval.js');
           const _detailLevel = _detectLevel(message);
-          const _rawAll = (_v13Result?.raw || _dbResult?.raw || []) as any[];
+          // 仅用 V11 结果（真实 conversation id）；V13 raw 的 id 不可靠，禁用
+          const _rawAll = _dbResult?.raw || [] as any[];
           for (const _r of _rawAll.slice(0, 5)) {
             const _it = _r?.item;
             if (!_it) continue;
-            const _src = _it.source;
-            // 仅对话/记忆长文走直取（黑钻/知识库不含原始长对话）
-            if (_src !== 'conversation' && _src !== 'memory') continue;
-            const _full = _fetchLong(_sqlite, _it.id);
-            if (!_full) continue;  // 非长文或直取失败，回落截断路径
-            // 户籍校验：会晤场景仅当前实体的对话可直取
-            if (_activeEntityUuids.length > 0 && _it.entityUuid && !_activeEntityUuids.includes(_it.entityUuid)) continue;
+            // 仅真实 conversation 候选可直取（id 是 conversations.id）；memory/black_diamond/work 禁用
+            if (_it.source !== 'conversation') continue;
+            // 归属校验：fetchLongText 内部带 belong 白名单，此处再兜底
+            const _full = _fetchLong(_sqlite, _it.id, _activeEntityUuids.length > 0 ? _activeEntityUuids : undefined);
+            if (!_full) continue;  // 非长文/越权/直取失败，回落截断路径
             const _frag = _buildFrag(_full, _detailLevel);
             if (!memoryFragments.some((f: string) => f.includes(_it.id) || f.includes(_frag.substring(0, 30)))) {
               memoryFragments.push(_frag);
