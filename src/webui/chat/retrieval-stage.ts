@@ -487,6 +487,32 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           }
         }
 
+        // ── V23 长文直取：命中长文候选时绕过截断管线，直取全文注入 ──
+        // 用户与角色聊天产生的几百上千字长文，检索命中但被 200/800 截断，LLM 无法复述中部/结尾。
+        // 此处遍历 raw 候选，对 conversation/memory 长文按 id 直取全文，按消息意图构造注入片段。
+        try {
+          const { detectDetailLevel: _detectLevel, fetchLongText: _fetchLong, buildLongTextFragment: _buildFrag } =
+            await import('./long-text-retrieval.js');
+          const _detailLevel = _detectLevel(message);
+          const _rawAll = (_v13Result?.raw || _dbResult?.raw || []) as any[];
+          for (const _r of _rawAll.slice(0, 5)) {
+            const _it = _r?.item;
+            if (!_it) continue;
+            const _src = _it.source;
+            // 仅对话/记忆长文走直取（黑钻/知识库不含原始长对话）
+            if (_src !== 'conversation' && _src !== 'memory') continue;
+            const _full = _fetchLong(_sqlite, _it.id);
+            if (!_full) continue;  // 非长文或直取失败，回落截断路径
+            // 户籍校验：会晤场景仅当前实体的对话可直取
+            if (_activeEntityUuids.length > 0 && _it.entityUuid && !_activeEntityUuids.includes(_it.entityUuid)) continue;
+            const _frag = _buildFrag(_full, _detailLevel);
+            if (!memoryFragments.some((f: string) => f.includes(_it.id) || f.includes(_frag.substring(0, 30)))) {
+              memoryFragments.push(_frag);
+              console.log(`[LongText] 直取长文 id=${_it.id} (${_full.length}字, level=${_detailLevel})`);
+            }
+          }
+        } catch (_ltErr) { /* 长文直取失败不阻塞 */ }
+
         // 更新召回计数（V13/V11 共用）
         for (const _r of (_v13Result?.raw || _dbResult?.raw || []).slice(0, 3)) {
           try {
