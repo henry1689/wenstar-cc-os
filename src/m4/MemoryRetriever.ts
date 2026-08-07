@@ -181,8 +181,9 @@ export class MemoryRetriever {
     }
 
     // 🔥 3.5 双螺旋 state_spines 检索：从语义向量分片库直接读取候选
+    // 🔴 P2-A2 修复: state_spines 无实体维度，会晤场景（有 entityUuids）跳过（防全库向量泄漏）
     const bySpine: DNA[] = [];
-    if (options?.perception) {
+    if (options?.perception && (options.entityUuids?.length ?? 0) === 0) {
       try {
         const sqlite = (this.storage as any).getSQLite?.();
         if (sqlite && typeof sqlite.queryAll === 'function') {
@@ -529,8 +530,13 @@ export class MemoryRetriever {
     }
 
     // ─── 3. 双螺旋 state_spines 向量路 (spine) ───
+    // 🔴 P2-A2 修复: state_spines 表无 belong_entity_uuid 列，global_uid 与 memories 无法关联，
+    //   检索出的 spine 候选无法回溯到具体实体（天然"无归属"）。
+    //   会晤场景（有 entityUuids）下跳过 spine 路——否则会把全库情绪向量注入（违反 UUID 法 deny-by-default）。
+    //   户主场景（无 entityUuids）下保留（户主最高权限，spine 作为辅助信号）。
     const spineItems: RankedItem[] = [];
-    if (options?.perception) {
+    const _spineUuids = options?.entityUuids || [];
+    if (options?.perception && _spineUuids.length === 0) {
       try {
         const sqlite = (this.storage as any).getSQLite?.();
         if (sqlite && typeof sqlite.queryAll === 'function') {
