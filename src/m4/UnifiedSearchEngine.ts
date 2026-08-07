@@ -542,31 +542,41 @@ export async function searchV13(
   // ═══════════ L4 · DAG 闭包展开 ═══════════
   // 🔴 P2-A12 修复: 户主场景（entityUuids 空）跳过 DAG 闭包——原 belongEntityUuid=''
   //   导致 getEdges 查 `belong_entity_uuid = ''` 无结果，闭包恒空。
-  //   多实体会晤仍用第一个实体（getEdges 单实体接口，多实体展开为后续项）。
+  //   多实体会晤: 遍历每个实体各跑闭包，合并节点（不局限于第一个实体）。
   let closureResult: any = null;
   if (cfg.enableDAGClosure && dagRepo && candidates.length > 0 && entityUuids.length > 0) {
     try {
       const seedUids = candidates.slice(0, 15).map(c => c.id);
       const retriever = new MemoryClosureRetriever(dagRepo);
-      const rawClosure = retriever.retrieve({
-        namespace: 'default',
-        belongEntityUuid: entityUuids[0],
-        seedGlobalUids: seedUids,
-        maxDepth: cfg.closureMaxDepth,
-        maxNodes: cfg.closureMaxNodes,
-      });
       const pruner = new CausalSkeletonPruner();
-      closureResult = pruner.prune(rawClosure, {
-        maxNodes: cfg.skeletonMaxNodes,
-        maxEdges: cfg.skeletonMaxEdges,
-      });
-      // 将闭包节点追加到候选列表（不重复）
       const existingIds = new Set(candidates.map(c => c.id));
-      for (const node of closureResult.nodes) {
+      const mergedNodes: any[] = [];
+      // 多实体遍历：每个实体的 DAG 边独立展开，节点合并（避免跨实体边泄漏）
+      for (const eu of entityUuids.slice(0, 3)) {
+        try {
+          const rawClosure = retriever.retrieve({
+            namespace: 'default',
+            belongEntityUuid: eu,
+            seedGlobalUids: seedUids,
+            maxDepth: cfg.closureMaxDepth,
+            maxNodes: cfg.closureMaxNodes,
+          });
+          const pruned = pruner.prune(rawClosure, {
+            maxNodes: cfg.skeletonMaxNodes,
+            maxEdges: cfg.skeletonMaxEdges,
+          });
+          for (const node of pruned.nodes) {
+            mergedNodes.push({ ...node, entityUuid: eu });
+          }
+        } catch { /* 单实体闭包失败不阻塞 */ }
+      }
+      closureResult = { nodes: mergedNodes, edges: [], seedGlobalUids: seedUids };
+      // 将闭包节点追加到候选列表（不重复）
+      for (const node of mergedNodes) {
         if (!existingIds.has(node.globalUid)) {
           candidates.push({
             id: node.globalUid, text: '', source: 'entity',
-            score: 0.3, entityUuid: entityUuids[0] ?? null,
+            score: 0.3, entityUuid: node.entityUuid ?? null,
             calciumScore: 0, createdAt: '',
           });
         }
