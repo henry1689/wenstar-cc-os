@@ -905,7 +905,9 @@ export class SQLiteAdapter {
   findByEmotionalSimilarity(query: RetrievalQuery): ScoredMemory[] {
     this.ensureReady();
     // P5: Hot cache — same query within 2s returns cached result
-    const cacheKey = 'ems_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + JSON.stringify(query.current_perception);
+    // 🔴 P0-A1 修复: cacheKey 追加 entityUuids + excludeRoleplay —— 否则同参数不同实体的检索串缓存，
+    //   导致 A 实体结果泄漏给 B 实体（跨实体内容级泄漏，违反 UUID 法）
+    const cacheKey = 'ems_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + (query.entityUuids?.slice().sort().join(',') || '') + '_' + (query.excludeRoleplay ? 'rp' : 'all') + '_' + JSON.stringify(query.current_perception);
     const cached = this._cacheGet<ScoredMemory[]>(cacheKey);
     if (cached) return cached;
 

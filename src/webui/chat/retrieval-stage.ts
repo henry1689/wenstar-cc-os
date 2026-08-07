@@ -227,6 +227,21 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     };
   }
 
+  // 🔴 P0-A4: 时间导航前提前收集活跃实体 UUID（供时间检索做 UUID 过滤，防跨实体泄漏）
+  const _tmActiveUuids: string[] = [];
+  try {
+    if (ctx.m4?.getFamilyGraph) {
+      const _tmFg = ctx.m4.getFamilyGraph();
+      const _tmPersonNames = (dna.entity_genes || [])
+        .filter((g: any) => g.type === 'person' && g.name !== '我')
+        .map((g: any) => g.name);
+      for (const _tpn of _tmPersonNames.slice(0, 3)) {
+        const _tuuid = _tmFg.getUUIDByName?.(_tpn);
+        if (_tuuid) _tmActiveUuids.push(_tuuid);
+      }
+    }
+  } catch { /* UUID 收集失败 → 时间导航放行全部（户主场景合理） */ }
+
   // 时间导航：检测用户是否在问"昨天/上周说了什么"
   const _tmMatch = message.match(/(昨天|前天|上周|上个月|前几天|最近|刚才)/);
   if (_tmMatch && (message.indexOf('说') >= 0 || message.indexOf('聊') >= 0 || message.indexOf('提') >= 0)) {
@@ -241,7 +256,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       else if (_tmUnit === '上个月') { _tmStart.setMonth(_tmNow.getMonth() - 1); }
       else if (_tmUnit === '前几天') { _tmStart.setDate(_tmNow.getDate() - 3); }
       else if (_tmUnit === '刚才') { _tmStart.setHours(_tmNow.getHours() - 1); }
-      const _tmRows = ctx.conversationDB?.findByTimeRange(_tmStart.toISOString(), _tmEnd.toISOString(), 8);
+      const _tmRows = ctx.conversationDB?.findByTimeRange(_tmStart.toISOString(), _tmEnd.toISOString(), 8, _tmActiveUuids.length > 0 ? _tmActiveUuids : undefined);
       if (_tmRows && _tmRows.length > 0) {
         const _tmTexts = _tmRows.map(function(r: any) { return r.content; }).filter(Boolean).join(' | ').substring(0, 300);
         memoryFragments.push('【时间检索】' + _tmUnit + '的对话：' + _tmTexts);

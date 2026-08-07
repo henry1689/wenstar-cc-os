@@ -211,12 +211,23 @@ export class ConversationDB {
     return rows.reverse(); // 正序（最早→最新）
   }
 
-  findByTimeRange(start: string, end: string, limit = 10): ConversationRow[] {
+  findByTimeRange(start: string, end: string, limit = 10, entityUuids?: string[]): ConversationRow[] {
     this.ensureReady();
-    const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp, belong_entity_uuid FROM conversations WHERE timestamp >= ? AND timestamp <= ? AND (roleplay_char IS NULL OR roleplay_char = '') ORDER BY timestamp ASC LIMIT ?`,
-    );
-    stmt.bind([start, end, limit]);
+    // 🔴 P0-A4 修复: 时间导航（"昨天/上周说了什么"）原无 UUID 过滤，跨实体拉对话。
+    //   新增 entityUuids 白名单过滤（deny-by-default，无归属记录在会晤场景不放行）。
+    let sql = `SELECT id, role, content, timestamp, belong_entity_uuid FROM conversations WHERE timestamp >= ? AND timestamp <= ? AND (roleplay_char IS NULL OR roleplay_char = '')`;
+    const params: any[] = [start, end];
+    if (entityUuids && entityUuids.length > 0) {
+      const marks = entityUuids.map(() => '?').join(',');
+      sql += ` AND belong_entity_uuid IN (${marks})`;
+      params.push(...entityUuids);
+    } else {
+      // 户主场景（无活跃实体）→ 放行无归属 + 全部（户主最高权限），不额外过滤
+    }
+    sql += ` ORDER BY timestamp ASC LIMIT ?`;
+    params.push(limit);
+    const stmt = this.db.prepare(sql);
+    stmt.bind(params);
     const rows: ConversationRow[] = [];
     while (stmt.step()) rows.push(stmt.getAsObject() as any);
     stmt.free();
