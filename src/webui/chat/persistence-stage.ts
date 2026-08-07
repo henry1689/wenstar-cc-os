@@ -201,9 +201,12 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     // 🔴 V22 作品召回: 检测用户消息是否为作品（小说/文章），命中则写入 works 表。
     // 这是"长文召回"的元数据桥——让"那篇小说"这类指称词可被解析。
     try {
-      const workDet = detectWork(input.message, input.dna);
+      const workRepo = new WorkRepository(sqlite);
+      // S5-评审: 传 existingWorkId 让 isContinuation 正确（同 dialog_group 已有作品 = 续写）
+      const _dgId = (input.dna as any).dialog_group_id ?? null;
+      const _existingWork = _dgId ? workRepo.findByDialogGroup(_dgId) : null;
+      const workDet = detectWork(input.message, input.dna, _existingWork?.work_id ?? null);
       if (workDet.isWork && workDet.confidence !== 'low') {
-        const workRepo = new WorkRepository(sqlite);
         const work = await workRepo.upsertWork({
           title: workDet.title,
           workType: workDet.workType || 'story',
@@ -211,7 +214,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
           belongEntityUuid: belongUUID,
           dnaRootId: (input.dna as any).dna_root_id,
           sourceConversationIds: [idUser],
-          dialogGroupId: (input.dna as any).dialog_group_id ?? null,
+          dialogGroupId: _dgId,
           summary: workDet.summary,
           firstSentence: workDet.firstSentence,
         });
