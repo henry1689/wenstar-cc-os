@@ -517,7 +517,22 @@ export async function searchV13(
     candidates = candidates.filter(c => fusedIds.has(c.id));
     // 按 RRF 排序
     const rrfMap = new Map(fused.map(f => [f.id, f.rrfScore]));
-    candidates.sort((a, b) => (rrfMap.get(b.id) ?? 0) - (rrfMap.get(a.id) ?? 0));
+    // 🔴 P3-B2 修复: RRF 基础上叠加时间近因因子（时空系统进入检索）
+    // 近期（7天内）候选小幅加分，远期衰减——符合"人脑近因效应"，
+    // 且不破坏 RRF 相关性主排序（时间仅作次级信号，权重 10%）。
+    const _nowB2 = Date.now();
+    const _timeBonus = (c: RankedItem): number => {
+      if (!c.createdAt) return 0;
+      const ts = new Date(c.createdAt).getTime();
+      if (isNaN(ts)) return 0;
+      const daysAgo = (_nowB2 - ts) / 86400000;
+      if (daysAgo < 0) return 0.1;          // 未来/异常时间戳 → 微弱加分
+      if (daysAgo <= 7) return 0.10 * (1 - daysAgo / 7);  // 近7天线性衰减
+      return 0;
+    };
+    candidates.sort((a, b) =>
+      ((rrfMap.get(b.id) ?? 0) + _timeBonus(b)) - ((rrfMap.get(a.id) ?? 0) + _timeBonus(a))
+    );
     _mark('L3_RRF');
   } catch {
     degradations.push(DEGRADATION_RULES.RRF);
