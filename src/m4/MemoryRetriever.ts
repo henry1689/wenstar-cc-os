@@ -640,14 +640,18 @@ export class MemoryRetriever {
           ) as any[];
           if (workRows?.length) {
             // 按户籍过滤：会晤时仅实体自有作品；户主钥匙（空）全放行
+            // 🔴 S5-评审修复: 无归属(owner=null)在会晤场景必须 deny（与 policePasses 语义一致）
             const uuidSet = new Set(entityUuids);
             for (const row of workRows) {
               const owner = (row as any).belong_entity_uuid ?? null;
-              if (entityUuids.length > 0 && owner && !uuidSet.has(owner)) continue;
+              // 会晤（entityUuids 非空）→ 仅白名单内实体作品放行（无归属作品 deny，杜绝泄漏）
+              // 户主钥匙（entityUuids 空）→ 全放行（户主为最高权限）
+              if (entityUuids.length > 0 && (!owner || !uuidSet.has(owner))) continue;
               const title = String((row as any).title || '');
               const summary = String((row as any).summary || '').substring(0, 120);
+              // 🔴 S5-评审修复: 运算符优先级 bug — 每关键字对 title/summary 各自累加（显式括号），hits 非二值
               const hits = workKws.reduce((acc: number, kw: string) =>
-                acc + ((title.includes(kw) ? 1 : 0) + ((row as any).summary || '').includes(kw) ? 1 : 0), 0);
+                acc + (title.includes(kw) ? 1 : 0) + (((row as any).summary || '').includes(kw) ? 1 : 0), 0);
               workItems.push({
                 id: String((row as any).work_id),
                 text: `《${title}》 ${summary}`.substring(0, 200),
