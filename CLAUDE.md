@@ -364,7 +364,7 @@ L1 · 系统提示记忆边界
     EntityContextBuilder: "【过去的对话记忆】中的片段就是你对过去的全部记忆"
     
 L2 · 稀疏记忆哨兵
-    MeetingContextPipeline: 检索结果 ≤2 条 → 追加【⚠️ 记忆边界】强制规则
+    EntityContextBuilder + retrieval-stage: 检索结果 ≤2 条 → 追加【⚠️ 记忆边界】强制规则
     
 L3 · 保留结构标签
     MemoryInjector.preserveLabels=true → 会晤模式保留【我的档案】【过去的对话记忆】
@@ -383,7 +383,7 @@ L5 · 事后编造检测
 | [EntityContextBuilder.ts](src/m4/household/EntityContextBuilder.ts) | +2 条记忆边界铁律 |
 | [MemoryInjector.ts](src/m4/MemoryInjector.ts) | +preserveLabels 参数，会晤模式保留结构标签 |
 | [chat.ts](src/webui/chat.ts) | preserveLabels=true, userMessage 隔离, FabGuard 检测 |
-| [MeetingContextPipeline.ts](src/webui/chat/MeetingContextPipeline.ts) | 记忆 ≤2 条注入哨兵, 零记忆注入禁止规则 |
+| [EntityContextBuilder.ts](src/m4/household/EntityContextBuilder.ts) | 记忆 ≤2 条注入哨兵, 零记忆注入禁止规则 |
 
 ### 推而广之的方法论
 
@@ -407,10 +407,10 @@ L5 · 事后编造检测
 | 层 | 根因 | 修复 |
 |---|------|------|
 | 1 | **家族关系检测用正则匹配标签文字**——`/姐姐|妹妹/.test(relationLabel)` 漏掉 `younger_sister_of` | EntityContextBuilder: 改用 `SIBLING_RELS = new Set(['elder_sister_of','younger_sister_of',...])` 精确匹配 relation type |
-| 2 | **家人和社交混在一起**——acquaintance_of 和 sister_of 全堆在同一个`【家人/熟人】`区块 | MeetingContextPipeline: 分离`【我的家人】`和`【我认识的人】`，家族边用反向标签（"她是我的姐姐"而非"我是她的妹妹"） |
+| 2 | **家人和社交混在一起**——acquaintance_of 和 sister_of 全堆在同一个`【家人/熟人】`区块 | EntityContextBuilder: 分离`【我的家人】`和`【我认识的人】`，家族边用反向标签（"她是我的姐姐"而非"我是她的妹妹"） |
 | 3 | **`relation_to_user` 被 FG 启动迁移反复覆盖**——写入正确值后重启又恢复 | EntityContextBuilder: 内联 `KNOWN_FIXES` 硬编码已知正确值（不依赖数据库字段），在展示覆盖迁移 |
-| 4 | **记忆以碎片列表注入而非叙事格式**——LLM 看到的是 15 条 `鸿艺说:…|你说:…` | MeetingContextPipeline: 增加回忆规则——"用你自己的话组织叙述…像朋友说'哎对了那次我记得…'" |
-| 5 | **泛化问题（"我们以前聊过什么"）ngram 排序全部等分，等于随机** | MeetingContextPipeline: 泛化问题改用时间均匀采样（头-中-尾三段各取等量） |
+| 4 | **记忆以碎片列表注入而非叙事格式**——LLM 看到的是 15 条 `鸿艺说:…|你说:…` | EntityContextBuilder: 增加回忆规则——"用你自己的话组织叙述…像朋友说'哎对了那次我记得…'" |
+| 5 | **泛化问题（"我们以前聊过什么"）ngram 排序全部等分，等于随机** | retrieval-stage: 泛化问题改用时间均匀采样（头-中-尾三段各取等量） |
 
 ### 全系统适用原则
 
@@ -427,7 +427,8 @@ L5 · 事后编造检测
 | 文件 | 关键改动 |
 |------|---------|
 | [EntityContextBuilder.ts](src/m4/household/EntityContextBuilder.ts) | SIBLING_RELS/PARENT_RELS/EXT_FAMILY_RELS 替代正则；KNOWN_FIXES 硬修正；GARBAGE_NAMES 扩展 |
-| [MeetingContextPipeline.ts](src/webui/chat/MeetingContextPipeline.ts) | FAMILY_RELS 分离家人/社交；getRelationLabel(rel, false) 家族边用反向标签；二段精准检索（368候选→15条）；泛化问题时间均匀采样；叙事规则注入 |
+| [EntityContextBuilder.ts](src/m4/household/EntityContextBuilder.ts) | FAMILY_RELS 分离家人/社交；getRelationLabel(rel, false) 家族边用反向标签；泛化问题时间均匀采样；叙事规则注入 |
+| [retrieval-stage.ts](src/webui/chat/retrieval-stage.ts) | 会晤隔离墙按 belong_entity_uuid 精准检索（calcium 排序） |
 | [core-rules.ts](src/m5/prompts/core-rules.ts) | 规则8「第二大脑·知识消化」 |
 | [KnowledgeContextBuilder.ts](src/app/knowledge/KnowledgeContextBuilder.ts) | 知识消化文案改写 + SecondBrain桥接 + KB预算分级 |
 

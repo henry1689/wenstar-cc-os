@@ -60,15 +60,30 @@ parts.push('## 你的身份');
   const siblingEdges = edges.filter((e: any) => SIBLING_RELS.has(e.relation));
   const extFamilyEdges = edges.filter((e: any) => EXT_FAMILY_RELS.has(e.relation));
 
+  // 🔴 V10.14 家人年龄注入：用归一化读取器 getPersonBio 取家人的结构化事实（性别/N岁/职业）。
+  //    此前家人区块只输出"名字（关系标签）"，从不读家人 birthYear——LLM 只能靠对话记忆翻旧账编造年龄。
+  //    无数据时返回 ''，绝不编造年龄。
+  const personDetail = (name: string): string => {
+    const bio = familyGraph.getPersonBio?.(name);
+    if (!bio) return '';
+    const segs: string[] = [];
+    if (bio.gender) segs.push(bio.gender);
+    if (bio.age !== null && bio.age !== undefined) segs.push(`${bio.age}岁`);
+    if (bio.occupation) segs.push(bio.occupation);
+    return segs.join('，');
+  };
+  const decorate = (name: string): string => { const d = personDetail(name); return d ? `${name}（${d}）` : name; };
+
   const hasFamily = parentEdges.length > 0 || siblingEdges.length > 0 || extFamilyEdges.length > 0;
   if (hasFamily) {
     parts.push('### 你的家人');
     const fatherNames: string[] = [];
     const motherNames: string[] = [];
     for (const e of parentEdges) {
-      const p = familyGraph.getPersonProfile(e.entity);
-      if (p && (p as any)?.dossier?.basicInfo?.gender === '女') motherNames.push(e.entity);
-      else fatherNames.push(e.entity);
+      // 🔴 归一化 gender（dossier+顶层择优，过滤'未知'），避免顶层 female 的节点被判成父亲
+      const bio = familyGraph.getPersonBio?.(e.entity);
+      if (bio?.gender === '女') motherNames.push(decorate(e.entity));
+      else fatherNames.push(decorate(e.entity));
     }
     if (fatherNames.length) parts.push(`父亲：${fatherNames.join('、')}`);
     if (motherNames.length) parts.push(`母亲：${motherNames.join('、')}`);
@@ -76,7 +91,11 @@ parts.push('## 你的身份');
       // 🔴 去重：同一人可能有多条同级关系边（如 elder_sister_of + younger_sister_of 同时存在），按名字去重
       const seenSibs = new Set<string>();
       const uniqueSibs = siblingEdges.filter((e: any) => { if (seenSibs.has(e.entity)) return false; seenSibs.add(e.entity); return true; });
-      parts.push(`兄弟姐妹：${uniqueSibs.map((e: any) => `${e.entity}（${e.relationLabel}）`).join('、')}`);
+      // 🔴 注入 (性别,N岁,职业)：`熊梓玥（妹妹，女，8岁，学生）`；无 birthYear 则保持原样不编造
+      parts.push(`兄弟姐妹：${uniqueSibs.map((e: any) => {
+        const d = personDetail(e.entity);
+        return `${e.entity}（${e.relationLabel}${d ? '，' + d : ''}）`;
+      }).join('、')}`);
     }
     if (extFamilyEdges.length) {
       // 分组展示
@@ -84,7 +103,7 @@ parts.push('## 你的身份');
       for (const e of extFamilyEdges) {
         const lbl = e.relationLabel || e.relation;
         if (!grouped[lbl]) grouped[lbl] = [];
-        grouped[lbl].push(e.entity);
+        grouped[lbl].push(decorate(e.entity));
       }
       for (const [lbl, names] of Object.entries(grouped)) {
         parts.push(`${lbl}：${names.join('、')}`);
@@ -310,10 +329,13 @@ export function buildMultiEntityContext(familyGraph: FamilyGraph, options: { ent
     const bi = (profile as any).dossier?.basicInfo || {};
     const si = (profile as any).dossier?.socialIdentity || {};
     const sp = (profile as any).dossier?.selfProfile || {};
+    // 🔴 多人会晤同用归一化读取器注入年龄（dossier 优先），避免只输出"2018年生"
+    const bio = familyGraph.getPersonBio?.(name);
     parts.push(`**${name}**`);
     const b: string[] = [];
     if (bi.gender) b.push(bi.gender);
     if (bi.birthYear) b.push(`${bi.birthYear}年生`);
+    if (bio?.age !== null && bio?.age !== undefined) b.push(`${bio.age}岁`);
     if (si.currentOccupation) b.push(si.currentOccupation);
     if (b.length) parts.push(b.join(' | '));
     if (sp.traits?.length) parts.push(`性格: ${sp.traits.slice(0,4).join('、')}`);

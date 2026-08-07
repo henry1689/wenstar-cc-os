@@ -1,6 +1,6 @@
 // ============================================================
 // Agent CNC Harness — 会晤模式隔离 Meter
-// 检查 _meetingEntityName 12 个传播点
+// 检查 _meetingEntityName 11 个传播点
 // ============================================================
 
 import * as path from 'node:path';
@@ -21,13 +21,6 @@ export async function runMeetingModeMeter(
     'household',
     'EntityMeeting.ts',
   );
-  const pipelineTsPath = path.join(
-    context.rootDir,
-    'src',
-    'webui',
-    'chat',
-    'MeetingContextPipeline.ts',
-  );
 
   let totalOccurrences = 0;
 
@@ -45,49 +38,36 @@ export async function runMeetingModeMeter(
     result.evidence.push(`EntityMeeting.ts: _meetingEntityName 出现 ${count} 次`);
   }
 
-  // 在 MeetingContextPipeline.ts 中
-  if (fileExists(pipelineTsPath)) {
-    const count = countOccurrences(pipelineTsPath, '_meetingEntityName');
-    totalOccurrences += count;
-    result.evidence.push(`MeetingContextPipeline.ts: _meetingEntityName 出现 ${count} 次`);
-  }
-
   // 检查 isEntityMeeting 关键词
   if (fileExists(chatTsPath)) {
     const isMeetingCount = countOccurrences(chatTsPath, 'isEntityMeeting');
     result.evidence.push(`isEntityMeeting 出现 ${isMeetingCount} 次`);
   }
 
-  // 检查 MeetingContextPipeline
-  if (fileExists(chatTsPath)) {
-    const pipelineCount = countOccurrences(chatTsPath, 'MeetingContextPipeline');
-    result.evidence.push(`MeetingContextPipeline 引用 ${pipelineCount} 次`);
-  }
-
-  // 判断：chat.ts 修改 + _meetingEntityName 出现次数低于 12 → FAIL/WARN
+  // 判断：chat.ts 修改 + _meetingEntityName 出现次数低于 11 → FAIL/WARN
   const chatChanged = context.changedFiles.some(
-    (f) => f === 'src/webui/chat.ts' || f.includes('EntityMeeting') || f.includes('MeetingContextPipeline'),
+    (f) => f === 'src/webui/chat.ts' || f.includes('EntityMeeting'),
   );
 
-  if (totalOccurrences < 12) {
+  if (totalOccurrences < 11) {
     result.failures.push(
-      `_meetingEntityName 总出现次数 ${totalOccurrences} < 12，可能丢失传播点`,
+      `_meetingEntityName 总出现次数 ${totalOccurrences} < 11，可能丢失传播点`,
     );
     result.status = 'fail';
-    result.score = Math.round((totalOccurrences / 12) * 100);
+    result.score = Math.round((totalOccurrences / 11) * 100);
   } else {
     result.evidence.push(
-      `_meetingEntityName 总出现次数 ${totalOccurrences} >= 12，传播点完整`,
+      `_meetingEntityName 总出现次数 ${totalOccurrences} >= 11，传播点完整`,
     );
     result.score = 100;
   }
 
   if (chatChanged) {
     result.warnings.push(
-      '⚠️ 会晤模式相关文件已修改，必须人工复核 12 个 _meetingEntityName 传播点',
+      '⚠️ 会晤模式相关文件已修改，必须人工复核 11 个 _meetingEntityName 传播点',
     );
     result.evidence.push(
-      '12 传播点定义见: .agent-cnc/redlines/meeting-propagation-chain.yaml',
+      '11 传播点定义见: .agent-cnc/redlines/meeting-propagation-chain.yaml',
     );
   }
 

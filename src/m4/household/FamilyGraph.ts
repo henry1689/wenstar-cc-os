@@ -3048,6 +3048,58 @@ export class FamilyGraph implements FamilyGraphInterface {
   // ═══════════════════════════════════════════════════
 
   /**
+   * 🏛️ §十三.1: 归一化生物信息读取器（dossier 优先 + 顶层兜底 + 无效值过滤）
+   * =============================================================
+   * 背景: 顶层 properties 与 dossier.basicInfo 两副本经不同写路径（updatePersonProfile
+   *       写顶层 / PAE·setDossierField 写 dossier）写入，可发生漂移（如熊梓玥：
+   *       顶层 gender='female' 但 dossier.basicInfo.gender='未知'）。
+   * 本方法统一读取，dossier 优先、顶层兜底，过滤 0/NaN/'未知'/越界等无效值，
+   * 让所有 LLM 注入点拿到一致的结构化事实，杜绝"靠对话记忆翻旧账编造年龄"。
+   *
+   * @param props - node.properties 的已解析对象
+   */
+  private _normalizeBio(props: any): { birthYear: number | null; age: number | null; gender: '男' | '女' | null; occupation: string | null } {
+    const curYear = new Date().getFullYear();
+    const okYear = (v: any): number | null => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = typeof v === 'string' ? parseInt(v, 10) : v;
+      return (typeof n === 'number' && Number.isInteger(n) && n >= 1900 && n <= curYear) ? n : null;
+    };
+    const dossier = props?.dossier || {};
+    // ① birthYear: dossier 优先 → 顶层兜底 → 无效值过滤
+    const birthYear = okYear(dossier?.basicInfo?.birthYear) ?? okYear(props?.birthYear);
+    // ② age: 有 birthYear 实时计算；无则降级到有效顶层 age（纯读，不写回）
+    let age: number | null = null;
+    if (birthYear !== null) {
+      age = curYear - birthYear;
+    } else {
+      const a = typeof props?.age === 'string' ? parseInt(props.age, 10) : props?.age;
+      if (typeof a === 'number' && Number.isInteger(a) && a >= 0 && a < 150) age = a;
+    }
+    // ③ gender: dossier 优先 → 顶层兜底 → male/female/男/女 归一化，'未知'等 → null
+    const normGender = (g: any): '男' | '女' | null =>
+      g === 'male' || g === '男' ? '男' : g === 'female' || g === '女' ? '女' : null;
+    const gender = normGender(dossier?.basicInfo?.gender) ?? normGender(props?.gender);
+    // ④ occupation: dossier.socialIdentity.currentOccupation 优先 → 顶层兜底
+    const occ = (dossier?.socialIdentity?.currentOccupation && String(dossier.socialIdentity.currentOccupation).trim())
+      || (props?.occupation && String(props.occupation).trim()) || null;
+    return { birthYear, age, gender, occupation: occ };
+  }
+
+  /**
+   * 🏛️ §十三.2: 归一化生物信息读取器（公开入口）
+   * 任何人名 → 结构化的 {birthYear, age, gender, occupation}。
+   * 供 EntityContextBuilder / KnowledgeTextAssembler / M4Orchestrator 等 LLM 注入点复用。
+   */
+  getPersonBio(personName: string): { name: string; birthYear: number | null; age: number | null; gender: '男' | '女' | null; occupation: string | null } | null {
+    const node = this.findPersonNodeByNameOrAlias(personName);
+    if (!node) return null;
+    let props: any = {};
+    try { props = node.properties ? JSON.parse(node.properties) : {}; } catch { /* 解析失败按空档案处理 */ }
+    return { name: node.name, ...this._normalizeBio(props) };
+  }
+
+  /**
    * 🏛️ §十三: 根据出生年份计算当前年龄
    * 年龄永远不硬编码——从 birthYear 实时计算。
    * 首次调用时如果只有硬编码 age，自动回填 birthYear。
@@ -3057,7 +3109,7 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (!node) return { age: null, birthYear: null, isCalculated: false, asOf: new Date().toISOString() };
     const props = JSON.parse(node.properties || '{}');
     const asOf = new Date().toISOString();
-    const birthYear = props.birthYear || props.dossier?.basicInfo?.birthYear || null;
+    const birthYear = this._normalizeBio(props).birthYear ?? props.birthYear ?? props.dossier?.basicInfo?.birthYear ?? null;
 
     if (birthYear) {
       const by = parseInt(String(birthYear), 10);
@@ -4456,11 +4508,17 @@ export class FamilyGraph implements FamilyGraphInterface {
     const r = rows[0];
     let props: any = {};
     try { props = JSON.parse(r.properties || '{}'); } catch {}
+    // 🔴 修复: 原 `props.age || props.birthYear` 把出生年当年龄（如 birthYear=2018 → age=2018），
+    // 导致 _resolveTerm 长幼判断反相（2018 年出生的妹妹被误判为比 2008 年出生的姐姐大）。
+    // 用归一化读取器实时计算年龄；无数据 → age:null → 走"按边类型推断"原有回退。
+    // 注意: gender 保持原始英文值（male/female），因 _resolveTerm 用 `fromGender === 'male'|'female'`
+    // 判断——不能用 _normalizeBio 归一化后的中文（'男'/'女'），否则称谓决议全部失效。
+    const bio = this._normalizeBio(props);
     return {
       id: nodeId,
       name: r.name,
       gender: props.gender || null,
-      age: props.age || props.birthYear || null,
+      age: bio.age,
       surname: (r.name || '?')[0],
     };
   }

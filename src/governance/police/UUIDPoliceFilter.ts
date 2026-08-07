@@ -4,8 +4,8 @@
  * 依据：《UUID户籍管理法 WS-HUKOU-LAW-V1.0》+ 太虚境户籍管理法 V2.1
  *
  * 职责：
- *   - SQL 子句唯一来源（收编全部 7 处复制 SQL：SQLiteAdapter._entityUuidClause、
- *     UnifiedSearchEngine×4、KnowledgeEngine、retrieval-stage、MeetingContextPipeline）
+ *   - SQL 子句唯一来源（收编全部 6 处复制 SQL：SQLiteAdapter._entityUuidClause、
+ *     UnifiedSearchEngine×4、KnowledgeEngine、retrieval-stage）
  *   - 行级 deny-by-default（不在白名单 = 拒绝）
  *   - 文本级过滤（memoryFragments/recentConversations）
  *   - 最终闸门筛子（LLM 边界 + HTTP 响应）

@@ -80,7 +80,7 @@ export function getRelationLabel(relation: string, isOutgoing: boolean): string 
  * V10.4: 获取修正后的 relation_to_user
  * ======================================
  * FG 启动迁移脚本有 bug——反复覆盖 nodes.properties.relation_to_user。
- * 此函数是全局唯一定义点：EntityContextBuilder / MeetingContextPipeline /
+ * 此函数是全局唯一定义点：EntityContextBuilder /
  * EntityGreetingProtocol / M4Orchestrator 均从此处读取。
  *
  * 新增/修正实体时，只改此处的 FIXES 映射即可，全局生效。

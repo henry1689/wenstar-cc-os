@@ -113,6 +113,7 @@ describe('[M4守卫] FamilyGraph 方法签名', () => {
   it('correctRelation(source, target, correctRelation)', () => { expect(typeof proto.correctRelation).toBe('function'); });
   it('addFamilyMember(name, relation, aliases?)', () => { expect(typeof proto.addFamilyMember).toBe('function'); });
   it('getFamilySummary()', () => { expect(typeof proto.getFamilySummary).toBe('function'); });
+  it('getPersonBio(name) — 归一化读取器（dossier 优先+顶层兜底）', () => { expect(typeof proto.getPersonBio).toBe('function'); });
   // 验证已删除的方法不存在
   it('generateId() 已被删除（统一使用 uid()）', () => {
     expect((proto as any).generateId).toBeUndefined();

@@ -1109,6 +1109,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           if (p.description) profileText += '\n      其他信息：' + String(p.description).substring(0, 200);
           if (p.traits?.length) profileText += '\n      性格：' + p.traits.join('、');
           if (p.occupation) profileText += '\n      职业：' + p.occupation;
+          if (p.birthYear) profileText += '\n      出生年：' + p.birthYear;
+          if (typeof p.age === 'number' && p.age >= 0) profileText += '\n      年龄：' + p.age + '岁';
           return profileText;
         }).join('\n')
         familyConstraint = '【📋 人物档案 — 以鸿艺告诉你的为准】\n' + knownList + '\n\n⚠️ 规则：\n1. 上面写了的信息（外貌、身体、性格等）是鸿艺告诉你的，你可以用来回答。\n2. 没写的信息你不知道——直接说不知道/没说过。\n3. 🔴 绝对禁止编造任何你记忆中不存在的内容。';

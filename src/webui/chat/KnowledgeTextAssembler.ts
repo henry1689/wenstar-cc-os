@@ -160,9 +160,12 @@ export class KnowledgeTextAssembler {
         if (!prof) continue;
         const lines: string[] = [];
         if (prof.relation_to_user) lines.push(`关系: ${prof.relation_to_user}`);
-        if ((prof as any).basicInfo?.birthYear) {
-          lines.push(`${new Date().getFullYear() - (prof as any).basicInfo.birthYear}岁`);
-        }
+        // 🔴 修复: 原 `(prof as any).basicInfo?.birthYear` 读顶层 basicInfo，但 getPersonProfile
+        //    返回的是 node.properties 展开，birthYear 实际在 dossier.basicInfo —— 该年龄注入对所有
+        //    用 dossier 的节点永不生效。改用归一化读取器 getPersonBio（dossier 优先+顶层兜底）。
+        const bio = fg.getPersonBio?.(name);
+        if (bio?.birthYear != null) lines.push(`${bio.birthYear}年生`);
+        if (bio?.age != null) lines.push(`${bio.age}岁`);
         // 🆕 V10.9: 同步感知 edges warmth（与会晤模式 EntityContextBuilder 一致）
         try {
           const _uuid = fg.getUUIDByName?.(name);

@@ -297,16 +297,23 @@ export class M4Orchestrator {
 
     const enrichProfile = (name: string) => {
       const profile = profiles[name];
-      return profile ? {
+      if (!profile) return {};
+      // 🔴 补 birthYear/age：此前 enrichProfile 拿到完整 profile 却不含出生年，
+      //     导致普通模式 familyConstraint / cognition.family 全链路无年龄。
+      //     用归一化读取器 getPersonBio（dossier 优先+顶层兜底），occupation 也从 bio 取。
+      const bio = activeFG.getPersonBio?.(name);
+      return {
         appearance: profile.appearance,
         body_features: profile.body_features,
         traits: profile.traits,
-        occupation: profile.occupation,
+        occupation: bio?.occupation ?? profile.occupation,
         description: profile.description,
         style: profile.style,
         personality: profile.personality,
         interests: profile.interests,
-      } : {};
+        birthYear: bio?.birthYear ?? null,
+        age: bio?.age ?? null,
+      };
     };
 
     let familyContext = familySummary.members.map((m: any) => ({

@@ -26,7 +26,6 @@ export async function runUuidOwnershipMeter(
     'src/m2/SQLiteAdapter.ts',
     'src/app/knowledge/KnowledgeEngine.ts',
     'src/m4/household/UUIDGatekeeper.ts',
-    'src/webui/chat/MeetingContextPipeline.ts',
   ];
 
   const uuidKeywords = [
@@ -74,8 +73,7 @@ export async function runUuidOwnershipMeter(
       f.includes('persistence-stage') ||
       f.includes('SQLiteAdapter') ||
       f.includes('UUIDGatekeeper') ||
-      f.includes('KnowledgeEngine') ||
-      f.includes('MeetingContextPipeline'),
+      f.includes('KnowledgeEngine'),
   );
 
   const hasResolveBelongUUID = totalFound > 0; // 已经在上面累计

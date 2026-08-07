@@ -9,7 +9,6 @@ meter:
     - "src/m2/SQLiteAdapter.ts"
     - "src/app/knowledge/KnowledgeEngine.ts"
     - "src/m4/household/UUIDGatekeeper.ts"
-    - "src/webui/chat/MeetingContextPipeline.ts"
   check_keywords:
     - "belong_entity_uuid"
     - "UUIDGatekeeper"

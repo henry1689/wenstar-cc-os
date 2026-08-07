@@ -39,7 +39,6 @@ agent_cnc_harness:
         - "src/m2/SQLiteAdapter.ts"
         - "scripts/safe-backfill.cjs"
         - "src/app/knowledge/KnowledgeEngine.ts"
-        - "src/webui/chat/MeetingContextPipeline.ts"
         - "src/m4/household/UUIDGatekeeper.ts"
       workflow: "workflows/uuid-chain-change.yaml"
       meters:
@@ -50,7 +49,6 @@ agent_cnc_harness:
       when_any_changed:
         - "src/m4/household/EntityMeeting.ts"
         - "src/m4/household/EntityContextBuilder.ts"
-        - "src/webui/chat/MeetingContextPipeline.ts"
         - "src/webui/chat.ts"
       workflow: "workflows/meeting-mode-change.yaml"
       meters:

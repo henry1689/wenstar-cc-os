@@ -149,3 +149,83 @@ describe('FamilyGraph — 自动推断', () => {
     expect(profile?.mention_count).toBe(1);
   });
 });
+
+describe('FamilyGraph — 归一化读取器 getPersonBio', () => {
+  let graph: FamilyGraph;
+
+  beforeEach(async () => {
+    graph = new FamilyGraph(TEST_DB);
+    await graph.initialize();
+  });
+
+  afterEach(() => {
+    try { if (existsSync(TEST_DB)) unlinkSync(TEST_DB); } catch {}
+  });
+
+  it('dossier 优先于顶层（模拟熊梓玥: 顶层 female / dossier 未知 → 女）', async () => {
+    await graph.addNode({ id: 'zy', type: 'person', name: '熊梓玥' } as any);
+    // 顶层写 gender=female、birthYear=2018（updatePersonProfile 路径写顶层）
+    await graph.updatePersonProfile('熊梓玥', { birthYear: 2018, gender: 'female' } as any);
+    // dossier 写 gender='未知'（PAE/setDossierField 路径写 dossier）
+    await graph.setDossierField('熊梓玥', 'basicInfo.gender', '未知');
+    await graph.setDossierField('熊梓玥', 'socialIdentity.currentOccupation', '学生');
+
+    const bio = graph.getPersonBio('熊梓玥');
+    expect(bio?.birthYear).toBe(2018);
+    expect(bio?.age).toBe(new Date().getFullYear() - 2018);
+    expect(bio?.gender).toBe('女');          // 归一化: '未知' 过滤 → 顶层 female 兜底 → 女
+    expect(bio?.occupation).toBe('学生');     // dossier.socialIdentity 优先
+  });
+
+  it('顶层 birthYear 兜底 + 无效值过滤（0 / 越界 / 空串 → null）', async () => {
+    await graph.addNode({ id: 'zm', type: 'person', name: '熊梓铭' } as any);
+    // dossier 无 birthYear，顶层有 → 顶层兜底
+    await graph.updatePersonProfile('熊梓铭', { birthYear: 2008 } as any);
+    expect(graph.getPersonBio('熊梓铭')?.birthYear).toBe(2008);
+
+    // 无效值 → null
+    await graph.addNode({ id: 'bad1', type: 'person', name: '无数据' } as any);
+    await graph.updatePersonProfile('无数据', { birthYear: 0 } as any);
+    expect(graph.getPersonBio('无数据')?.birthYear).toBeNull();
+    expect(graph.getPersonBio('无数据')?.age).toBeNull();
+  });
+
+  it('无 birthYear 时降级用有效顶层 age（纯读不写回）', async () => {
+    await graph.addNode({ id: 'a1', type: 'person', name: '只有年龄' } as any);
+    await graph.updatePersonProfile('只有年龄', { age: 8 } as any);
+    const bio = graph.getPersonBio('只有年龄');
+    expect(bio?.age).toBe(8);
+    expect(bio?.birthYear).toBeNull();
+  });
+
+  it('不存在的名字 → null', () => {
+    expect(graph.getPersonBio('不存在的人')).toBeNull();
+  });
+});
+
+describe('FamilyGraph — 亲属称谓长幼判断（修复 birthYear 当 age）', () => {
+  let graph: FamilyGraph;
+
+  beforeEach(async () => {
+    graph = new FamilyGraph(TEST_DB);
+    await graph.initialize();
+  });
+
+  afterEach(() => {
+    try { if (existsSync(TEST_DB)) unlinkSync(TEST_DB); } catch {}
+  });
+
+  it('熊梓铭(2008) vs 熊梓玥(2018): 梓玥称梓铭"姐姐"', async () => {
+    await graph.addNode({ id: 'zm', type: 'person', name: '熊梓铭' } as any);
+    await graph.addNode({ id: 'zy', type: 'person', name: '熊梓玥' } as any);
+    await graph.updatePersonProfile('熊梓铭', { birthYear: 2008, gender: 'female' } as any);
+    await graph.updatePersonProfile('熊梓玥', { birthYear: 2018, gender: 'female' } as any);
+    await graph.addEdge({ source_id: 'zm', target_id: 'zy', relation: 'elder_sister_of' } as any);
+
+    // 修复前: age = birthYear (2018) → 梓玥被误判比梓铭大 → term='姐姐'（错误）
+    // 修复后: age = 实时年龄 (18 vs 8) → isElder=false → term='妹妹'，reverse='姐姐'
+    const term = graph.getKinshipTerm('熊梓玥', '熊梓铭');
+    expect(term?.term).toBe('妹妹');
+    expect(term?.reverse).toBe('姐姐');
+  });
+});

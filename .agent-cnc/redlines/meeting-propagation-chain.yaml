@@ -1,7 +1,7 @@
 redlines:
   id: "meeting-propagation-chain"
   severity: "S"
-  description: "_meetingEntityName 在系统内 12 个传播点"
+  description: "_meetingEntityName 在系统内 11 个传播点"
   propagation_points:
     - order: 1
       location: "chat.ts finalKnowledgeText 组装"
@@ -13,29 +13,26 @@ redlines:
       location: "EntityMeeting.ts createMeeting"
       description: "创建会晤时设置 _meetingEntityName"
     - order: 4
-      location: "EntityContextBuilder.ts buildMeetingContext"
+      location: "EntityContextBuilder.ts buildEntityContext"
       description: "构建会晤上下文时读取 _meetingEntityName"
     - order: 5
-      location: "MeetingContextPipeline.ts pipe stage"
-      description: "会晤管线中传播实体名到各阶段"
-    - order: 6
       location: "chat.ts SSE 事件流"
       description: "SSE 事件中携带会晤身份"
-    - order: 7
+    - order: 6
       location: "persistence-stage.ts saveMeeting"
       description: "持久化时写入会晤实体名"
-    - order: 8
+    - order: 7
       location: "MemoryRetriever.ts filterByMeeting"
       description: "记忆检索时会晤模式过滤"
-    - order: 9
+    - order: 8
       location: "UUIDGatekeeper.ts assignMeetingUUID"
       description: "UUID 分配时关联会晤实体"
-    - order: 10
+    - order: 9
       location: "KnowledgeContextBuilder.ts meetingFilter"
       description: "知识构建时会晤上下文过滤"
-    - order: 11
+    - order: 10
       location: "M5 提示词组装"
       description: "M5 组装时注入会晤身份约束"
-    - order: 12
+    - order: 11
       location: "SQLiteAdapter.ts saveMeetingRecord"
       description: "SQLite 写入会晤记录及关联 UUID"
