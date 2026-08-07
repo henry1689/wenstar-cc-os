@@ -157,17 +157,27 @@ export function injectMemories(opts: InjectOptions): string {
     parts.push(kbText);
   }
 
-  // ── V22 作品: 独立注入完整作品（1 篇上限，硬预算 6000 字符，不参与记忆截断） ──
+  // ── V22 作品: 独立注入完整作品（1 篇上限，S5-评审: 纳入总预算核算） ──
+  // 评审发现: workFullText 独立追加不占 maxChars → 最坏 4800+3200+4000=12000 > 8000 溢出。
+  // 修复: 作品预算 = min(4000, maxChars * 40%)，且总输出受 maxChars 硬约束。
   if (workFullText) {
-    const WORK_BUDGET = 6000;
-    parts.push(workFullText.length > WORK_BUDGET
-      ? workFullText.substring(0, WORK_BUDGET) + '\n…(作品超长已截断)'
+    const WORK_MAX_CHARS = 4000;                      // 与 retrieval-stage 强指称截断一致
+    const workBudget = Math.min(WORK_MAX_CHARS, Math.floor(maxChars * 0.4));
+    parts.push(workFullText.length > workBudget
+      ? workFullText.substring(0, workBudget) + '\n…(作品超长已截断)'
       : workFullText);
   }
 
   const result = parts.join('\n\n');
   if (memParts.length > 0) {
     console.log(`[MemoryInjector] ${deduped.length} items → ${memParts.length} injected (${memChars} chars), KB ${kbText.length} chars`);
+  }
+
+  // S5-评审: 总输出硬约束 — 记忆+知识库+作品合计不超过 maxChars（优先保记忆，其次作品）
+  if (result.length > maxChars) {
+    const truncated = result.substring(0, maxChars);
+    console.log(`[MemoryInjector] 总输出超预算 ${result.length}→${maxChars} 截断`);
+    return truncated + '\n…(上下文超预算已截断)';
   }
 
   return result;

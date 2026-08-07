@@ -31,12 +31,20 @@ describe('MemoryInjector — 作品独立注入 (V22)', () => {
     expect(count).toBe(1);
   });
 
-  it('超过 6000 字符作品 → 截断到硬上限', () => {
-    const huge = '【作品】《长》\n' + '超长正文内容'.repeat(1000);  // >6000字
+  it('超过 4000 字符作品 → 截断到作品预算（S5: min(4000, 8000*0.4)=3200 @maxChars=8000）', () => {
+    const huge = '【作品】《长》\n' + '超长正文内容'.repeat(1000);  // >4000字
     const result = injectMemories({ memoryFragments: [huge], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
     const workIdx = result.indexOf('【作品】');
     const workBlock = result.substring(workIdx);
-    expect(workBlock.length).toBeLessThanOrEqual(6000 + 20);  // 硬上限 + 截断标记
+    expect(workBlock.length).toBeLessThanOrEqual(3200 + 20);  // workBudget = min(4000, 3200) = 3200
+  });
+
+  it('总输出硬约束：记忆+KB+作品合计超 maxChars → 截断（S5）', () => {
+    const novel = '【作品】《长》\n' + '正文'.repeat(500);  // 1000字作品
+    const kb = 'K'.repeat(3000);  // 知识库 3000
+    const mem = '普通记忆'.repeat(100);  // 400字记忆
+    const result = injectMemories({ memoryFragments: [mem, novel], m4Timeline: [], knowledgeBaseText: kb, vaultHits: [], maxChars: 1500 });
+    expect(result.length).toBeLessThanOrEqual(1500 + 40);  // maxChars + 截断标记
   });
 
   it('普通记忆片段不受影响（仍 250 截断）', () => {
