@@ -12,6 +12,7 @@ import { rerank } from '../../m4/Reranker.js';
 import { decompose, mergeDecomposedResults } from '../../m4/QueryDecomposer.js';
 import { resolveReferent } from '../../app/works/ReferentResolver.js';
 import { WorkRepository } from '../../app/works/WorkRepository.js';
+import { passes as policePasses } from '../../governance/police/UUIDPoliceFilter.js';
 
 export interface RetrievalInput {
   ctx: any;
@@ -70,11 +71,23 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         const _ref = resolveReferent(message, _workRepo, _scopeUuids);
         if (_ref.matched && _ref.work) {
           const _wk = _ref.work;
-          const _fullText = (_wk.full_text || '').substring(0, 4000);
-          const _tag = '【作品】《' + _wk.title + '》(' + _wk.work_type + ')\n' + _fullText;
-          if (_fullText.length > 4 && !memoryFragments.some((f: string) => f.includes(_wk.title))) {
-            memoryFragments.push(_tag);
-            console.log(`[WorkReferent] 指称解析命中《${_wk.title}》 scope=${_ref.scope} 注入${_fullText.length}字`);
+          // 🔴 P2-E 户籍鉴权: 作品归属 UUID 按户主钥匙/会晤场景严格校验（deny-by-default）
+          //  - 会晤场景: allowUnowned=false，作品必须属于当前会晤实体
+          //  - 户主场景: allowUnowned=true，无归属作品（belong NULL）放行，白名单实体作品放行
+          const _isMeeting = !!_meetingEntityName;
+          const _allowed = policePasses((_wk as any).belong_entity_uuid ?? null, {
+            visibleUuids: new Set(_scopeUuids),
+            allowUnowned: !_isMeeting,   // 仅户主钥匙场景放行无归属作品
+          });
+          if (!_allowed) {
+            console.log(`[WorkReferent] 越权拦截《${_wk.title}》 scope=${_ref.scope}（${_isMeeting ? '会晤' : '户主'}）`);
+          } else {
+            const _fullText = (_wk.full_text || '').substring(0, 4000);
+            const _tag = '【作品】《' + _wk.title + '》(' + _wk.work_type + ')\n' + _fullText;
+            if (_fullText.length > 4 && !memoryFragments.some((f: string) => f.includes(_wk.title))) {
+              memoryFragments.push(_tag);
+              console.log(`[WorkReferent] 指称解析命中《${_wk.title}》 scope=${_ref.scope} 注入${_fullText.length}字`);
+            }
           }
         }
       }
