@@ -540,14 +540,17 @@ export async function searchV13(
   }
 
   // ═══════════ L4 · DAG 闭包展开 ═══════════
+  // 🔴 P2-A12 修复: 户主场景（entityUuids 空）跳过 DAG 闭包——原 belongEntityUuid=''
+  //   导致 getEdges 查 `belong_entity_uuid = ''` 无结果，闭包恒空。
+  //   多实体会晤仍用第一个实体（getEdges 单实体接口，多实体展开为后续项）。
   let closureResult: any = null;
-  if (cfg.enableDAGClosure && dagRepo && candidates.length > 0) {
+  if (cfg.enableDAGClosure && dagRepo && candidates.length > 0 && entityUuids.length > 0) {
     try {
       const seedUids = candidates.slice(0, 15).map(c => c.id);
       const retriever = new MemoryClosureRetriever(dagRepo);
       const rawClosure = retriever.retrieve({
         namespace: 'default',
-        belongEntityUuid: entityUuids[0] ?? '',
+        belongEntityUuid: entityUuids[0],
         seedGlobalUids: seedUids,
         maxDepth: cfg.closureMaxDepth,
         maxNodes: cfg.closureMaxNodes,

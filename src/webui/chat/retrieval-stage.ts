@@ -605,16 +605,21 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
     const _sqlite = ctx.storage.getSQLite();
     if (_sqlite && typeof _sqlite.queryAll === 'function') {
       // priority: hasPerson → query by entity names; else → recent gold vault
+      // 🔴 P2-A7 修复: 金库检索加 belong_entity_uuid 白名单过滤（防跨实体拉他人金库）
+      const _goldUuidFilter = _activeEntityUuids.length > 0
+        ? ' AND belong_entity_uuid IN (' + _activeEntityUuids.map(() => '?').join(',') + ')'
+        : '';
+      const _goldUuidParams: any[] = _activeEntityUuids.length > 0 ? _activeEntityUuids : [];
       let _goldRows: any[] = [];
       if (_hasPerson) {
         const _names = dna.entity_genes.filter((g: any) => g.name && g.name.length > 1).map((g: any) => g.name);
         for (const _n of _names.slice(0, 3)) {
-          const _r = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE (detail LIKE ? OR content_md LIKE ?) AND operation='promote' ORDER BY created_at DESC LIMIT 2", ['%' + _n + '%', '%' + _n + '%']);
+          const _r = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE (detail LIKE ? OR content_md LIKE ?) AND operation='promote'" + _goldUuidFilter + " ORDER BY created_at DESC LIMIT 2", ['%' + _n + '%', '%' + _n + '%', ..._goldUuidParams]);
           _goldRows.push(..._r);
         }
       }
       if (_goldRows.length === 0) {
-        _goldRows = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE content_md IS NOT NULL OR detail IS NOT NULL ORDER BY created_at DESC LIMIT 5") || [];
+        _goldRows = _sqlite.queryAll("SELECT detail, content_md FROM vault_log WHERE content_md IS NOT NULL OR detail IS NOT NULL" + _goldUuidFilter + " ORDER BY created_at DESC LIMIT 5", _goldUuidParams) || [];
       }
       for (const _gr of _goldRows.slice(0, _glLimit)) {
         const _t = (_gr.content_md || _gr.detail || '').substring(0, 100);
