@@ -28,6 +28,7 @@ export const DEFAULT_RRF_CONFIG: RRFConfig = {
   weights: {
     spine:   0.35,   // 24D 向量语义路（主力信号）
     keyword: 0.30,   // n-gram 关键词路（精确匹配）
+    work:    0.25,   // 作品直达路（长文召回，指称解析命中即置顶）
     entity:  0.20,   // 实体归属路（实体定向）
     emotion: 0.10,   // 情绪路（权重较低，情绪共振放 L1 预筛层）
     locus:   0.05,   // 时序邻近路（时序围栏已在 L0 处理）

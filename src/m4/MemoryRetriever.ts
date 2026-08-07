@@ -619,6 +619,54 @@ export class MemoryRetriever {
       lists.push({ source: 'entity', items: entityItems });
     }
 
+    // ─── 6. 作品直达路 (work) — 长文召回元数据桥 ───
+    // "那篇小说/继续写/标题" 由 retrieval-stage 的 ReferentResolver 直查 works 主键。
+    // 此路用关键词（实体名+locus）LIKE 匹配 works.title/summary/full_text，
+    // 让普通查询（如"星落之城"）也能召回作品标题——高权重 RRF 置顶。
+    const workItems: RankedItem[] = [];
+    try {
+      const sqlite = (this.storage as any).getSQLite?.();
+      if (sqlite && typeof sqlite.queryAll === 'function' && keywords.size > 0) {
+        // 只取 top 关键词（避免全词 OR 导致过宽召回）
+        const workKws = [...keywords].slice(0, 5).filter(kw => kw && kw.length > 1);
+        if (workKws.length > 0) {
+          const likeClauses = workKws.map(() => '(title LIKE ? OR summary LIKE ? OR full_text LIKE ?)').join(' OR ');
+          const params: any[] = [];
+          for (const kw of workKws) { params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`); }
+          const workRows = sqlite.queryAll(
+            `SELECT work_id, title, work_type, summary, full_text, belong_entity_uuid, created_at
+             FROM works WHERE ${likeClauses} ORDER BY created_at DESC LIMIT 5`,
+            params,
+          ) as any[];
+          if (workRows?.length) {
+            // 按户籍过滤：会晤时仅实体自有作品；户主钥匙（空）全放行
+            const uuidSet = new Set(entityUuids);
+            for (const row of workRows) {
+              const owner = (row as any).belong_entity_uuid ?? null;
+              if (entityUuids.length > 0 && owner && !uuidSet.has(owner)) continue;
+              const title = String((row as any).title || '');
+              const summary = String((row as any).summary || '').substring(0, 120);
+              const hits = workKws.reduce((acc: number, kw: string) =>
+                acc + ((title.includes(kw) ? 1 : 0) + ((row as any).summary || '').includes(kw) ? 1 : 0), 0);
+              workItems.push({
+                id: String((row as any).work_id),
+                text: `《${title}》 ${summary}`.substring(0, 200),
+                score: Math.max(1, hits),
+                source: 'work',
+                entityUuid: owner,
+                calciumScore: 0,
+                createdAt: String((row as any).created_at || ''),
+              });
+            }
+          }
+        }
+      }
+    } catch { /* work 路失败不阻塞 */ }
+    if (workItems.length > 0) {
+      workItems.sort((a, b) => b.score - a.score);
+      lists.push({ source: 'work', items: workItems });
+    }
+
     // 去重计数
     const allIds = new Set<string>();
     for (const list of lists) for (const item of list.items) allIds.add(item.id);
