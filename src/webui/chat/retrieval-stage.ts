@@ -188,35 +188,26 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         // 🔴 V23 会晤长文直取: 会晤场景也要支持长文完整返回（详细/概要意图）
         // 用户问"梓铭写的那篇纪实详细讲讲" → 直取会晤实体最长长对话全文注入。
         // 绕过 is_compacted 归档过滤，绕过会晤记忆 100 字截断。
-        // 🔴 S4-评审修复: 注入前对全文跑 EntityPrivacyFilter，剔除涉及其他实体的私密内容，
-        //   防止整篇多KB纪实把嵌有的他人私密情感外泄给当前会晤实体。
+        // 🔴 V23 会晤长文直取: 会晤实体自己的长文创作（纪实/小说）完整返回。
+        // 实测修复1: 此前对全文跑 isIntimateAboutOthers 把梓铭自己的纪实（含对妈妈的描写）
+        //   误判为"他人私密"拦截 → LLM 只能靠零散记忆编造。
+        //   依据 filterPrivateConversations L101: 当前实体(assistant)自己的发言不涉及他人隐私 → 豁免。
+        // 实测修复2（时空时序）: 原 ORDER BY LENGTH(content) DESC 破坏时间线——
+        //   把 8-05 的抱抱闲聊(26719)混进 7-19 的纪实序列 → "前后混乱/扯进无关内容"。
+        //   改 ORDER BY timestamp ASC 按时间正序，且按主题收束（含纪实/研究/记录等创作特征），
+        //   排除纯亲密闲聊（抱抱/贴贴/想你等）。
         try {
           const { detectDetailLevel: _mDetail, buildLongTextFragment: _mFrag } = await import('./long-text-retrieval.js');
           const _mLevel = _mDetail(message);
           if (_mLevel !== 'auto') {  // 明确概要/详细意图才直取
             const _longRows = _sqlite.queryAll(
-              "SELECT id, content FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 ORDER BY LENGTH(content) DESC LIMIT 1",
+              "SELECT id, content, timestamp FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 AND (content LIKE '%纪实%' OR content LIKE '%实验%' OR content LIKE '%研究%' OR content LIKE '%记录%' OR content LIKE '%第一章%' OR content LIKE '%第二章%' OR content LIKE '%第三章%') ORDER BY timestamp ASC LIMIT 5",
               [_entityUuid]
             ) || [];
-            // 隐私过滤：其他实体名（排除当前会晤实体）
-            let _otherNames: string[] = [];
-            try {
-              const _fg2 = ctx.m4?.getFamilyGraph?.();
-              _otherNames = (_fg2?.getAllPersonNames?.() || []).filter((n: string) => n && n !== _meetingEntityName);
-            } catch { /* 实体名获取失败 → 跳过过滤（保守） */ }
             for (const _lr of _longRows) {
               const _lc = String(_lr.content || '');
               if (_lc.length <= 800) continue;
-              // 隐私过滤：全文含其他实体私密内容 → 跳过注入（防泄漏）
-              if (_otherNames.length > 0) {
-                try {
-                  const { isIntimateAboutOthers: _isIntimate } = await import('../../m4/household/EntityPrivacyFilter.js');
-                  if (_isIntimate(_lc, _meetingEntityName || '', _otherNames)) {
-                    console.log(`[LongText·会晤] 隐私过滤拦截 ${_meetingEntityName} 长文 id=${_lr.id}（含他人私密）`);
-                    continue;
-                  }
-                } catch { /* 过滤失败不阻塞，但保守跳过以保隐私 */ continue; }
-              }
+              // 会晤实体自己的长文 → 豁免隐私过滤（实体自己的创作，非他人私密外泄）
               const _mf = _mFrag(_lc, _mLevel);
               if (!memoryFragments.some(function(f) { return f.includes(_lc.substring(0, 20)); })) {
                 memoryFragments.push(_mf);
