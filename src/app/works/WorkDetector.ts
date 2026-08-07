@@ -77,14 +77,17 @@ export function detectWork(
   // 叙事标记命中 → 高/中置信度（按长度）
   const hasMarker = NARRATIVE_MARKERS.some(m => trimmed.includes(m));
   const lengthScore = trimmed.length;
+  // S7-实测修复: "第一章/章节/楔子/连载/番外" 等小说专属标记 → novel 类型
+  // （否则"那篇小说"按 novel 查，含第一章的作品被标 story 导致匹配失败）
+  const isNovelMarker = /(?:第一章|第二章|章节|楔子|连载|番外|正文|尾声)/.test(trimmed);
 
   if (hasMarker && lengthScore >= 300) {
     // 高置信度：长文本 + 叙事标记
-    return _buildWork('story', firstSentence, trimmed, firstSentence, 'high', !!existingWorkId);
+    return _buildWork(isNovelMarker ? 'novel' : 'story', firstSentence, trimmed, firstSentence, 'high', !!existingWorkId);
   }
   if (hasMarker) {
     // 中置信度：有标记但较短
-    return _buildWork('story', firstSentence, trimmed, firstSentence, 'medium', !!existingWorkId);
+    return _buildWork(isNovelMarker ? 'novel' : 'story', firstSentence, trimmed, firstSentence, 'medium', !!existingWorkId);
   }
 
   // 超长（≥800）无标记 → 中置信度

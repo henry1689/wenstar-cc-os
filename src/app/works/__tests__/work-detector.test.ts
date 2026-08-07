@@ -9,6 +9,20 @@ describe('WorkDetector — 创作意图检测', () => {
     expect(r.confidence).toBe('high');
   });
 
+  it('含"第一章/章节"标记 → novel 类型（S7-实测修复）', () => {
+    const text = '第一章 云海客栈\n' + '山脚下有间云海客栈。\n'.repeat(30);  // >300字
+    const r = detectWork(text);
+    expect(r.isWork).toBe(true);
+    expect(r.workType).toBe('novel');  // "第一章" 是小说专属标记
+  });
+
+  it('含"故事"标记 → story 类型', () => {
+    const text = '这是一个关于重逢的故事\n' + '他站在城墙下等她。\n'.repeat(30);  // >300字
+    const r = detectWork(text);
+    expect(r.isWork).toBe(true);
+    expect(r.workType).toBe('story');
+  });
+
   it('含叙事标记 + 中文本(200-300) → 中置信度', () => {
     const text = '第一章 星落之城\n' + '城外的风卷着黄沙。\n'.repeat(25);  // ~270字
     const r = detectWork(text);
