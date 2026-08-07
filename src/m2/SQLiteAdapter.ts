@@ -781,10 +781,16 @@ export class SQLiteAdapter {
   /** V13: 构建 entityUuid SQL 过滤子句（占位符返回到主 SQL 中拼接）。
    *  🔴 户籍管理法：委托 UUIDPoliceFilter.buildSqlClause。
    *   - 空白名单 → AND 1=0（fail-closed，杜绝"无过滤"）
-   *   - 默认 deny-by-default（allowUnowned=false，杜绝 OR IS NULL 逃生口） */
+   *   - 默认 deny-by-default（allowUnowned=false，杜绝 OR IS NULL 逃生口）
+   * 🔴 P0-A5 修复: 户主钥匙语义 — entityUuids 为空（户主/无活跃实体）时放行全部，
+   *   不再 fail-closed 返回 AND 1=0（否则户主本人记忆永远检索不到，主场景功能退化）。 */
   private _entityUuidClause(entityUuids?: string[], allowUnowned = false): { clause: string; params: string[] } {
+    // 户主钥匙场景：无活跃实体白名单 → 放行所有（户主是全库最高权限）
+    if (!entityUuids || entityUuids.length === 0) {
+      return { clause: '', params: [] };
+    }
     return buildSqlClause({
-      visibleUuids: new Set((entityUuids || []).filter(Boolean)),
+      visibleUuids: new Set(entityUuids.filter(Boolean)),
       allowUnowned,
     });
   }

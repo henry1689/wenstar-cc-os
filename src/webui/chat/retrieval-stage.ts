@@ -453,6 +453,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         // V13: 使用顶层 _activeEntityUuids（已提前收集）
         let _v13Result: any = null;
         let _dbResult: any = null;
+        let _v13Failed = false;  // P1-D1: V13 异常标志（触发 V11 真正降级）
 
         // ── V13 七层仿生管线 ──
         if (WS_SEARCH_V13 && ctx.m4?.retrieveMultiRankForSearch) {
@@ -509,12 +510,15 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             }
           } catch (_v13Err) {
             console.warn('[searchV13] 七层管线异常, 降级到 V11:', (_v13Err as Error)?.message);
-            // V13 失败 → 自动回退到 V11
+            // 🔴 P1-D1 修复: 原 catch 只打印"降级到 V11"但 V11 条件恒假（WS_SEARCH_V13=true 硬编码），
+            //   V13 失败后 V11 不执行 → 全链路空检索。改为设标志，让下方 V11 块真正执行。
+            _v13Failed = true;
           }
         }
 
         // ── V11 旧管线（默认 / V13 失败降级） ──
-        if (!WS_SEARCH_V13 || !ctx.m4?.retrieveMultiRankForSearch) {
+        // 🔴 P1-D1 修复: V13 失败（_v13Failed）时也执行 V11，真正降级兜底
+        if (!WS_SEARCH_V13 || !ctx.m4?.retrieveMultiRankForSearch || _v13Failed) {
           const { search: unifiedSearch } = await import('../../m4/UnifiedSearchEngine.js');
           _dbResult = unifiedSearch(_sqlite.rawDb || _sqlite, message, p, {
             mode: isTopicShift ? 'full' : 'balanced',
