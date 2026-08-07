@@ -96,6 +96,9 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   const nowTs = new Date().toISOString();
   const topic = detectTopic(input.message);
   let hadError = false;
+  // P1-C: 记录真实 conversations.id（增量索引 source_id 需与回填索引一致，非 dna_root_id）
+  let _convUserRowId: number | null = null;
+  let _convAsstRowId: number | null = null;
 
   // ── Step 1: conversationHistory（内存）──
   input.ctx.conversationHistory.push({ role: 'user', content: input.message, timestamp: nowTs, topic } as any);
@@ -131,7 +134,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   }
 
   try {
-    input.ctx.conversationDB?.insertConversation('user', input.message, {
+    const _convUserId = input.ctx.conversationDB?.insertConversation('user', input.message, {
       seqPos: input.seqPos, topic,
       entityNames: input.dna.entity_genes.filter((g: any) => g.type !== 'self').map((g: any) => g.name),
       perception: { pleasure: input.p.pleasure, arousal: input.p.arousal, intimacy: input.p.intimacy },
@@ -142,7 +145,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       isTest: input.ctx.testMode ? 1 : 0,
       belongEntityUuid: belongUUID || undefined,
     });
-    input.ctx.conversationDB?.insertConversation('assistant', input.reply, {
+    if (_convUserId) _convUserRowId = _convUserId;
+    const _convAsstId = input.ctx.conversationDB?.insertConversation('assistant', input.reply, {
       seqPos: input.seqPos + 1, topic,
       calciumScore: input.decision.enhanced.calcium_score,
       dnaRootId: (input.dna as any).dna_root_id,
@@ -150,6 +154,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       locationFingerprint: input.dna.location_fingerprint || '',
       belongEntityUuid: asstUUID || undefined,
     });
+    if (_convAsstId) _convAsstRowId = _convAsstId;
   } catch (e: any) {
     console.error('[Persist] ❌ conversations.db 写入失败:', e?.message);
     hadError = true;
@@ -370,13 +375,15 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     const _sqlite = input.ctx.storage?.getSQLite();
     if (_sqlite?.rawDb) {
       const { indexDocument } = await import('../../m4/SearchIndexBuilder.js');
+      // P1-C 修复: source_id 用真实 conversations.id（与 rebuildAllIndexes 一致），
+      // 不再用 dna_root_id（两者不同，导致增量索引关联错乱、检索 source 串号）。
       // 索引用户消息
       if (input.message?.length > 5) {
-        indexDocument(_sqlite.rawDb, 'conversation', String(input.dna?.dna_root_id || 'conv_' + Date.now()), input.message, (input.dna as any)?.belong_entity_uuid);
+        indexDocument(_sqlite.rawDb, 'conversation', String(_convUserRowId ?? 'conv_' + Date.now()), input.message, (input.dna as any)?.belong_entity_uuid);
       }
       // 索引助手回复
       if (input.reply?.length > 5) {
-        indexDocument(_sqlite.rawDb, 'conversation', 'reply_' + String(input.dna?.dna_root_id || Date.now()), input.reply, (input.dna as any)?.belong_entity_uuid);
+        indexDocument(_sqlite.rawDb, 'conversation', String(_convAsstRowId ?? 'conv_' + Date.now()), input.reply, (input.dna as any)?.belong_entity_uuid);
       }
     }
   } catch { /* 索引写入不阻塞主流程 */ }

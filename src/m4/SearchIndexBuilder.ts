@@ -101,7 +101,7 @@ export function indexDocument(
 export function rebuildAllIndexes(db: any): { total: number; bySource: Record<string, number> } {
   if (!db) return { total: 0, bySource: {} };
 
-  const bySource: Record<string, number> = { conversation: 0, memory: 0, black_diamond: 0, knowledge_base: 0 };
+  const bySource: Record<string, number> = { conversation: 0, memory: 0, black_diamond: 0, knowledge_base: 0, work: 0 };
 
   // ═══ 1. 砂金库 — conversations ═══
   try {
@@ -169,8 +169,52 @@ export function rebuildAllIndexes(db: any): { total: number; bySource: Record<st
     console.warn('[SearchIndex] 知识库索引失败:', (e as Error).message);
   }
 
+  // ═══ 5. 作品 — works（长文召回元数据桥，全文切块索引） ═══
+  try {
+    const works = db.exec(
+      "SELECT work_id, full_text, belong_entity_uuid FROM works WHERE full_text IS NOT NULL ORDER BY created_at DESC"
+    );
+    if (works.length && works[0].values) {
+      for (const [workId, fullText, entityUuid] of works[0].values) {
+        const n = indexWorkChunks(db, String(workId), String(fullText), entityUuid ? String(entityUuid) : undefined);
+        if (n > 0) bySource.work = (bySource.work || 0) + 1;
+      }
+    }
+    console.log(`[SearchIndex] 作品索引: ${bySource.work || 0} 条`);
+  } catch (e) {
+    console.warn('[SearchIndex] 作品索引失败:', (e as Error).message);
+  }
+
   const total = Object.values(bySource).reduce((a, b) => a + b, 0);
   return { total, bySource };
+}
+
+/**
+ * 作品全文切块索引（V22 长文召回）。
+ * 长文（小说/文章 3000+ 字）整体 buildNgrams 会产生海量 term，且 n-gram 检索上限 100 条/term
+ * 会稀释关键命中。按 800 字切块，逐块索引——让"星落之城"这类内容词在任一块都能命中。
+ *
+ * @param db        sql.js Database 实例
+ * @param workId    作品主键（works.work_id）
+ * @param fullText  作品全文
+ * @param entityUuid 作品归属UUID（可选）
+ * @returns 索引的文档块数
+ */
+export function indexWorkChunks(
+  db: any,
+  workId: string,
+  fullText: string,
+  entityUuid?: string,
+): number {
+  if (!db || !fullText) return 0;
+  const CHUNK_SIZE = 800;
+  let count = 0;
+  for (let i = 0; i < fullText.length; i += CHUNK_SIZE) {
+    const chunk = fullText.substring(i, i + CHUNK_SIZE);
+    const n = indexDocument(db, 'work', workId, chunk, entityUuid);
+    count += n > 0 ? 1 : 0;
+  }
+  return count;
 }
 
 /**
@@ -185,4 +229,4 @@ export function isIndexEmpty(db: any): boolean {
   }
 }
 
-export default { buildNgrams, indexDocument, rebuildAllIndexes, isIndexEmpty };
+export default { buildNgrams, indexDocument, indexWorkChunks, rebuildAllIndexes, isIndexEmpty };
