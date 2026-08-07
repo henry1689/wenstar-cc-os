@@ -75,10 +75,15 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           //  - 会晤场景: allowUnowned=false，作品必须属于当前会晤实体
           //  - 户主场景: allowUnowned=true，无归属作品（belong NULL）放行，白名单实体作品放行
           const _isMeeting = !!_meetingEntityName;
-          const _allowed = policePasses((_wk as any).belong_entity_uuid ?? null, {
-            visibleUuids: new Set(_scopeUuids),
-            allowUnowned: !_isMeeting,   // 仅户主钥匙场景放行无归属作品
-          });
+          // S5-评审: 户主钥匙场景放行所有归属作品（户主为全库最高权限，名下实体作品皆可见）
+          // 会晤场景严格按实体隔离（deny-by-default，仅会晤实体作品）。
+          const _wkOwner = (_wk as any).belong_entity_uuid ?? null;
+          const _allowed = _isMeeting
+            ? policePasses(_wkOwner, {
+                visibleUuids: new Set(_scopeUuids),
+                allowUnowned: false,   // 会晤：仅会晤实体作品，无归属作品 deny
+              })
+            : true;  // 户主钥匙：户主拥有全部实体，作品皆可见（会晤私密由隔离墙在会话层管理）
           if (!_allowed) {
             console.log(`[WorkReferent] 越权拦截《${_wk.title}》 scope=${_ref.scope}（${_isMeeting ? '会晤' : '户主'}）`);
           } else {
