@@ -34,9 +34,9 @@ describe('buildLongTextFragment — 长文片段构造', () => {
 
   it('detail → 分段全文（2-3段，覆盖全文）', () => {
     const frag = buildLongTextFragment(long, 'detail');
-    expect(frag).toContain('【对话原文】');
+    expect(frag).toContain('【对话原文·权威记录】');
     expect(frag).toContain('…（接上）');  // 分段标记
-    expect(frag).toContain('不要编造');    // 铁律标记
+    expect(frag).toContain('不得提及或编造');    // 铁律标记
     // 分段后长度应接近全文（>2000）
     expect(frag.length).toBeGreaterThan(2000);
   });
@@ -46,7 +46,7 @@ describe('buildLongTextFragment — 长文片段构造', () => {
     expect(frag).toContain('【开头】');
     expect(frag).toContain('【中段】');
     expect(frag).toContain('【结尾】');
-    expect(frag).toContain('不要编造');
+    expect(frag).toContain('不得提及或编造');
     // 摘要应远短于全文
     expect(frag.length).toBeLessThan(1200);
   });
@@ -60,7 +60,7 @@ describe('buildLongTextFragment — 长文片段构造', () => {
   it('短文本（≤800）→ 原样返回', () => {
     const short = '这是一段普通对话内容。'.repeat(10);  // ~90字
     const frag = buildLongTextFragment(short, 'detail');
-    expect(frag).toContain('【对话原文】');
+    expect(frag).toContain('【对话原文·权威记录】');
     expect(frag).toContain('普通对话内容');
   });
 });

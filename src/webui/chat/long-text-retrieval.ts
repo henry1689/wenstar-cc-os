@@ -82,7 +82,8 @@ export function fetchLongText(
 export function buildLongTextFragment(content: string, level: DetailLevel): string {
   const text = (content || '').trim();
   if (text.length <= LONG_TEXT_THRESHOLD) {
-    return '【对话原文】' + text;
+    return '【对话原文·权威记录】' + text +
+      '\n（以上为当时对话原文。过去发生的事不得编造：原文没有的人物/情节不得提及。）';
   }
 
   let body: string;
@@ -93,9 +94,14 @@ export function buildLongTextFragment(content: string, level: DetailLevel): stri
     body = _summaryOf(text);
   }
 
-  // 铁律标记：如实陈述，未检索到的部分不要编造
-  return '【对话原文】' + body +
-    '\n（以上是检索到的对话原文记录。若用户追问更细节内容而原文未覆盖，请如实说明"这段记录里没有"，不要编造。）';
+  // 铁律标记：过去发生的事绝对不得编造——以原文为唯一事实来源
+  // 即使记忆/知识库/之前对话里提过其他人物或情节，只要原文没有，就不得提及（无中生有即违规）。
+  return '【对话原文·权威记录】' + body +
+    '\n\n🔴 铁律（关于过去的记忆，绝对不得违反）：\n' +
+    '1. 以上是检索到的这篇纪实的真实原文记录，是你回答的唯一事实来源。\n' +
+    '2. 原文中没有出现的人物、情节、数据、章节，一律不得提及或编造——即使你的记忆、知识库或之前对话里提过，也不得使用（那是当时没有发生的）。\n' +
+    '3. 如果用户问到原文中没有的内容，如实回答"当时记录的原文里没有这部分"。\n' +
+    '4. 严格按原文顺序和内容复述，不得增删改。';
 }
 
 /** 分段全文（每段 ~1500 字，覆盖全文） */
