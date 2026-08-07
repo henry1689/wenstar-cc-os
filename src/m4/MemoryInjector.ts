@@ -66,8 +66,13 @@ export function injectMemories(opts: InjectOptions): string {
     }
     // 🆕 V23 长文: 【对话原文】开头的 fragment 走独立预算（长文完整返回）
     if (frag.startsWith('【对话原文】')) {
-      if (!longText) {
-        longText = frag;  // 最多保留 1 条长文
+      // 实测修复: 合并多条长文（同一纪实的多段/多篇），而非只保留第1条
+      // 原逻辑只留1条 → 梓玥章等被丢弃 → LLM 靠记忆编造（扯进吴波等无关人物）
+      if (longText) {
+        longText = longText + '\n\n' + frag;
+        console.log(`[MemoryInjector] 长文合并注入: +${frag.length}字符 (总计${longText.length})`);
+      } else {
+        longText = frag;  // 第1条
         console.log(`[MemoryInjector] 长文独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
       }
       continue;
@@ -121,8 +126,10 @@ export function injectMemories(opts: InjectOptions): string {
   deduped.sort((a, b) => b.priority - a.priority);
 
   // ── 预算分配：V10.1 记忆 60% + 知识库 40%（原 50/50）──
-  const memBudget = Math.floor(maxChars * 0.6);
-  const kbBudget = maxChars - memBudget;
+  // 实测修复: 有长文时压缩记忆/KB预算，给完整纪实让路（否则合并长文被截断 → LLM 编造）
+  const _hasLongText = !!longText;
+  const memBudget = _hasLongText ? Math.floor(maxChars * 0.3) : Math.floor(maxChars * 0.6);
+  const kbBudget = _hasLongText ? Math.floor(maxChars * 0.15) : (maxChars - memBudget);
 
   // ── 截断记忆 ──
   const memParts: string[] = [];
@@ -173,7 +180,8 @@ export function injectMemories(opts: InjectOptions): string {
   // 注: 长文与作品同时命中时，长文优先（用户当前明确要看长文）。
   const _priorityParts: string[] = [];
   if (longText) {
-    const longBudget = Math.max(4000, Math.floor(maxChars * 0.6));  // 覆盖 detail 全文（4305字）
+    // 实测修复: 合并多篇纪实（4305+1814+1290=7409字），预算需覆盖完整系列
+    const longBudget = Math.max(4000, Math.floor(maxChars * 0.8));
     _priorityParts.push(longText.length > longBudget
       ? longText.substring(0, longBudget) + '\n…(对话原文超长已截断)'
       : longText);
