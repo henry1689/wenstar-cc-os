@@ -10,6 +10,8 @@ import type { DNA } from '../../m1/types/dna.js';
 import type { Perception24D } from '../../m3/types/perception.js';
 import { rerank } from '../../m4/Reranker.js';
 import { decompose, mergeDecomposedResults } from '../../m4/QueryDecomposer.js';
+import { resolveReferent } from '../../app/works/ReferentResolver.js';
+import { WorkRepository } from '../../app/works/WorkRepository.js';
 
 export interface RetrievalInput {
   ctx: any;
@@ -39,6 +41,45 @@ export interface RetrievalOutput {
 
 export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutput> {
   const { ctx, message, dna, p, enrichedHistory, memoryFragments, _meetingEntityName } = input;
+
+  // 🔴 V22 作品召回: 指称词解析（"那篇小说/继续写/标题"）→ 作品主键 → 注入完整作品全文
+  // 放在会晤隔离墙之前：户主钥匙和会晤场景都能解析（会晤场景在隔离墙内提前 return）
+  if (ctx?.storage?.getSQLite && message.trim().length >= 2) {
+    try {
+      const _sqlite = ctx.storage.getSQLite();
+      if (_sqlite && typeof _sqlite.queryAll === 'function') {
+        const _workRepo = new WorkRepository(_sqlite);
+        // 解析当前作用域 UUID：会晤实体优先，否则户主活跃实体（供 ReferentResolver 按实体隔离）
+        let _scopeUuids: string[] = [];
+        try {
+          const _fg = ctx.m4?.getFamilyGraph?.();
+          if (_meetingEntityName) {
+            const _uuid = _fg?.getUUIDByName?.(_meetingEntityName);
+            if (_uuid) _scopeUuids = [_uuid];
+          } else {
+            const _personNames = (dna.entity_genes || [])
+              .filter((g: any) => g.type === 'person' && g.name !== '我')
+              .map((g: any) => g.name);
+            for (const _pn of _personNames.slice(0, 3)) {
+              const _uuid = _fg?.getUUIDByName?.(_pn);
+              if (_uuid) _scopeUuids.push(_uuid);
+            }
+          }
+        } catch { /* 作用域解析失败 → 空 = 户主钥匙 master 作用域 */ }
+
+        const _ref = resolveReferent(message, _workRepo, _scopeUuids);
+        if (_ref.matched && _ref.work) {
+          const _wk = _ref.work;
+          const _fullText = (_wk.full_text || '').substring(0, 4000);
+          const _tag = '【作品】《' + _wk.title + '》(' + _wk.work_type + ')\n' + _fullText;
+          if (_fullText.length > 4 && !memoryFragments.some((f: string) => f.includes(_wk.title))) {
+            memoryFragments.push(_tag);
+            console.log(`[WorkReferent] 指称解析命中《${_wk.title}》 scope=${_ref.scope} 注入${_fullText.length}字`);
+          }
+        }
+      }
+    } catch (_wrErr) { /* 指称解析失败不阻塞主流程 */ }
+  }
 
     // 🛡️ V5.2: 会晤信息隔离墙 — 阻断用户记忆，检索实体自有记忆
   if (_meetingEntityName) {
