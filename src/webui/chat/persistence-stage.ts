@@ -21,6 +21,8 @@ import type { PerceptionV40 } from '../../m3/types/perception-40d.js';
 import type { M3Decision } from '../../m3/types/perception.js';
 import { detectForesight } from '../../m3/ForesightDetector.js';
 import { enqueueYaoguangBackfill } from './yaoguang-backfill.js';
+import { detectWork } from '../../app/works/WorkDetector.js';
+import { WorkRepository } from '../../app/works/WorkRepository.js';
 import type { ChatContext } from '../chat.js';
 
 export interface PersistInput {
@@ -190,6 +192,29 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     }
     // V3: 40D — 用户消息写 perception_40d（M3 直接产出的语义维，瑶光客观维异步回填）
     writePerceptionV40Dual(sqlite, idUser, input.p, input.decision.enhanced.perceptionV40);
+
+    // 🔴 V22 作品召回: 检测用户消息是否为作品（小说/文章），命中则写入 works 表。
+    // 这是"长文召回"的元数据桥——让"那篇小说"这类指称词可被解析。
+    try {
+      const workDet = detectWork(input.message, input.dna);
+      if (workDet.isWork && workDet.confidence !== 'low') {
+        const workRepo = new WorkRepository(sqlite);
+        const work = await workRepo.upsertWork({
+          title: workDet.title,
+          workType: workDet.workType || 'story',
+          fullText: input.message,
+          belongEntityUuid: belongUUID,
+          dnaRootId: (input.dna as any).dna_root_id,
+          sourceConversationIds: [idUser],
+          dialogGroupId: (input.dna as any).dialog_group_id ?? null,
+          summary: workDet.summary,
+          firstSentence: workDet.firstSentence,
+        });
+        // 回填 work_id 到刚写的记忆
+        sqlite.writeRaw('UPDATE memories SET work_id = ? WHERE id = ?', work.work_id, idUser);
+        console.log(`[WorkDetector] ✅ 识别作品《${work.title}》(${work.work_type}, 置信度=${workDet.confidence})`);
+      }
+    } catch (e) { console.warn('[WorkDetector] 作品检测跳过:', (e as Error)?.message); }
 
     // 写助理回复 — 剥离场景描写后再存储
     //     LLM 的回复含"（我趴在浴缸边…）"等动作描写。这是生成产物，不是语义记忆。

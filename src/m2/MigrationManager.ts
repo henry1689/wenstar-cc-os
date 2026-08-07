@@ -379,6 +379,36 @@ const MIGRATIONS: Migration[] = [
       } catch (e) { console.warn('[Migration] v11 state_spines 重建失败:', e); }
     },
   },
+  {
+    version: 12,
+    description: 'V22 作品召回: 新建 works 表 + memories/conversations 加 work_id 列（长文召回元数据桥）',
+    apply: (db: any) => {
+      try {
+        // works 表（作品一级实体）
+        db.run(`CREATE TABLE IF NOT EXISTS works (
+          work_id         TEXT PRIMARY KEY,
+          title           TEXT NOT NULL,
+          work_type       TEXT NOT NULL DEFAULT 'story',
+          first_sentence  TEXT,
+          summary         TEXT,
+          full_text       TEXT,
+          belong_entity_uuid TEXT,
+          dna_root_id     TEXT,
+          source_conversation_ids TEXT,
+          dialog_group_id TEXT,
+          semantic_vector TEXT,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_works_created ON works(created_at DESC)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_works_owner ON works(belong_entity_uuid)`);
+        // 关联列
+        try { db.run('ALTER TABLE memories ADD COLUMN work_id TEXT'); } catch { /* 列已存在 */ }
+        try { db.run('ALTER TABLE conversations ADD COLUMN work_id TEXT'); } catch { /* 列已存在 */ }
+        console.log('[Migration] v12 ✅ works 作品表 + work_id 列');
+      } catch (e) { console.warn('[Migration] v12 works 表创建失败:', e); }
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════
