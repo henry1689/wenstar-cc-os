@@ -74,7 +74,7 @@ describe('handleVaultRoutes', () => {
               is_landmark: 0,
               scar_type: null,
               narrative_tag: '重要',
-              perception_json: null,
+              perception_40d: null,
               lifecycle_state: 'active',
               promoted_to_diamond: 0,
             }];

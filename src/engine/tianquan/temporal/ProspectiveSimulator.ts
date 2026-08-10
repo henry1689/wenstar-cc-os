@@ -15,6 +15,8 @@
  *   // → { predictedOutcome, confidence, basisMemories, alternatives }
  */
 import type { SQLiteAdapter } from '../../../m2/SQLiteAdapter.js';
+// V12.4 阶段B 根除24D: perception_json 列已删，读 perception_40d 反解 pleasure(D12)
+import { decodePerceptionV40 } from '../../../m2/PerceptionVector40DCodec.js';
 
 export interface SimulationResult {
   /** 预测的最可能结局 */
@@ -64,7 +66,7 @@ export class ProspectiveSimulator {
       const topicClause = context.topic ? 'raw_input LIKE ?' : '1=1';
       if (context.topic) params.push(`%${context.topic}%`);
 
-      const sql = `SELECT id, raw_input, calcium_score, entity_names, created_at, perception_json
+      const sql = `SELECT id, raw_input, calcium_score, entity_names, created_at, perception_40d
         FROM memories WHERE (${likeClause} OR ${topicClause})
         AND lifecycle_state != 'suppressed'
         ORDER BY created_at DESC LIMIT 20`;
@@ -82,8 +84,9 @@ export class ProspectiveSimulator {
         try {
           const memId = (row as any).id;
           const createdAt = new Date((row as any).created_at || Date.now());
-          const perc = JSON.parse((row as any).perception_json || '{}');
-          const origPleasure = perc.pleasure || 0;
+          // V12.4 阶段B 根除24D: pleasure 取 40D D12（无 40D 行中性 0.5）
+          const p40 = decodePerceptionV40((row as any).perception_40d ? String((row as any).perception_40d) : null);
+          const origPleasure = p40?.d12_enjoyment ?? 0.5;
           const scene = ((row as any).raw_input || '').substring(0, 50);
 
           // 查询该场景之后 1 小时到 1 周内的后续消息
@@ -91,15 +94,15 @@ export class ProspectiveSimulator {
           const afterEnd = new Date(createdAt.getTime() + 7 * 86400000).toISOString();
 
           const followUps = this.sqlite.queryAll(
-            `SELECT perception_json FROM memories WHERE created_at > ? AND created_at < ? AND id != ? ORDER BY created_at ASC LIMIT 5`,
+            `SELECT perception_40d FROM memories WHERE created_at > ? AND created_at < ? AND id != ? ORDER BY created_at ASC LIMIT 5`,
             [afterStart, afterEnd, memId]
           );
 
           if (followUps && followUps.length > 0) {
             let totalDelta = 0;
             for (const fu of followUps) {
-              const fuPerc = JSON.parse((fu as any).perception_json || '{}');
-              totalDelta += (fuPerc.pleasure || 0) - origPleasure;
+              const fuP40 = decodePerceptionV40((fu as any).perception_40d ? String((fu as any).perception_40d) : null);
+              totalDelta += (fuP40?.d12_enjoyment ?? 0.5) - origPleasure;
             }
             const avgDelta = totalDelta / followUps.length;
             const trend = avgDelta > 0.1 ? 'positive' : avgDelta < -0.1 ? 'negative' : 'neutral';

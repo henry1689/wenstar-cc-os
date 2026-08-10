@@ -24,16 +24,15 @@ import type {
 } from './types/index.js';
 import {
   computeCalcium,
-  emotionalSimilarity,
-  allocateRetrievalWeights,
   updateDynamics,
   recallBoost,
   reinforcementBoost,
 } from './math.js';
-import type { RetrievalWeights } from './math.js';
 import { MEMORY_CONFIG } from '../config/MemoryConfig.js';
-import { encodeEmotionVector, computeL2Norm } from './EmotionVectorCodec.js';
-import { decodePerceptionV40, encodePerceptionV40 } from './PerceptionVector40DCodec.js';
+import { computeL2Norm } from './EmotionVectorCodec.js';
+import { decodePerceptionV40, encodePerceptionV40, map24DTo40D, cosineSimilarity40D, PERCEPTION_40D_ENCODING_VERSION, encodeEmptyPerceptionV40 } from './PerceptionVector40DCodec.js';
+import type { PerceptionV40 } from '../m3/types/perception-40d.js';
+import { PERCEPTION_40D_KEYS, createEmptyPerceptionV40 } from '../m3/types/perception-40d.js';
 import { migrateSchema } from './MigrationManager.js';
 import { createHash } from 'node:crypto';
 
@@ -72,6 +71,57 @@ function genesToJson(genes: EntityGene[]): string {
 /** 从 JSON 字符串恢复 EntityGene[] */
 function jsonToGenes(json: string): EntityGene[] {
   try { return JSON.parse(json); } catch (err) { console.warn('[SQLite] jsonToGenes解析失败:', err); return []; }
+}
+
+/** V12.4 阶段B: 解析 24D JSON（数组24元素 或 命名对象）→ Perception24D。解析失败返回中性 0.5。
+ *  仅作 writeMemory 的 40D 派生源（24D 不再落库）。 */
+const KEYS24_ORDER: (keyof Perception24D)[] = [
+  'pleasure','arousal','dominance','aggression','sincerity','humor',
+  'factual','logical','certainty','abstract','temporal_focus','self_ref',
+  'intimacy','power_diff','dependency','moral_judgment','etiquette','belonging',
+  'sexual_attraction','sensory_craving','energy_merge','possessiveness','ecstasy','safety',
+];
+function parsePerception24DJson(json: string | null | undefined): Perception24D {
+  const neutral: Perception24D = {} as Perception24D;
+  for (const k of KEYS24_ORDER) neutral[k] = 0.5;
+  if (!json) return neutral;
+  try {
+    const p = JSON.parse(json);
+    if (Array.isArray(p) && p.length === 24) {
+      const o = {} as Record<string, number>;
+      for (let i = 0; i < 24; i++) o[KEYS24_ORDER[i]] = Number(p[i]) || 0;
+      return o as unknown as Perception24D;
+    }
+    if (p && typeof p === 'object') {
+      const o = {} as Record<string, number>;
+      for (const k of KEYS24_ORDER) o[k] = Number((p as Record<string, unknown>)[k]) || 0;
+      return o as unknown as Perception24D;
+    }
+  } catch { /* 解析失败走中性 */ }
+  return neutral;
+}
+
+/** V12.4 阶段B 根除24D: 40D → 24D 反解映射（仅 14 维可反解，与 MAP_24_TO_40 互逆）。
+ *  🔴 边界铁律：40D 无槽位的 10 维（arousal/aggression/factual/logical/certainty/abstract/
+ *      temporal_focus/power_diff/sensory_craving/ecstasy）无真实值，反解为中性 0.5。
+ *      record.perception 仅供 M3 内部/下游读字段方使用，不落库、不再参与 24D 检索打分。 */
+const REVERSE_MAP_40_TO_24: ReadonlyArray<{ dim40: number; key24: keyof Perception24D }> = [
+  { dim40: 9, key24: 'self_ref' }, { dim40: 12, key24: 'pleasure' }, { dim40: 14, key24: 'safety' },
+  { dim40: 15, key24: 'intimacy' }, { dim40: 17, key24: 'belonging' }, { dim40: 19, key24: 'etiquette' },
+  { dim40: 33, key24: 'sexual_attraction' }, { dim40: 34, key24: 'energy_merge' },
+  { dim40: 35, key24: 'sincerity' }, { dim40: 36, key24: 'dominance' },
+  { dim40: 37, key24: 'moral_judgment' }, { dim40: 38, key24: 'humor' },
+  { dim40: 39, key24: 'dependency' }, { dim40: 40, key24: 'possessiveness' },
+];
+function perceptionV40To24D(p40: PerceptionV40 | null): Perception24D {
+  const neutral: Perception24D = {} as Perception24D;
+  for (const k of KEYS24_ORDER) neutral[k] = 0.5;
+  if (!p40) return neutral;
+  for (const { dim40, key24 } of REVERSE_MAP_40_TO_24) {
+    const v = p40[PERCEPTION_40D_KEYS[dim40 - 1]];
+    if (typeof v === 'number' && isFinite(v)) neutral[key24] = v;
+  }
+  return neutral;
 }
 
 export class SQLiteAdapter {
@@ -475,6 +525,10 @@ export class SQLiteAdapter {
       try {
         this._backfillLibs40D();
       } catch (_libErr) { console.warn('[V21] 三库 40D 补齐失败:', (_libErr as Error)?.message); }
+      // V12.4: 存量 40D 编码升级 — v1 纯数组 → v2 `{__v:2,dims:[...]}`（幂等）
+      try {
+        this._upgradePerception40DToV2();
+      } catch (_upErr) { console.warn('[V12.4] 40D 编码升级失败:', (_upErr as Error)?.message); }
       this._runIntegrityChecks();
       // 强制落盘
       if (this._dirtyCount > 0) { this.flushNow(); }
@@ -595,10 +649,10 @@ export class SQLiteAdapter {
 
   write(record: EmotionalMemoryRecord): void {
     this.ensureReady();
-    // P0-2: 统一走 EmotionVectorCodec 编解码
-    const pJson = encodeEmotionVector(record.perception);
-    // V20: 40D 双轨 — write() 同步保留 perception_40d（防读-改-写清空）
-    const p40Json = record.perceptionV40 ? encodePerceptionV40(record.perceptionV40) : null;
+    // V12.4 阶段B 根除24D: perception_json 列已删，24D 不再落库（仅作 M3 内部语义引擎/计算介质）。
+    // 40D 强制恒写：record.perceptionV40 优先，缺失时从 record.perception(24D) 派生，防读-改-写清空。
+    const p40 = record.perceptionV40 ?? map24DTo40D(record.perception);
+    const p40Json = encodePerceptionV40(p40);
 
     // P0-4: 钙化分边界强制校验
     const cs = Math.max(MEMORY_CONFIG.recall.calciumMin, Math.min(MEMORY_CONFIG.recall.calciumMax, record.calcium_score));
@@ -608,7 +662,7 @@ export class SQLiteAdapter {
 
     this.runSql(
       `INSERT OR REPLACE INTO memories
-      (id, seq_pos, created_at, perception_json, perception_40d,
+      (id, seq_pos, created_at, perception_40d,
        calcium_score, calcium_level,
        locus_path, leaf_zone, raw_input,
        memory_kind, lifecycle_state, confidence_score, stability_score,
@@ -626,7 +680,7 @@ export class SQLiteAdapter {
        global_uid, belong_entity_uuid, location_fingerprint,
        is_foresight, valid_until_ms, foresight_status,
        l2_norm)
-      VALUES (?, ?, ?, ?, ?,
+      VALUES (?, ?, ?, ?,
               ?, ?,
               ?, ?, ?,
               ?, ?, ?, ?,
@@ -644,7 +698,7 @@ export class SQLiteAdapter {
               ?, ?, ?,
               ?, ?, ?, ?)`,
       [
-        record.id, record.seq_pos, record.created_at, pJson, p40Json,
+        record.id, record.seq_pos, record.created_at, p40Json,
         cs, cl,
         record.locus_path, record.leaf_zone, record.raw_input,
         record.memory_kind, record.lifecycle_state, record.confidence_score, record.stability_score,
@@ -705,7 +759,8 @@ export class SQLiteAdapter {
    */
   writeMemory(opts: {
     id: string; seqPos: number; createdAt: string;
-    perceptionJson: string; calciumScore: number; calciumLevel: number;
+    // V12.4 阶段B 根除24D: perceptionJson 不再落库，仅作 40D 缺失时的派生源（可选）
+    perceptionJson?: string | null; calciumScore: number; calciumLevel: number;
     locusPath: string; leafZone: string; rawInput: string;
     primaryEmotion: string; memoryType: string;
     globalUid?: string; locationFingerprint?: string;
@@ -719,23 +774,26 @@ export class SQLiteAdapter {
     validUntilMs?: number | null;     // V13: 有效截止时间(ms)
     foresightStatus?: string | null;  // V13: 前瞻状态
     namespace?: string | null;        // BATCH-23: memory namespace scope
-    perceptionV40?: string | null;    // V20: 40D感知向量(JSON数组40元素)，写 perception_40d 列（双轨）
+    perceptionV40?: string | null;    // V20: 40D感知向量(JSON数组40元素)，写 perception_40d 列（唯一落库感知向量）
   }): boolean {
     this.ensureReady();
     try {
+      // 40D 强制恒写：perceptionV40 优先，缺失时从 perceptionJson(24D JSON) 派生
+      const p40Json = opts.perceptionV40
+        ? opts.perceptionV40
+        : (opts.perceptionJson ? encodePerceptionV40(map24DTo40D(parsePerception24DJson(opts.perceptionJson))) : null);
       this.runSql(
         `INSERT OR REPLACE INTO memories
-        (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level,
+        (id, seq_pos, created_at, perception_40d, calcium_score, calcium_level,
          locus_path, leaf_zone, raw_input, memory_kind, lifecycle_state,
          confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
 	         global_uid, location_fingerprint, belong_entity_uuid,
 		         is_foresight, valid_until_ms, foresight_status, namespace)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          opts.id, opts.seqPos, opts.createdAt, opts.perceptionJson,
-          opts.perceptionV40 ?? null,
+          opts.id, opts.seqPos, opts.createdAt, p40Json,
           opts.calciumScore, opts.calciumLevel,
           opts.locusPath, opts.leafZone, (opts.rawInput.length > 4000 ? console.warn(`[SQLiteAdapter] raw_input 超长: ${opts.rawInput.length} seq=${opts.seqPos}`) : null, opts.rawInput),
           opts.memoryKind ?? 'episodic',
@@ -909,46 +967,49 @@ export class SQLiteAdapter {
    * 后续可优化为 KD-tree 索引。
    */
   findByEmotionalSimilarity(query: RetrievalQuery): ScoredMemory[] {
+    // V12.4 阶段B 根除24D: 固定转发 40D 情感检索（perception_json 列已删，24D 检索路径退役）。
+    // 24D 打分在 record.perception 反解后（10 维中性 0.5）会产生失真结果，不再保留 24D 分支。
+    // 所有调用方（V13 emotion 路 / retrieval-stage / 金库）零改动。
+    return this.findByEmotionalSimilarity40D(query);
+  }
+
+  /**
+   * V12.4 阶段A: 40D 情感检索 — 用 perception_40d 列 + cosineSimilarity40D 评分。
+   * 与 findByEmotionalSimilarity 同构（landmark/recent 分层 + 过滤），但：
+   *   - 查询感知：current_perception(24D) → map24DTo40D → PerceptionV40
+   *   - 记录感知：record.perceptionV40（perception_40d 列，v2 兼容 decode）
+   *   - 相似度：cosineSimilarity40D（扇区加权）
+   * 40D 缺失行（perceptionV40 空）→ 降级按钙化分排序，不崩不泄漏。
+   */
+  findByEmotionalSimilarity40D(query: RetrievalQuery): ScoredMemory[] {
     this.ensureReady();
-    // P5: Hot cache — same query within 2s returns cached result
-    // 🔴 P0-A1 修复: cacheKey 追加 entityUuids + excludeRoleplay —— 否则同参数不同实体的检索串缓存，
-    //   导致 A 实体结果泄漏给 B 实体（跨实体内容级泄漏，违反 UUID 法）
-    const cacheKey = 'ems_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + (query.entityUuids?.slice().sort().join(',') || '') + '_' + (query.excludeRoleplay ? 'rp' : 'all') + '_' + JSON.stringify(query.current_perception);
+    const cacheKey = 'ems40_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + (query.entityUuids?.slice().sort().join(',') || '') + '_' + (query.excludeRoleplay ? 'rp' : 'all') + '_' + JSON.stringify(query.current_perception);
     const cached = this._cacheGet<ScoredMemory[]>(cacheKey);
     if (cached) return cached;
 
     const startTime = performance.now();
-    const weights = allocateRetrievalWeights(
-      query.entities?.length ?? 0,
-      query.current_perception.arousal,
-      query.similarity_mode,
-    );
+    // 查询 24D → 40D 派生（与 M3 buildPerceptionV40 同源投影）
+    const q40 = map24DTo40D(query.current_perception);
 
-    // P6: Tier 1 — landmark fast path (is_landmark = 1, typically < 10 records)
-    // 检索规则：角色扮演记忆仅在角色扮演检索中可见。正常检索时在查询层排除 roleplay 记忆。
     const rpExclude = query.excludeRoleplay
       ? " AND (memory_kind IS NULL OR (memory_kind != 'roleplay' AND memory_type != 'rp_dialog'))"
       : "";
-    // V13: entityUuid 过滤 — 限定检索到特定人物
     const euClause = this._entityUuidClause(query.entityUuids);
     const landmarkRows = this.execSql(
       `SELECT * FROM memories WHERE is_landmark = 1${rpExclude}${euClause.clause} ORDER BY calcium_score DESC LIMIT 20`,
       euClause.params,
     );
-    let landmarkRecords = this.rowsToRecords(landmarkRows)
+    const landmarkRecords = this.rowsToRecords(landmarkRows)
       .filter(r => r.effective_strength >= 0.05);
 
     const allScored: ScoredMemory[] = [];
     const landmarkIds = new Set<string>();
-
-    // Score landmarks
     for (const record of landmarkRecords) {
       landmarkIds.add(record.id);
-      const score = this._scoreMemory(record, query, weights);
+      const score = this._scoreMemory40D(record, q40);
       if (score) allScored.push(score);
     }
 
-    // If not enough results from landmarks, do Tier 2: recent memory scan
     if (allScored.length < query.limit) {
       const all = this.execSql(
         `SELECT * FROM memories WHERE 1=1${rpExclude}${euClause.clause} ORDER BY created_at DESC LIMIT 200`,
@@ -956,9 +1017,8 @@ export class SQLiteAdapter {
       );
       const records = this.rowsToRecords(all)
         .filter(r => r.effective_strength >= 0.05 && !landmarkIds.has(r.id));
-
       for (const record of records) {
-        const score = this._scoreMemory(record, query, weights);
+        const score = this._scoreMemory40D(record, q40);
         if (score) allScored.push(score);
       }
     }
@@ -967,88 +1027,54 @@ export class SQLiteAdapter {
       .sort((a, b) => b.composite - a.composite)
       .slice(0, query.limit);
 
-    // P7: Query observability
     const elapsed = performance.now() - startTime;
     if (elapsed > 100) {
-      console.warn(`[SQLite] SLOW QUERY [findByEmotionalSimilarity]: ${elapsed.toFixed(0)}ms`);
+      console.warn(`[SQLite] SLOW QUERY [findByEmotionalSimilarity40D]: ${elapsed.toFixed(0)}ms`);
     }
-
     this._cacheSet(cacheKey, result);
     return result;
   }
 
-  /** P6: Score a single memory record against the query */
-  private _scoreMemory(record: EmotionalMemoryRecord, query: RetrievalQuery, weights: RetrievalWeights): ScoredMemory | null {
-    const emotional = emotionalSimilarity(
-      query.current_perception,
-      record.perception,
-      query.similarity_mode,
-      query.current_perception, // P1-1: 当前感知驱动动态权重
-    );
+  /** V12.4: 40D 单条评分 — cosineSimilarity40D 扇区加权。
+   * 合成语义对齐 24D _scoreMemory（S4 评审 P1 修复）：
+   *   - 钙化分 /10 归一化（累积级钙化最高 [0,10]，不归一化会淹没情感相似度）
+   *   - effective_strength 乘子 + 时间衰减
+   *   - safeComposite > 0.05 低相似过滤（与调用方阈值契约一致）
+   */
+  private _scoreMemory40D(record: EmotionalMemoryRecord, q40: PerceptionV40): ScoredMemory | null {
+    // S4 P1-1 修复: 40D 缺失行不再从 record.perception（反解含 10 维中性 0.5）map 兜底——
+    //   否则金库/记事/锚点会以相同 14×0.5 签名参与余弦，污染情感召回。
+    //   缺失行 → emotional=0，仅按钙化分+recency 降级排序（与注释契约一致）。
+    const r40 = record.perceptionV40 ?? null;
+    const emotional = r40 ? cosineSimilarity40D(q40, r40) : 0;
 
-    const topic = query.locus_path
-      ? (record.locus_path.startsWith(query.locus_path) ? 1.0 : 0.0)
-      : 0;
-
-    let entityOverlap = 0;
-    if (query.entities && query.entities.length > 0) {
-      const recordNames = new Set(record.entity_genes.map(g => g.name));
-      const matched = query.entities.filter(e => recordNames.has(e)).length;
-      const union = new Set([...query.entities, ...recordNames]).size;
-      entityOverlap = union > 0 ? matched / union : 0;
-    }
-
-    const calcium = record.calcium_score;
-
-    // P9: VAD bonus — if record has VAD spectrum, add small boost for matching valence/arousal
-    let vadBonus = 0;
-    if (record.vad_spectrum) {
-      try {
-        const vs = typeof record.vad_spectrum === 'string' ? JSON.parse(record.vad_spectrum) : record.vad_spectrum;
-        if (vs.overall) {
-          const vValence = vs.overall.valence ?? 0.5;
-          const vArousal = vs.overall.arousal ?? 0.5;
-          const pValence = (query.current_perception.pleasure + 1) / 2; // normalize -1..1 to 0..1
-          const pArousal = query.current_perception.arousal;
-          const vadSim = 1 - (Math.abs(vValence - pValence) + Math.abs(vArousal - pArousal)) / 2;
-          vadBonus = vadSim * 0.1;
-        }
-      } catch { /* VAD parse failure is non-fatal */ }
-    }
-
-    // 时间衰减：24小时半衰期。昨天的对话今天权重减半，三天的降到 ~12%。
-    //    钙化分（被反复召回的长期重要记忆）仍保有其基础权重，不受时间衰减影响
-    //    ——钙化分乘在 str*weights 里，recency 只影响时间维度。
+    const calcium = record.calcium_score ?? 0;
     let recency = 1.0;
     if (record.created_at) {
       const hoursAgo = (Date.now() - new Date(record.created_at).getTime()) / 3_600_000;
       recency = Math.pow(0.5, hoursAgo / 24);
     }
-
     const str = record.effective_strength ?? 0.5;
-    // Q1: 钙化分归一化到 [0,1]——种子级 computeCalcium 产出 [0,1]，累积级最高到 [0,10]。
-    //未经归一化时，被召回过 5 次的记忆（calcium≈1.0+）其 calcium 项的幅值是 emotional/topic
-    // 项的 10 倍，直接淹没情感相似度。除以10后找回语义：被反复想起的记忆仍有加权优势，
-    // 但不至于单维决定排名。
+    // V12.4: 40D 相似度 55% + 钙化(归一化) 30% + 时间衰减 15%（weighted）
     const composite = isNaN(str) ? 0.5 : str * (
-      weights.emotional * emotional +
-      weights.topic * topic +
-      weights.entity * entityOverlap +
-      weights.calcium * (calcium / 10)
-    ) * recency + vadBonus;
-
+      0.55 * emotional +
+      0.30 * (calcium / 10) +
+      0.15 * recency
+    );
     const safeComposite = isNaN(composite) ? 0 : Math.max(0, Math.min(1, composite));
 
     if (safeComposite > 0.05) {
       return {
         record,
-        scores: { emotional, topic, entity: entityOverlap, calcium },
+        scores: { emotional, topic: 0, entity: 0, calcium },
         composite: safeComposite,
       };
     }
     return null;
   }
 
+  // V12.4 阶段B 根除24D: 原 _scoreMemory(24D 加权余弦) 已退役 — findByEmotionalSimilarity 固定走 40D。
+  // 40D 评分统一在 _scoreMemory40D（cosineSimilarity40D 扇区加权）。
   // ─── 记忆动力学更新 ───
 
   /** 更新召回避次数 + 重新巩固增强 */
@@ -1156,11 +1182,15 @@ export class SQLiteAdapter {
   ): void {
     this.ensureReady();
     const now = new Date().toISOString();
+    // V12.4 阶段B 根除24D: 相似度改用 40D 扇区加权余弦（perception 反解后 10 维中性 0.5，24D 余弦失真）
+    const newP40 = map24DTo40D(newPerception);
     for (const id of memoryIds) {
       const record = this.findById(id);
       if (!record) continue;
 
-      const similarity = emotionalSimilarity(newPerception, record.perception, 'balanced');
+      // S4 P1-1 一致性修复: 40D 缺失行不 map 反解中性 0.5（避免 14×0.5 假相似），similarity=0 自然不过 0.3 门槛
+      const r40 = record.perceptionV40 ?? null;
+      const similarity = r40 ? cosineSimilarity40D(newP40, r40) : 0;
       if (similarity < 0.3) continue;
 
       const boost = reinforcementBoost(record.calcium_score, newCalcium, similarity);
@@ -1719,6 +1749,9 @@ export class SQLiteAdapter {
       // 确认列存在（新库 schema.sql 已含，旧库由 initialize ALTER 补）
       const cols = this.db.exec("PRAGMA table_info(memories)")[0]?.values ?? [];
       if (!cols.some((c: any) => c[1] === 'perception_40d')) return 0;
+      // V12.4 阶段B 根除24D: perception_json 列已删（v14 迁移），无派生数据源 → 静默跳过。
+      // 40D 缺失行（金库/记事/锚点）由运行时写入方补写，不在此补全。
+      if (!cols.some((c: any) => c[1] === 'perception_json')) return 0;
 
       // 读取有 24D 感知但无 40D 的记忆
       const rows = this.db.exec(
@@ -1753,7 +1786,8 @@ export class SQLiteAdapter {
             const v = Number(p24[k]);
             if (isFinite(v)) p40[d - 1] = v;
           }
-          this.db.run("UPDATE memories SET perception_40d = ? WHERE id = ?", [JSON.stringify(p40), String(id)]);
+          // V12.4: 编码标识 — 40D 带 __v 版本（v2 对象格式），decode 向后兼容 v1 纯数组
+          this.db.run("UPDATE memories SET perception_40d = ? WHERE id = ?", [JSON.stringify({ __v: PERCEPTION_40D_ENCODING_VERSION, dims: p40 }), String(id)]);
           updated++;
         } catch { /* 单条失败跳过 */ }
       }
@@ -1830,9 +1864,10 @@ export class SQLiteAdapter {
         let bdUpdated = 0;
         for (const [id, evRaw] of bdRows) {
           try {
-            const parsed = JSON.parse(String(evRaw));
-            if (Array.isArray(parsed) && parsed.length === 40) continue; // 已是 40D
-            // 非 40D（时间戳/24D/空）→ 写 40D 默认数组
+            // V12.4 阶段B: 用 decodePerceptionV40 识别 v1纯数组 与 v2对象（{__v:2,dims}）→ 已是 40D 跳过
+            const dec = decodePerceptionV40(evRaw ? String(evRaw) : null);
+            if (dec) continue;
+            // 非 40D（时间戳/24D/空）→ 写 40D 默认数组（v1 纯数组，兼容）
             this.db.run("UPDATE black_diamond SET emotion_vector = ? WHERE id = ?", [JSON.stringify(new Array(40).fill(0)), String(id)]);
             bdUpdated++;
           } catch { /* 空/坏 → 写默认 */ }
@@ -1843,6 +1878,45 @@ export class SQLiteAdapter {
       return total;
     } catch (e) {
       console.warn('[V21] 三库 40D 补齐异常:', (e as Error)?.message);
+      return 0;
+    }
+  }
+
+  /**
+   * 🔴 V12.4: 存量 40D 编码升级 — v1 纯数组 → v2 `{__v:2,dims:[...]}`。
+   * 幂等：只处理非空且为纯数组格式（v1）的行；已是 v2/命名对象/空 的行跳过。
+   * 在 sql.js 内存态内执行，flush 时随库持久。
+   */
+  private _upgradePerception40DToV2(): number {
+    if (!this.db) return 0;
+    try {
+      const cols = this.db.exec("PRAGMA table_info(memories)")[0]?.values ?? [];
+      if (!cols.some((c: any) => c[1] === 'perception_40d')) return 0;
+      const rows = this.db.exec(
+        "SELECT id, perception_40d FROM memories WHERE perception_40d IS NOT NULL AND perception_40d != ''"
+      )[0]?.values ?? [];
+      let upgraded = 0;
+      let skippedV2 = 0;
+      for (const [id, pJsonRaw] of rows) {
+        try {
+          const parsed = JSON.parse(String(pJsonRaw));
+          // 已是 v2 对象（__v / dims）→ 跳过
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.dims)) {
+            skippedV2++;
+            continue;
+          }
+          // 纯数组 v1 → 升级为 v2
+          if (Array.isArray(parsed) && parsed.length === 40) {
+            this.db.run("UPDATE memories SET perception_40d = ? WHERE id = ?", [JSON.stringify({ __v: PERCEPTION_40D_ENCODING_VERSION, dims: parsed }), String(id)]);
+            upgraded++;
+          }
+        } catch { /* 单条解析失败跳过 */ }
+      }
+      if (upgraded > 0) console.log(`[V12.4] 40D 编码升级 v1→v2: ${upgraded} 条（已 v2 ${skippedV2} 条）`);
+      else if (skippedV2 > 0) console.log(`[V12.4] 40D 编码已是 v2: ${skippedV2} 条，无需升级`);
+      return upgraded;
+    } catch (e) {
+      console.warn('[V12.4] 40D 编码升级异常:', (e as Error)?.message);
       return 0;
     }
   }
@@ -1929,15 +2003,18 @@ export class SQLiteAdapter {
       const es = Math.min(1.0, ca * 0.8);
 
       try {
+        // V12.4 阶段B 根除24D: 锚点不再写 perception_json；默认 40D v2 全零（S4 P1-2 修复：
+        //   与 encodeEmptyPerceptionV40/flushDialogGroup 空默认一致，对话组摘要不参与情感余弦）
+        const anchor40D = encodeEmptyPerceptionV40();
         this.db!.run(
-          "INSERT OR REPLACE INTO memories (id,seq_pos,created_at,perception_json,calcium_score,calcium_level," +
+          "INSERT OR REPLACE INTO memories (id,seq_pos,created_at,perception_40d,calcium_score,calcium_level," +
           "locus_path,leaf_zone,raw_input,memory_kind,lifecycle_state,confidence_score,stability_score," +
           "thread_id,recall_count,promoted_to_diamond,effective_strength,strength_updated_at," +
           "is_landmark,primary_emotion,memory_type,dialog_group_id,belong_entity_uuid," +
           "is_foresight,valid_until_ms,foresight_status,source_type) " +
           "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,1,?,'dialog',?,?,0,NULL,'none','conversation')",
           [id, seq++, String(firstTs || now),
-           '[0,0,0,0,0.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+           anchor40D,
            ca, cl, 'user.misc.default', 'language_semantic_zone', raw, kind,
            cl >= 2 ? 'active' : 'candidate', 0.55, cl >= 2 ? 0.45 : 0.2,
            dg, es, now, '平静', dg, eu]
@@ -2067,45 +2144,19 @@ export class SQLiteAdapter {
       obj = row as Record<string, any>;
     }
 
-    // V13: 兼容两种感知向量格式（数组 [0.5,...] 和旧对象 {pleasure:0.5,...}）
-    const rawP = typeof obj.perception_json === 'string'
-      ? JSON.parse(obj.perception_json)
-      : obj.perception_json ?? Array(24).fill(0.5);
-    const pArr: number[] = Array.isArray(rawP)
-      ? rawP
-      : [
-          (rawP as any).pleasure ?? 0, (rawP as any).arousal ?? 0,
-          (rawP as any).dominance ?? 0, (rawP as any).aggression ?? 0,
-          (rawP as any).sincerity ?? 0, (rawP as any).humor ?? 0,
-          (rawP as any).factual ?? 0, (rawP as any).logical ?? 0,
-          (rawP as any).certainty ?? 0, (rawP as any).abstract ?? 0,
-          (rawP as any).temporal_focus ?? 0, (rawP as any).self_ref ?? 0,
-          (rawP as any).intimacy ?? 0, (rawP as any).power_diff ?? 0,
-          (rawP as any).dependency ?? 0, (rawP as any).moral_judgment ?? 0,
-          (rawP as any).etiquette ?? 0, (rawP as any).belonging ?? 0,
-          (rawP as any).sexual_attraction ?? 0, (rawP as any).sensory_craving ?? 0,
-          (rawP as any).energy_merge ?? 0, (rawP as any).possessiveness ?? 0,
-          (rawP as any).ecstasy ?? 0, (rawP as any).safety ?? 0,
-        ];
-
-    const perception: Perception24D = {
-      pleasure: pArr[0], arousal: pArr[1], dominance: pArr[2],
-      aggression: pArr[3], sincerity: pArr[4], humor: pArr[5],
-      factual: pArr[6], logical: pArr[7], certainty: pArr[8],
-      abstract: pArr[9], temporal_focus: pArr[10], self_ref: pArr[11],
-      intimacy: pArr[12], power_diff: pArr[13], dependency: pArr[14],
-      moral_judgment: pArr[15], etiquette: pArr[16], belonging: pArr[17],
-      sexual_attraction: pArr[18], sensory_craving: pArr[19],
-      energy_merge: pArr[20], possessiveness: pArr[21],
-      ecstasy: pArr[22], safety: pArr[23],
-    };
+    // V12.4 阶段B 根除24D: 感知向量唯一来源 = perception_40d 列（v2 兼容 decode），
+    // 反解 24D 仅 14 维真实、10 维中性 0.5（无槽位字段不落库）。
+    const p40 = decodePerceptionV40(obj.perception_40d);
+    const perception = perceptionV40To24D(p40);
 
     return {
       id: obj.id,
       seq_pos: obj.seq_pos,
       created_at: obj.created_at,
       perception,
-      perceptionV40: decodePerceptionV40(obj.perception_40d) ?? undefined, // V20: 40D 双轨
+      // S4 P1-1 根治: 无 40D 行 → 全零 PerceptionV40（而非 undefined）。
+      // 全零对象经 cosineSimilarity40D 恒得 0（norm=0 → 返回0），write() 读-改-写也恒写全零，不制造 14×0.5 假签名。
+      perceptionV40: decodePerceptionV40(obj.perception_40d) ?? createEmptyPerceptionV40(), // V12.4 40D 唯一落库
       calcium_score: obj.calcium_score,
       calcium_level: obj.calcium_level as 0 | 1 | 2 | 3,
       raw_input: obj.raw_input,

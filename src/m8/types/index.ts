@@ -81,6 +81,12 @@ export interface YearRingEntry {
   calcium_at_event: number;
   /** 关联的 M3 感知维度快照 */
   perception_snapshot: PerceptionSnapshot;
+
+  // ── V12.3 扩展 ──
+  // 线索协助检索（M8FusionAdapter.matchByClue）在构造 yearEntry 时附带记忆原文，
+  // 供上层（KnowledgeContextBuilder.appendClueRecall）注入 LLM 辅助自然带出。
+  // 仅在 matchByClue 产物上填充，非持久化字段。
+  raw_input?: string;
 }
 
 // ════════════════════════════════════════════════════════

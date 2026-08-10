@@ -16,6 +16,8 @@
  */
 
 import type { Perception24D } from '../m3/types/perception.js';
+import type { PerceptionV40 } from '../m3/types/perception-40d.js';
+import { PERCEPTION_40D_KEYS } from '../m3/types/perception-40d.js';
 import { decodePerceptionV40, cosineSimilarity40D, arrayToPerceptionV40 } from '../m2/PerceptionVector40DCodec.js';
 import { isPerception40DEnabled } from '../config/perception-40d-config.js';
 
@@ -110,8 +112,43 @@ export function perceptionToArray(p: Perception24D): number[] {
   ];
 }
 
+/** V12.4 阶段B 根除24D: 40D → 24D 反解映射（dim40 1-indexed → 24D 数组索引）。
+ *  🔴 仅 14 维可反解（与 SQLiteAdapter.rowToRecord 同源），无槽位 10 维填中性 0.5。
+ *  `perceptionJson` 字段现已承载 perception_40d v2 JSON，24D 回退路径需正确解码避免 NaN。 */
+const REVERSE_40_TO_24: ReadonlyArray<[number, number]> = [
+  [12, 0],  // D12 pleasure → 24D[0]
+  [36, 2],  // D36 dominance → 24D[2]
+  [35, 4],  // D35 sincerity → 24D[4]
+  [38, 5],  // D38 humor → 24D[5]
+  [9, 11],  // D09 self_ref → 24D[11]
+  [15, 12], // D15 intimacy → 24D[12]
+  [39, 14], // D39 dependency → 24D[14]
+  [37, 15], // D37 moral_judgment → 24D[15]
+  [19, 16], // D19 etiquette → 24D[16]
+  [17, 17], // D17 belonging → 24D[17]
+  [33, 18], // D33 sexual_attraction → 24D[18]
+  [34, 20], // D34 energy_merge → 24D[20]
+  [40, 21], // D40 possessiveness → 24D[21]
+  [14, 23], // D14 safety → 24D[23]
+];
+function perceptionV40ArrayTo24DArray(dims40: number[]): number[] {
+  const out = new Array(24).fill(0.5); // 无槽位 10 维中性
+  for (const [dim40, idx24] of REVERSE_40_TO_24) {
+    const v = Number(dims40[dim40 - 1]);
+    if (isFinite(v)) out[idx24] = v;
+  }
+  return out;
+}
+
+/** V12.4 阶段B 根除24D: PerceptionV40 对象 → 24D 数值数组（供 record.perceptionV40 反解，Offline 图等复用） */
+export function perceptionV40ObjectTo24DArray(p40: PerceptionV40): number[] {
+  const dims40 = PERCEPTION_40D_KEYS.map(k => p40[k] ?? 0);
+  return perceptionV40ArrayTo24DArray(dims40);
+}
+
 /**
- * 解析存储的 JSON 向量为数值数组
+ * 解析存储的 JSON 向量为数值数组（24D）
+ * 兼容：24元素数组 / 24D 命名对象 / 40D v2对象({__v:2,dims}) / 40D v1纯数组(40元素)
  */
 export function parseStoredVector(json: string | null | undefined): number[] | null {
   if (!json) return null;
@@ -120,8 +157,15 @@ export function parseStoredVector(json: string | null | undefined): number[] | n
     if (Array.isArray(parsed) && parsed.length === 24 && parsed.every((v: unknown) => typeof v === 'number')) {
       return parsed;
     }
-    // 对象格式 → 转数组
+    if (Array.isArray(parsed) && parsed.length === 40 && parsed.every((v: unknown) => typeof v === 'number')) {
+      return perceptionV40ArrayTo24DArray(parsed);
+    }
+    // 对象格式 → 40D v2（{__v:2,dims}）→ 反解；否则按 24D 命名对象转数组
     if (parsed && typeof parsed === 'object') {
+      const dims = (parsed as { dims?: unknown }).dims;
+      if (Array.isArray(dims) && dims.length === 40 && dims.every((v: unknown) => typeof v === 'number')) {
+        return perceptionV40ArrayTo24DArray(dims as number[]);
+      }
       return perceptionToArray(parsed as Perception24D);
     }
     return null;

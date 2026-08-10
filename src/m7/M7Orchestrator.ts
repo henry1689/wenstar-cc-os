@@ -2,6 +2,8 @@
 // Ref: docs/M7-design-v1.md §3-§6
 // @module M7-Dream
 
+// V12.4 阶段B 根除24D: perception_json 列已删，梦境分析读 perception_40d 反解 pleasure(D12)
+import { decodePerceptionV40 } from '../m2/PerceptionVector40DCodec.js';
 import { DreamQueue } from './DreamQueue.js';
 import { DreamInternalizer } from './DreamInternalizer.js';
 import { ClueTracker } from './ClueTracker.js';
@@ -219,7 +221,7 @@ export class M7Orchestrator {
       if (existing && existing.length > 0) return;
 
       // 🔴 户籍管理法: 查询带 belong_entity_uuid，梦境打标（纳入 UUID 监管）
-      const all = sqlite.queryAll('SELECT id, raw_input, calcium_level, calcium_score, perception_json, belong_entity_uuid FROM memories ORDER BY created_at DESC LIMIT 200');
+      const all = sqlite.queryAll('SELECT id, raw_input, calcium_level, calcium_score, perception_40d, belong_entity_uuid FROM memories ORDER BY created_at DESC LIMIT 200');
       if (!all || all.length === 0) return;
 
       // 筛选高情绪记忆（钙质≥0.4）
@@ -229,8 +231,9 @@ export class M7Orchestrator {
       // 按情绪类型分组
       const groups: Record<string, { count: number; samples: string[] }> = {};
       for (const mem of highEmo) {
-        const perc = mem.perception_json ? JSON.parse(mem.perception_json) : {};
-        const p = perc.pleasure || 0;
+        // V12.4 根除24D: pleasure 取 40D D12（无 40D 行中性 0.5）
+        const p40 = decodePerceptionV40(mem.perception_40d ? String(mem.perception_40d) : null);
+        const p = p40?.d12_enjoyment ?? 0.5;
         const label = p < -0.3 ? '低落' : p > 0.3 ? '积极' : '强烈';
         if (!groups[label]) groups[label] = { count: 0, samples: [] };
         groups[label].count++;
@@ -318,7 +321,7 @@ export class M7Orchestrator {
       if (!sqlite) return;
 
       // 扫描最近对话，提取用户对玉瑶的评价信号
-      const recent = sqlite.queryAll('SELECT id, raw_input, perception_json FROM memories ORDER BY created_at DESC LIMIT 100');
+      const recent = sqlite.queryAll('SELECT id, raw_input FROM memories ORDER BY created_at DESC LIMIT 100');
       if (!recent || recent.length === 0) return;
 
       // 检测用户对玉瑶的反馈信号

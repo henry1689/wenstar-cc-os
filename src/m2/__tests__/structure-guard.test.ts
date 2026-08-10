@@ -288,6 +288,10 @@ describe('[M2守卫] SQLiteAdapter 公开方法', () => {
     expect(typeof proto.findByEmotionalSimilarity).toBe('function');
   });
 
+  it('findByEmotionalSimilarity40D(query) — V12.4 40D 情感检索', () => {
+    expect(typeof proto.findByEmotionalSimilarity40D).toBe('function');
+  });
+
   it('updateRecall(memoryIds)', () => {
     expect(typeof proto.updateRecall).toBe('function');
   });
@@ -520,6 +524,12 @@ describe('[M2守卫] 外部消费者契约', () => {
   it('FusionStorageAdapter 被 m4/M4Orchestrator 使用 — 必须有 findRelatedEntities', () => {
     const proto = FusionStorageAdapter.prototype as any;
     expect(typeof proto.findRelatedEntities).toBe('function');
+  });
+
+  it('V12.6: FusionStorageAdapter 被 m4/MemoryRetriever entity 路使用 — 必须有 findByEntityUuid 透传', () => {
+    // MemoryRetriever.ts runEntity 调 storage.findByEntityUuid（透传 SQLiteAdapter）
+    const proto = FusionStorageAdapter.prototype as any;
+    expect(typeof proto.findByEntityUuid).toBe('function');
   });
 
   it('FusionStorageAdapter 被 m7/ConsolidationQueue 使用 — 必须有 promoteToLandmark/findBySeqPosRange', () => {

@@ -82,6 +82,11 @@ describe('[M8守卫] 类型接口', () => {
     expect(yr.sensory_anchor).toBeTruthy();
     expect(Array.isArray(yr.retrieval_clues)).toBe(true);
   });
+  it('YearRingEntry.raw_input V12.3 可选扩展（matchByClue 附带记忆原文）', () => {
+    // 类型上 raw_input 是可选字段，运行时由 matchByClue 填充
+    const yr: YearRingEntry = { id: 'test', created_at: '', updated_at: '', sensory_anchor: '猫', simulated_physiological_snapshot: {} as any, emotional_valence: '温馨', narrative_tag: '日常', retrieval_clues: [], recall_count: 0, last_recalled_at: null, calcium_at_event: 2, perception_snapshot: {} as any, raw_input: '去年十月加班的那个晚上' };
+    expect(yr.raw_input).toBe('去年十月加班的那个晚上');
+  });
   it('ScarTag 含 type(4种)/healed/healed_at', () => {
     const st: ScarTag = { entry_id: 'test', type: 'argument', healed: false, healed_at: null, healed_by: null };
     expect(['argument', 'boundary_test', 'misunderstanding', 'disappointment']).toContain(st.type);

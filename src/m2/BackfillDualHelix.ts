@@ -36,6 +36,16 @@ async function main() {
   const buffer = readFileSync(DB_PATH);
   const db = new SQL.Database(buffer);
 
+  // V12.4 阶段B 根除24D: perception_json 列已删，本历史脚本（24D→state_spines）无数据源 → 跳过
+  try {
+    const cols = (db.exec("PRAGMA table_info(memories)")[0]?.values ?? []) as Array<[number, string, string, ...unknown[]]>;
+    if (!cols.some(c => c[1] === 'perception_json')) {
+      console.log('⚠️ memories.perception_json 列已删（24D 根除），本历史回填脚本无数据源，跳过');
+      db.close();
+      return;
+    }
+  } catch { /* PRAGMA 异常继续尝试 */ }
+
   // 统计需要回填的量
   const toFill = db.exec(
     `SELECT m.id, m.seq_pos, m.created_at, m.global_uid, m.perception_json, m.raw_input, m.locus_path, m.dna_root_id, m.calcium_score

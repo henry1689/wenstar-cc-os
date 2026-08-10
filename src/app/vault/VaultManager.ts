@@ -16,6 +16,8 @@ import type { FusionStorageAdapter } from '../../m2/FusionStorageAdapter.js';
 import type { SQLiteAdapter } from '../../m2/SQLiteAdapter.js';
 import type { ConversationTurn } from '../../m5/types/index.js';
 import { MEMORY_CONFIG } from '../../config/MemoryConfig.js';
+// V12.4 阶段B 根除24D: perception_json 列已删，金库写入用 40D 默认向量 / 提炼读 40D 列
+import { encodeEmptyPerceptionV40, decodePerceptionV40 } from '../../m2/PerceptionVector40DCodec.js';
 
 // ─── 类型定义 ───
 
@@ -314,14 +316,15 @@ export function addGoldEntryFromKnowledgeVault(
     const seqPos = -(Date.now() % 1000000);
     const locusPath = 'knowledge_vault';
     const leafZone = 'language_semantic_zone';
-    const perceptionJson = '{}';
+    // V12.4 阶段B 根除24D: perception_json 列已删，知识卷宗写默认 40D v2（全零，语义等价旧 '{}'）
+    const perception40D = encodeEmptyPerceptionV40();
 
     sqlite.writeRaw(
-      `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_json, calcium_score, calcium_level,
+      `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_40d, calcium_score, calcium_level,
        locus_path, leaf_zone, effective_strength, created_at, lifecycle_state, memory_kind, recall_count,
        last_recalled_at, source_type, strength_updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?)`,
-      [entryId, seqPos, params.summary.substring(0, 500), perceptionJson, 0.5, 1,
+      [entryId, seqPos, params.summary.substring(0, 500), perception40D, 0.5, 1,
        locusPath, leafZone, 0.5, now, now]
     );
 
@@ -405,7 +408,7 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
 
   const rows = sqlite.queryAll(
     `SELECT id, raw_input, calcium_score, calcium_level, recall_count, is_landmark,
-            scar_type, narrative_tag, perception_json, lifecycle_state, promoted_to_diamond,
+            scar_type, narrative_tag, perception_40d, lifecycle_state, promoted_to_diamond,
             effective_strength, primary_emotion, namespace
      FROM memories WHERE id = ? LIMIT 1`,
     [memoryId],
@@ -424,7 +427,8 @@ export function promoteToBlackDiamond(sqlite: SQLiteAdapter, memoryId: string): 
   if (mem.is_landmark === 1) tags.push('地标');
   if (mem.narrative_tag) tags.push(`tag:${String(mem.narrative_tag).substring(0, 24)}`);
   if (mem.primary_emotion && mem.primary_emotion !== emotionTag) tags.push(`emotion:${String(mem.primary_emotion).substring(0, 24)}`);
-  const emotionVec = (mem as any).perception_json || null;
+  // V12.4 阶段B 根除24D: 黑钻 emotion_vector 改存 40D v2 JSON（_backfillLibs40D 用 decodePerceptionV40 识别，不再清零）
+  const emotionVec = mem.perception_40d && decodePerceptionV40(String(mem.perception_40d)) ? String(mem.perception_40d) : undefined;
 
   const entry = addBlackDiamond(sqlite, {
     summary: rawInput.length > 200 ? rawInput.substring(0, 200) + '…' : rawInput,

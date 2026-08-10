@@ -18,6 +18,8 @@
  */
 import type { FusionStorageAdapter } from '../../../m2/FusionStorageAdapter.js';
 import { MEMORY_CONFIG } from '../../../config/MemoryConfig.js';
+// V12.4 阶段B 根除24D: perception_json 列已删，读 perception_40d 列反解（pleasure=D12 / intimacy=D15，arousal 无槽位=0.5）
+import { decodePerceptionV40, encodeEmptyPerceptionV40 } from '../../../m2/PerceptionVector40DCodec.js';
 
 /** 各阶段执行窗口（小时） */
 const STAGE_WINDOWS = {
@@ -264,16 +266,21 @@ export class SleepTimeConsolidator {
 
       // 扫描最近 50 条记忆，标记高惊讶度
       const recent = sqlite.queryAll(
-        `SELECT id, perception_json FROM memories ORDER BY created_at DESC LIMIT 50`
+        `SELECT id, perception_40d FROM memories ORDER BY created_at DESC LIMIT 50`
       );
       let highSurprise = 0;
       for (const row of recent) {
         try {
-          const perc = JSON.parse((row as any).perception_json || '{}');
-          if (!perc.pleasure) continue;
-          const surprise = (Math.abs(perc.pleasure - baseline.pleasure) +
-            Math.abs(perc.arousal - baseline.arousal) +
-            Math.abs(perc.intimacy - baseline.intimacy)) / 3;
+          const p40 = decodePerceptionV40((row as any).perception_40d ? String((row as any).perception_40d) : null);
+          if (!p40) continue;
+          // 40D 反解：pleasure=D12 / intimacy=D15 真实，arousal 无 40D 槽位 → 中性 0.5
+          const pleasure = p40.d12_enjoyment;
+          const intimacy = p40.d15_partner_attachment;
+          const arousal = 0.5;
+          if (!pleasure) continue;
+          const surprise = (Math.abs(pleasure - baseline.pleasure) +
+            Math.abs(arousal - baseline.arousal) +
+            Math.abs(intimacy - baseline.intimacy)) / 3;
           if (surprise > 0.3) {
             sqlite.writeRaw('UPDATE memories SET calcium_score = MIN(10, COALESCE(calcium_score, 0) + ?) WHERE id = ?',
               [surprise * 0.5, (row as any).id]);
@@ -317,7 +324,7 @@ export class SleepTimeConsolidator {
     try {
       // 扫描最近 200 条记忆，扩展时间窗口覆盖更多跨会话数据
       const rows = sqlite.queryAll(
-        `SELECT id, raw_input, calcium_score, entity_names, created_at, perception_json
+        `SELECT id, raw_input, calcium_score, entity_names, created_at
          FROM memories WHERE memory_kind = 'episodic'
          ORDER BY created_at DESC LIMIT 200`
       );
@@ -604,11 +611,11 @@ export class SleepTimeConsolidator {
           const seqPos = -(Date.now() % 1000000);
 
           sqlite.writeRaw(
-            `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_json, calcium_score, calcium_level,
+            `INSERT OR IGNORE INTO memories (id, seq_pos, raw_input, perception_40d, calcium_score, calcium_level,
              locus_path, leaf_zone, effective_strength, created_at, lifecycle_state, memory_kind, recall_count,
              last_recalled_at, source_type, strength_updated_at, belong_entity_uuid)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'knowledge_vault', 0, NULL, 'knowledge_vault', ?, NULL)`,
-            [entryId, seqPos, summary.substring(0, MEMORY_CONFIG.sleepConsolidation.secondBrainSummaryMaxLen), '{}',
+            [entryId, seqPos, summary.substring(0, MEMORY_CONFIG.sleepConsolidation.secondBrainSummaryMaxLen), encodeEmptyPerceptionV40(),
              MEMORY_CONFIG.sleepConsolidation.secondBrainInitCalcium, 1,
              'knowledge_vault', 'language_semantic_zone',
              MEMORY_CONFIG.sleepConsolidation.secondBrainInitStrength, now, now]
@@ -710,7 +717,7 @@ export class SleepTimeConsolidator {
     try {
       // 1. 回放 top-20 高钙化记忆，强化 hippocampal_index 映射
       const topMemories = sqlite.queryAll(
-        `SELECT id, raw_input, calcium_score, locus_path, entity_names, perception_json
+        `SELECT id, raw_input, calcium_score, locus_path, entity_names, perception_40d
          FROM memories WHERE calcium_score >= ${MEMORY_CONFIG.sleepConsolidation.systemsConsolidationCalcium} AND lifecycle_state != 'suppressed'
          ORDER BY calcium_score DESC LIMIT ${MEMORY_CONFIG.sleepConsolidation.systemsConsolidationBatchSize}`
       );
@@ -723,7 +730,9 @@ export class SleepTimeConsolidator {
           const personNames = Array.isArray(entities)
             ? entities.filter((e: any) => typeof e === 'string').map((n: string) => ({ name: n, type: 'person' as const }))
             : [];
-          const perception = JSON.parse((mem as any).perception_json || '{}');
+          // V12.4 阶段B 根除24D: 签名情感维度只用 pleasure（40D D12 真实值），无 40D → 中性
+          const p40 = decodePerceptionV40((mem as any).perception_40d ? String((mem as any).perception_40d) : null);
+          const perception = p40 ? { pleasure: p40.d12_enjoyment } : { pleasure: 0.5 };
 
           // 更新稀疏索引的钙化 boost（反复走的路更粗）
           const sig = this._computeSigForMemory(

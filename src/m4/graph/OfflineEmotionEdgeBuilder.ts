@@ -15,7 +15,7 @@
  */
 
 import type { MemoryAssociationRepository } from './MemoryAssociationRepository.js';
-import { cosineSimilarity, parseStoredVector } from '../VectorReranker.js';
+import { cosineSimilarity, parseStoredVector, perceptionV40ObjectTo24DArray } from '../VectorReranker.js';
 
 export interface EmotionBuildOptions {
   namespace?: string;
@@ -143,6 +143,11 @@ export class OfflineEmotionEdgeBuilder {
   }
 
   private _getVector(mem: any): number[] | null {
+    // V12.4 阶段B 根除24D: 新记录形态 record.perceptionV40（PerceptionV40 对象）→ 40D 反解 24D 数组；
+    // 兼容旧 JSON 串（mem.perception_json / perceptionJson）
+    if (mem.perceptionV40 && typeof mem.perceptionV40 === 'object') {
+      return perceptionV40ObjectTo24DArray(mem.perceptionV40 as any);
+    }
     return parseStoredVector(mem.perception_json ?? mem.perceptionJson);
   }
 }

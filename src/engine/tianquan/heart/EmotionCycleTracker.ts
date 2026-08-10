@@ -14,6 +14,8 @@
  * 接入: δ 节律 SleepTimeConsolidator 调用 → 结果写入 knowledge_base + CoreMemory
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+// V12.4 阶段B 根除24D: 40D 解码（perception_40d 列反解 pleasure）
+import { decodePerceptionV40 } from '../../../m2/PerceptionVector40DCodec.js';
 
 interface InductionRecord {
   period_start: string;
@@ -66,7 +68,7 @@ export class EmotionCycleTracker {
    * @param inductionDir data/inductions/ 目录路径
    * @param recentMemories 最近 memories 记录（用于补充时段数据）
    */
-  analyzeCycles(inductionDir: string, recentMemories?: Array<{ created_at: string; perception_json?: string }>): EmotionCycleProfile {
+  analyzeCycles(inductionDir: string, recentMemories?: Array<{ created_at: string; perception_json?: string; perception_40d?: string }>): EmotionCycleProfile {
     const profile: EmotionCycleProfile = {
       weekdayPatterns: [],
       timeOfDayPatterns: [],
@@ -128,7 +130,7 @@ export class EmotionCycleTracker {
   }
 
   // ── ② 时段 ──
-  private _analyzeTimeOfDay(recentMemories: Array<{ created_at: string; perception_json?: string }>, inductions: InductionRecord[]): TimeOfDayPattern[] {
+  private _analyzeTimeOfDay(recentMemories: Array<{ created_at: string; perception_json?: string; perception_40d?: string }>, inductions: InductionRecord[]): TimeOfDayPattern[] {
     const hourBuckets = new Map<number, { pleasures: number[]; arousals: number[] }>();
 
     // 从 memories 时间段取数据
@@ -136,11 +138,22 @@ export class EmotionCycleTracker {
       try {
         const d = new Date(mem.created_at);
         const h = d.getHours();
-        const perc = mem.perception_json ? JSON.parse(mem.perception_json) : {};
-        if (typeof perc.pleasure !== 'number') continue;
+        // V12.4 阶段B 根除24D: 优先 40D 反解 pleasure(D12)，兼容旧 perception_json；arousal 无 40D 槽位 → 0.5
+        let pleasure: number | undefined;
+        let arousal = 0.5;
+        if (mem.perception_40d) {
+          const p40 = decodePerceptionV40(mem.perception_40d);
+          if (p40) { pleasure = p40.d12_enjoyment; arousal = 0.5; } // arousal 无 40D 槽位 → 中性
+        }
+        if (typeof pleasure !== 'number' && mem.perception_json) {
+          const perc = JSON.parse(mem.perception_json);
+          if (typeof perc.pleasure === 'number') pleasure = perc.pleasure;
+          if (typeof perc.arousal === 'number') arousal = perc.arousal;
+        }
+        if (typeof pleasure !== 'number') continue;
         if (!hourBuckets.has(h)) hourBuckets.set(h, { pleasures: [], arousals: [] });
-        hourBuckets.get(h)!.pleasures.push(perc.pleasure);
-        hourBuckets.get(h)!.arousals.push(perc.arousal || 0.5);
+        hourBuckets.get(h)!.pleasures.push(pleasure);
+        hourBuckets.get(h)!.arousals.push(arousal);
       } catch (e) { console.warn(`[EmotionCycleTracker] 操作失败`, (e as Error)?.message || e); }
     }
 

@@ -166,6 +166,8 @@ export class M8FusionAdapter implements M8Engine {
           yearEntry.perception_snapshot = perceptionSnap;
           yearEntry.recall_count = mem.recall_count;
           yearEntry.last_recalled_at = mem.last_recalled_at;
+          // V12.3: 附带记忆原文，供上层 appendClueRecall 注入 LLM 辅助自然带出
+          yearEntry.raw_input = mem.raw_input;
           entries.push({
             entry: yearEntry,
             clue_match_score: clueScore, semantic_score: semanticScore,
@@ -197,6 +199,8 @@ export class M8FusionAdapter implements M8Engine {
         const yearEntry = this.toYearRingEntry(p);
         yearEntry.simulated_physiological_snapshot = physioSnap;
         yearEntry.perception_snapshot = perceptionSnap;
+        // V12.3: 附带地标记忆原文，供上层 appendClueRecall 注入 LLM
+        yearEntry.raw_input = p.snippet || '';
         entries.push({
           entry: yearEntry,
           clue_match_score: clueScore, semantic_score: semanticScore,

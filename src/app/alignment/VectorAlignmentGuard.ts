@@ -35,6 +35,9 @@
  *   - server.ts /api/alignment/audit → 暴露详细审计报告
  */
 
+// V12.4 阶段B 根除24D: perception_json 列已删，对齐检查改用 perception_40d
+import { decodePerceptionV40 } from '../../m2/PerceptionVector40DCodec.js';
+
 // ─── 类型定义 ────────────────────────────────────
 
 export interface AlignmentAuditPoint {
@@ -73,7 +76,7 @@ export interface AlignmentMetrics {
   accessibilityRate: number;
   /** effective_strength >= 0.1的记录数 */
   memoryViable: number;
-  /** 24D向量完整率 (有perception_json的记录占比) */
+  /** 40D向量完整率 (有perception_40d的记录占比，V12.4 根除24D) */
   vectorCompleteRate: number;
   /** 黑钻recall_count > 0的记录占比 */
   diamondRecallRate: number;
@@ -350,20 +353,20 @@ export class VectorAlignmentGuard {
       recommendations.push('🔧 有大量 ca_level=0 记录，运行修复：UPDATE memories SET calcium_level=1 WHERE calcium_level=0');
     }
 
-    // 检查点②：24D向量完整性
+    // 检查点②：40D向量完整性（V12.4 根除24D）
     let vectorCompleteRate = 0;
     try {
-      const withVec = sqlite.queryAll("SELECT COUNT(*) as c FROM memories WHERE perception_json IS NOT NULL AND perception_json != ''");
+      const withVec = sqlite.queryAll("SELECT COUNT(*) as c FROM memories WHERE perception_40d IS NOT NULL AND perception_40d != ''");
       const withVecC = withVec[0]?.c || 0;
       vectorCompleteRate = totalReadable > 0 ? withVecC / totalReadable : 0;
     } catch (e: any) { console.error('[VectorAlignmentGuard] error:', e?.message); }
     const vecScore = Math.round(vectorCompleteRate * 100);
     checkpoints.push({
-      checkpoint: '24D向量完整性',
+      checkpoint: '40D向量完整性',
       passed: vectorCompleteRate >= 0.95,
       score: vecScore,
-      detail: `有perception_json的记录=${Math.round(vectorCompleteRate * totalReadable)}/${totalReadable}=${(vectorCompleteRate*100).toFixed(1)}%`,
-      suggestion: vectorCompleteRate < 0.95 ? '检查flushDialogGroup是否正确写入perception_json' : undefined,
+      detail: `有perception_40d的记录=${Math.round(vectorCompleteRate * totalReadable)}/${totalReadable}=${(vectorCompleteRate*100).toFixed(1)}%`,
+      suggestion: vectorCompleteRate < 0.95 ? '检查flushDialogGroup是否正确写入perception_40d' : undefined,
     });
 
     // 检查点③：有效强度分布
@@ -444,20 +447,17 @@ export class VectorAlignmentGuard {
       promotedCount = prom[0]?.c || 0;
     } catch (e: any) { console.error('[VectorAlignmentGuard] error:', e?.message); }
 
-    // 维度不匹配检测
+    // 维度不匹配检测（V12.4 根除24D: 40D 解码失败或非 40 维 → 不匹配）
     let dimMismatch = 0;
     try {
-      const dims = sqlite.queryAll("SELECT perception_json FROM memories WHERE perception_json IS NOT NULL ORDER BY RANDOM() LIMIT 20");
+      const dims = sqlite.queryAll("SELECT perception_40d FROM memories WHERE perception_40d IS NOT NULL ORDER BY RANDOM() LIMIT 20");
       for (const row of dims as any[]) {
         try {
-          const parsed = JSON.parse(row.perception_json);
-          if (parsed && typeof parsed === 'object') {
-            const keys = Object.keys(parsed);
-            if (keys.length !== THRESHOLDS.VECTOR_DIMENSION &&
-                keys.length !== 20) { // 20D旧版兼容
-              dimMismatch++;
-            }
-          }
+          const p40 = decodePerceptionV40(row.perception_40d ? String(row.perception_40d) : null);
+          if (!p40) { dimMismatch++; continue; }
+          // 40D 完整性：40 个键全部为数字（decode 已校验长度，此处仅计数）
+          const numericKeys = Object.values(p40).filter(v => typeof v === 'number').length;
+          if (numericKeys !== 40) dimMismatch++;
         } catch (e: any) { console.error('[VectorAlignmentGuard] error:', e?.message); }
       }
     } catch (e: any) { console.error('[VectorAlignmentGuard] error:', e?.message); }

@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { PERCEPTION_40D_ENCODING_VERSION } from './PerceptionVector40DCodec.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -409,6 +410,124 @@ const MIGRATIONS: Migration[] = [
       } catch (e) { console.warn('[Migration] v12 works 表创建失败:', e); }
     },
   },
+  // v13: 40D 全量过渡 — 迁移标注 + 编码标识（V12.4 数据安全过渡）
+  {
+    version: 13,
+    description: 'V12.4 40D 全量过渡: 迁移标注表 + 40D 编码版本标识（24D→40D 双写固化）',
+    apply: (db: any) => {
+      try {
+        // 迁移标注表：记录 40D 全量过渡批次/时间戳/行数，可审计
+        db.run(`CREATE TABLE IF NOT EXISTS migration_log_40d (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          batch TEXT NOT NULL,
+          migrated_at TEXT NOT NULL,
+          memories_total INTEGER,
+          memories_has_40d INTEGER,
+          memories_has_24d INTEGER,
+          note TEXT
+        )`);
+        // 标注本次过渡（V12.4 阶段B: 新库 schema.sql 已无 perception_json 列，has24 列存在守卫）
+        const now = new Date().toISOString();
+        const total = (db.exec("SELECT COUNT(*) c FROM memories")[0]?.values?.[0]?.[0] ?? 0);
+        const has40 = (db.exec("SELECT COUNT(*) c FROM memories WHERE perception_40d IS NOT NULL AND perception_40d != ''")[0]?.values?.[0]?.[0] ?? 0);
+        let has24 = 0;
+        try {
+          const cols13 = (db.exec("PRAGMA table_info(memories)")[0]?.values ?? []) as Array<[number, string, string, ...unknown[]]>;
+          if (cols13.some(c => c[1] === 'perception_json')) {
+            has24 = (db.exec("SELECT COUNT(*) c FROM memories WHERE perception_json IS NOT NULL AND perception_json != ''")[0]?.values?.[0]?.[0] ?? 0);
+          }
+        } catch { /* 列不存在 → has24=0 */ }
+        db.run(
+          'INSERT INTO migration_log_40d (batch, migrated_at, memories_total, memories_has_40d, memories_has_24d, note) VALUES (?, ?, ?, ?, ?, ?)',
+          ['40d_full_transition_v13', now, Number(total), Number(has40), Number(has24), 'V12.4 40D 全量过渡标注']
+        );
+        console.log(`[Migration] v13 ✅ 40D 全量过渡标注: total=${total} 40d=${has40} 24d=${has24}`);
+      } catch (e) { console.warn('[Migration] v13 40D 过渡标注失败:', e); }
+    },
+  },
+  // v14: 根除 24D — 回填 40D 后 DROP COLUMN perception_json（V12.4 阶段B 数据安全过渡）
+  // 顺序铁律：先回填（从 perception_json 派生 40D，确保 40D 全覆盖）→ 再删列。
+  // 幂等：PRAGMA table_info 守卫 — 列不存在则整体跳过（新库 schema.sql 已不含此列）。
+  {
+    version: 14,
+    description: 'V12.4 根除24D: 回填 perception_40d → DROP COLUMN perception_json（唯一感知向量落库）',
+    apply: (db: any) => {
+      try {
+        const cols = (db.exec("PRAGMA table_info(memories)")[0]?.values ?? []) as Array<[number, string, string, ...unknown[]]>;
+        const has24 = cols.some(c => c[1] === 'perception_json');
+        const has40 = cols.some(c => c[1] === 'perception_40d');
+        if (!has24) {
+          console.log('[Migration] v14 幂等跳过: perception_json 列已不存在（此前已根除）');
+          return;
+        }
+        if (!has40) {
+          console.warn('[Migration] v14 ⚠️ 缺少 perception_40d 列，无法完成 24D→40D 数据过渡，跳过删列');
+          return;
+        }
+
+        // ── 1. 回填：从 perception_json 派生 40D（幂等，只处理 40D 为空的行）──
+        // 24D → 40D 语义映射（dim40 为 1-indexed D 编号；与 PerceptionVector40DCodec.MAP_24_TO_40 同源）
+        const MAP = [
+          { k: 'self_ref', d: 9 }, { k: 'pleasure', d: 12 }, { k: 'safety', d: 14 },
+          { k: 'intimacy', d: 15 }, { k: 'belonging', d: 17 }, { k: 'etiquette', d: 19 },
+          { k: 'sexual_attraction', d: 33 }, { k: 'energy_merge', d: 34 }, { k: 'sincerity', d: 35 },
+          { k: 'dominance', d: 36 }, { k: 'moral_judgment', d: 37 }, { k: 'humor', d: 38 },
+          { k: 'dependency', d: 39 }, { k: 'possessiveness', d: 40 },
+        ];
+        const KEYS24 = [
+          'pleasure','arousal','dominance','aggression','sincerity','humor',
+          'factual','logical','certainty','abstract','temporal_focus','self_ref',
+          'intimacy','power_diff','dependency','moral_judgment','etiquette','belonging',
+          'sexual_attraction','sensory_craving','energy_merge','possessiveness','ecstasy','safety',
+        ];
+        let backfilled = 0;
+        try {
+          const rows = db.exec(
+            "SELECT id, perception_json FROM memories WHERE perception_json IS NOT NULL AND (perception_40d IS NULL OR perception_40d = '')"
+          );
+          if (rows.length && rows[0].values) {
+            for (const [id, pJsonRaw] of rows[0].values) {
+              try {
+                const parsed = JSON.parse(String(pJsonRaw));
+                const p24 = Array.isArray(parsed) && parsed.length === 24
+                  ? (() => { const o: Record<string, number> = {}; for (let i = 0; i < 24; i++) o[KEYS24[i]] = Number(parsed[i]) || 0; return o; })()
+                  : (parsed && typeof parsed === 'object' ? parsed as Record<string, number> : null);
+                if (!p24) continue;
+                const p40 = new Array(40).fill(0);
+                for (const { k, d } of MAP) {
+                  const v = Number((p24 as Record<string, number>)[k]);
+                  if (isFinite(v)) p40[d - 1] = v;
+                }
+                db.run("UPDATE memories SET perception_40d = ? WHERE id = ?", [JSON.stringify({ __v: PERCEPTION_40D_ENCODING_VERSION, dims: p40 }), String(id)]);
+                backfilled++;
+              } catch { /* 单条失败跳过 */ }
+            }
+          }
+        } catch (e) { console.warn('[Migration] v14 40D 回填失败:', (e as Error)?.message); }
+        if (backfilled > 0) console.log(`[Migration] v14 40D 回填: ${backfilled} 条（从 perception_json 派生）`);
+
+        // ── 2. 删列：DROP COLUMN perception_json（PRAGMA 守卫已确认存在）──
+        try {
+          db.run('ALTER TABLE memories DROP COLUMN perception_json');
+          console.log('[Migration] v14 ✅ 已删除 memories.perception_json 列（24D 根除落库）');
+        } catch (e) {
+          console.warn('[Migration] v14 DROP COLUMN perception_json 失败（非致命，留存检查）:', (e as Error)?.message);
+        }
+
+        // ── 3. 迁移标注 ──
+        try {
+          const total = (db.exec("SELECT COUNT(*) c FROM memories")[0]?.values?.[0]?.[0] ?? 0);
+          const has40 = (db.exec("SELECT COUNT(*) c FROM memories WHERE perception_40d IS NOT NULL AND perception_40d != ''")[0]?.values?.[0]?.[0] ?? 0);
+          const now = new Date().toISOString();
+          db.run(
+            'INSERT INTO migration_log_40d (batch, migrated_at, memories_total, memories_has_40d, memories_has_24d, note) VALUES (?, ?, ?, ?, ?, ?)',
+            ['24d_rooted_out_v14', now, Number(total), Number(has40), 0, 'V12.4 阶段B: perception_json 列已删，24D 根除落库']
+          );
+          console.log(`[Migration] v14 标注: total=${total} 40d=${has40} 24d=0（列已删）`);
+        } catch (e) { console.warn('[Migration] v14 标注失败:', (e as Error)?.message); }
+      } catch (e) { console.warn('[Migration] v14 执行异常:', (e as Error)?.message); }
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════
@@ -616,16 +735,19 @@ export async function repairDataIntegrity(db: any, fgDbPath?: string): Promise<{
     }
   } catch (e) { console.warn('[Repair] belong_entity_uuid 回填失败:', e); }
 
-  // 3. null 感知向量 → 零向量
+  // 3. null 感知向量 → 零向量（🔴 V12.4 根除24D: perception_json 列已删，仅当列仍存在时执行）
   try {
-    const nullVecs = db.exec("SELECT id FROM memories WHERE perception_json LIKE '%null%'");
-    if (nullVecs.length > 0 && nullVecs[0].values.length > 0) {
-      const zeros = JSON.stringify(Array(24).fill(0));
-      for (const [id] of nullVecs[0].values) {
-        db.run("UPDATE memories SET perception_json = ? WHERE id = ?", [zeros, String(id)]);
-        result.nullVectors++;
+    const cols = (db.exec("PRAGMA table_info(memories)")[0]?.values ?? []) as Array<[number, string, string, ...unknown[]]>;
+    if (cols.some(c => c[1] === 'perception_json')) {
+      const nullVecs = db.exec("SELECT id FROM memories WHERE perception_json LIKE '%null%'");
+      if (nullVecs.length > 0 && nullVecs[0].values.length > 0) {
+        const zeros = JSON.stringify(Array(24).fill(0));
+        for (const [id] of nullVecs[0].values) {
+          db.run("UPDATE memories SET perception_json = ? WHERE id = ?", [zeros, String(id)]);
+          result.nullVectors++;
+        }
+        console.log(`[Repair] null 感知向量修复: ${result.nullVectors} 条`);
       }
-      console.log(`[Repair] null 感知向量修复: ${result.nullVectors} 条`);
     }
   } catch (e) { console.warn('[Repair] null 向量修复失败:', e); }
 

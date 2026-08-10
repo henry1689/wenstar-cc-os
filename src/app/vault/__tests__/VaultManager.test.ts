@@ -16,7 +16,7 @@ type MemoryRow = {
   is_landmark?: number;
   scar_type?: string | null;
   narrative_tag?: string | null;
-  perception_json?: string | null;
+  perception_40d?: string | null;  // V12.4 根除24D: perception_json → perception_40d
   lifecycle_state?: string;
   promoted_to_diamond?: number;
   promotion_reason?: string | null;
@@ -192,7 +192,7 @@ describe('VaultManager promotion state machine', () => {
       is_landmark: 0,
       scar_type: null,
       narrative_tag: '重要',
-      perception_json: '{"pleasure":0.8}',
+      perception_40d: '{"__v":2,"dims":' + JSON.stringify((() => { const a = new Array(40).fill(0); a[11] = 0.8; return a; })()) + '}',
       lifecycle_state: 'active',
       promoted_to_diamond: 0,
       effective_strength: 0.7,

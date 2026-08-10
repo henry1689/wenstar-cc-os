@@ -22,8 +22,11 @@ export function isPerception40DCollectEnabled(): boolean {
   return ConfigService.getBool('PERCEPTION_40D_COLLECT', true);
 }
 
-/** V3.1: 40D 主模式 — 全面停止 24D 独立运行，检索只走 40D（默认 false = 双轨混合）
- *  true：检索跳过 24D 精排，只用 40D 余弦；24D 仅作 M3 内部语义引擎（源泉） */
+/** V3.1: 40D 主模式 — 全面停止 24D 独立运行，检索只走 40D。
+ *  🔴 V12.4 阶段B 根除24D: 默认已改为 true（perception_json 列已删，24D 检索路径退役，
+ *     仅剩 40D 路径可选；置 false 时 findByEmotionalSimilarity 仍固定走 40D，此开关仅保留
+ *     兼容位，不影响检索行为）。
+ *  true：检索只用 40D 余弦；24D 仅作 M3 内部语义引擎（源泉） */
 export function isPerception40DOnly(): boolean {
-  return ConfigService.getBool('PERCEPTION_40D_ONLY', false);
+  return ConfigService.getBool('PERCEPTION_40D_ONLY', true);
 }

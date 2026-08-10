@@ -7,9 +7,9 @@ CREATE TABLE IF NOT EXISTS memories (
     seq_pos INTEGER UNIQUE NOT NULL,
     created_at TEXT NOT NULL,
 
-    -- 24维情感向量 (JSON数组)
-    perception_json TEXT NOT NULL,
-    -- V20: 40D感知向量 (JSON数组40元素，双轨独立列)
+    -- V12.4 根除24D: perception_json 列已由 v14 迁移删除（DROP COLUMN）
+    -- 40D感知向量 (JSON v2格式 {__v:2,dims:[40]}，唯一落库感知向量)
+    -- 可空：记事/知识卷宗/锚点合法不带向量，检索时缺40D行降级按钙化分
     perception_40d TEXT,
 
     -- 钙化

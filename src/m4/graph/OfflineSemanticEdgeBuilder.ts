@@ -13,7 +13,7 @@
  */
 
 import type { MemoryAssociationRepository } from './MemoryAssociationRepository.js';
-import { cosineSimilarity, parseStoredVector } from '../VectorReranker.js';
+import { cosineSimilarity, parseStoredVector, perceptionV40ObjectTo24DArray } from '../VectorReranker.js';
 
 export interface SemanticBuildOptions {
   namespace?: string;
@@ -141,8 +141,11 @@ export class OfflineSemanticEdgeBuilder {
     return [];
   }
 
-  /** 提取向量 */
+  /** 提取向量（V12.4 根除24D: 支持 record.perceptionV40 对象反解） */
   private _getVector(mem: any): number[] | null {
+    if (mem.perceptionV40 && typeof mem.perceptionV40 === 'object') {
+      return perceptionV40ObjectTo24DArray(mem.perceptionV40 as any);
+    }
     return parseStoredVector(mem.perception_json ?? mem.perceptionJson);
   }
 }

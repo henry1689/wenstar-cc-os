@@ -61,8 +61,10 @@ export class EmotionRegulator {
 
     for (const mem of relatedMemories.slice(0, 10)) {
       try {
-        // 原始记忆的情绪
-        const perc = (mem as any).perception_json ? JSON.parse((mem as any).perception_json) : {};
+        // V12.4 阶段B 根除24D: 原始记忆情绪 — record.perception（40D 反解，pleasure=D12 真实）；DNA 无该字段 → 中性跳过
+        const perc = (mem as any).perception && typeof (mem as any).perception === 'object'
+          ? (mem as any).perception
+          : {};
         if (typeof perc.pleasure === 'number') {
           pastPleasures.push(perc.pleasure);
         }

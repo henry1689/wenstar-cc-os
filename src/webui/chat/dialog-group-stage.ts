@@ -57,21 +57,11 @@ export async function flushDialogGroup(
 
     // 情感峰值向量
     const peakP = dg.perceptions[dg.maxCalciumRound] || dg.perceptions[0] || {};
-    // H3: 抽出 24 维序列化，锚点用峰值向量、碎片用各自轮次向量 — 保证每行的向量与钙化分同源
-    const vec24 = (p: any): string => JSON.stringify([
-      p.pleasure||0, p.arousal||0, p.dominance||0, p.aggression||0,
-      p.sincerity||0, p.humor||0, p.factual||0, p.logical||0,
-      p.certainty||0, p.abstract||0, p.temporal_focus||0, p.self_ref||0,
-      p.intimacy||0, p.power_diff||0, p.dependency||0, p.moral_judgment||0,
-      p.etiquette||0, p.belonging||0, p.sexual_attraction||0, p.sensory_craving||0,
-      p.energy_merge||0, p.possessiveness||0, p.ecstasy||0, p.safety||0.5,
-    ]);
-    // V20: 40D 双轨 — 从 24D 派生 40D（会晤/核心记忆的 40D 补全，与 persistence-stage 一致）
+    // V12.4 阶段B 根除24D: 锚点/碎片只写 40D（从 24D 派生，与 persistence-stage 一致）；24D 不再落库
     const vec40 = (p: any): string => {
       try { return encodePerceptionV40(map24DTo40D(p as any)); }
       catch { return 'null'; }
     };
-    const pVec = vec24(peakP);
 
     // V13: 解析实体 UUID（从 dg.entities 取第一个 person 名查 FamilyGraph）
     let entityUuid: string | null = null;
@@ -111,8 +101,8 @@ export async function flushDialogGroup(
     // 写入核心锚点（高钙化分，带anchor_score标记）
     const anchorId = dg.id + '_ANCHOR';
     sql.writeRaw(
-      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      anchorId, -(dg.rounds.length + 100), now, pVec, vec40(peakP), anchorCalcium,
+      "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, anchor_score, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      anchorId, -(dg.rounds.length + 100), now, vec40(peakP), anchorCalcium,
       calciumLevel(anchorCalcium), dg.locusPath || 'general',
       'language_semantic_zone', anchorText, 0.5 + anchorCalcium * 0.3, now,
       decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, anchorCalcium, entityUuid
@@ -129,8 +119,8 @@ export async function flushDialogGroup(
       const roundP = dg.perceptions[i] || peakP;
       const chunkCalcium = Math.round(computeCalcium(roundP as any).score * 1000) / 1000;
       sql.writeRaw(
-        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_json, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        chunkId, -dg.rounds.length - i, now, vec24(roundP), vec40(roundP), chunkCalcium,
+        "INSERT OR IGNORE INTO memories (id, seq_pos, created_at, perception_40d, calcium_score, calcium_level, locus_path, leaf_zone, raw_input, effective_strength, strength_updated_at, primary_emotion, dialog_group_id, round_count, topic_label, belong_entity_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        chunkId, -dg.rounds.length - i, now, vec40(roundP), chunkCalcium,
         calciumLevel(chunkCalcium), dg.locusPath || 'general',
         'language_semantic_zone', chunkText, 0.3 + chunkCalcium * 0.2, now,
         decision.primary_emotion || '对话', dg.id, dg.rounds.length, dg.topic, entityUuid

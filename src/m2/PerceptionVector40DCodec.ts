@@ -26,27 +26,72 @@ import {
   createEmptyPerceptionV40,
 } from '../m3/types/perception-40d.js';
 
+// V12.4 阶段B 根除24D: 默认 40D v2 JSON（全零语义向量）— 金库/记事/锚点等无感知输入时的统一落库默认值。
+// 与旧 perception_json='{}'（全零 24D）语义等价：知识类条目不参与情感相似召回（余弦 0）。
+export function encodeEmptyPerceptionV40(): string {
+  return encodePerceptionV40(createEmptyPerceptionV40());
+}
+
 // ──────────────────────────────────────────────
-// 1. 编码：PerceptionV40 → JSON 数组字符串（40 元素）
+// 1. 编码：PerceptionV40 → JSON 字符串（带 __v 版本标识）
 // ──────────────────────────────────────────────
 
 /**
- * 将 PerceptionV40 编码为 JSON 数组字符串（40 元素，D1-D40 顺序）。
+ * 当前 40D 编码版本标识。
+ * v1 = 纯数组格式（40 元素，历史存量）
+ * v2 = `{"__v":2,"dims":[40 元素]}` 对象格式（当前标准，含版本可识别）
+ * 解码向后兼容 v1/v2/命名对象三种格式。
+ */
+export const PERCEPTION_40D_ENCODING_VERSION = 2;
+
+/**
+ * 将 PerceptionV40 编码为 JSON 字符串（带 __v 版本标识）。
  * 统一入口：所有 40D 感知向量写入 perception_40d 列必须走此方法。
+ * v2 格式：`{"__v":2,"dims":[D1..D40]}` — 版本可识别、可校验。
  */
 export function encodePerceptionV40(p: PerceptionV40): string {
-  return JSON.stringify(PERCEPTION_40D_KEYS.map(k => p[k] ?? 0));
+  return JSON.stringify({
+    __v: PERCEPTION_40D_ENCODING_VERSION,
+    dims: PERCEPTION_40D_KEYS.map(k => p[k] ?? 0),
+  });
 }
 
 /**
- * 解码：JSON 数组字符串 → PerceptionV40
- * 兼容数组（40 元素）与对象两种格式。
+ * 解码：JSON 字符串 → PerceptionV40
+ * 向后兼容三种格式：
+ *   v2: `{"__v":2,"dims":[40 元素]}`（当前标准）
+ *   v1: `[40 元素]`（历史纯数组）
+ *   v0: `{"d12_enjoyment":0.5,...}`（早期命名对象，无 __v）
  * 长度不对或解析失败返回 null（不抛出）。
  */
 export function decodePerceptionV40(json: string | null | undefined): PerceptionV40 | null {
   if (!json) return null;
   try {
     const arr = JSON.parse(json);
+    // v2: `{__v:2, dims:[...]}` — 校验 __v===2 且 dims 为数组（S4 P2 修复）
+    if (typeof arr === 'object' && arr !== null && !Array.isArray(arr)) {
+      const rec = arr as Record<string, unknown>;
+      if (rec.__v === PERCEPTION_40D_ENCODING_VERSION) {
+        if (!Array.isArray(rec.dims)) return null;
+        const dims = rec.dims as unknown[];
+        if (dims.length !== PERCEPTION_40D_DIM) return null;
+        const p = createEmptyPerceptionV40();
+        for (let i = 0; i < PERCEPTION_40D_DIM; i++) {
+          const v = Number(dims[i]);
+          if (!isFinite(v)) return null;
+          p[PERCEPTION_40D_KEYS[i]] = v;
+        }
+        return p;
+      }
+      // v0: 命名对象（无 dims 字段 / 无 __v）→ 直接读命名键
+      const p = createEmptyPerceptionV40();
+      for (const k of PERCEPTION_40D_KEYS) {
+        const v = Number((arr as Record<string, unknown>)[k]);
+        if (isFinite(v)) p[k] = v;
+      }
+      return p;
+    }
+    // v1: 纯数组（40 元素）
     if (Array.isArray(arr)) {
       if (arr.length !== PERCEPTION_40D_DIM) return null;
       const p = createEmptyPerceptionV40();
@@ -57,18 +102,29 @@ export function decodePerceptionV40(json: string | null | undefined): Perception
       }
       return p;
     }
-    if (typeof arr === 'object' && arr !== null) {
-      // 对象格式：直接读命名键
-      const p = createEmptyPerceptionV40();
-      for (const k of PERCEPTION_40D_KEYS) {
-        const v = Number((arr as Record<string, unknown>)[k]);
-        if (isFinite(v)) p[k] = v;
-      }
-      return p;
-    }
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 检测 40D 编码格式版本。
+ * 返回：2（v2 带 __v 对象）/ 1（v1 纯数组）/ 0（v0 命名对象）/ -1（无法解析）。
+ * 用于迁移校验与数据审计。
+ */
+export function detectPerceptionV40Version(json: string | null | undefined): number {
+  if (!json) return -1;
+  try {
+    const v = JSON.parse(json);
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      if (Array.isArray((v as Record<string, unknown>).dims)) return 2;
+      return 0;
+    }
+    if (Array.isArray(v)) return 1;
+    return -1;
+  } catch {
+    return -1;
   }
 }
 

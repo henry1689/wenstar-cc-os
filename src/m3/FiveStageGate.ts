@@ -40,7 +40,7 @@ export interface ScoredMemory {
   created_at?: string;
   timestamp_ms?: number;
   absolute_timestamp?: number;
-  perception_json?: string;
+  perception_40d?: string;  // V12.4 根除24D: perception_json → perception_40d
   location_fingerprint?: string;
   locus_path?: string;
   leaf_zone?: string;

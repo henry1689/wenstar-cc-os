@@ -166,7 +166,7 @@ export function search(
       const _police = buildSqlClause({ visibleUuids: new Set(entityUuids.filter(Boolean)) });
       const entityFilter = _police.clause;
       const rows = db.exec(
-        `SELECT id, raw_input, perception_json, calcium_score, calcium_level, confidence_score, effective_strength, created_at, belong_entity_uuid
+        `SELECT id, raw_input, perception_40d, calcium_score, calcium_level, confidence_score, effective_strength, created_at, belong_entity_uuid
          FROM memories WHERE id IN (${placeholders}) ${entityFilter} LIMIT 100`,
         [...memIds, ..._police.params],
       );
@@ -175,7 +175,8 @@ export function search(
           enriched.push({
             id: String(id), text: String(rawInput || '').substring(0, 800),
             source: 'memory',
-            perceptionJson: pJson ? String(pJson) : null,
+            perceptionJson: pJson ? String(pJson) : null,   // V12.4 根除24D: 实为 perception_40d v2 JSON（24D 回退解析兼容）
+            perception40d: pJson ? String(pJson) : null,    // S4 P1-3 修复: 供 rankByVector 40D 扇区加权分支（此前恒 null 空转）
             calciumScore: Number(caScore) || 0, calciumLevel: Number(caLevel) || 1,
             confidenceScore: Number(confScore) || 0.5, effectiveStrength: Number(effStr) || 1,
             createdAt: String(createdAt || ''), entityUuid: euuid ? String(euuid) : null,
@@ -204,6 +205,7 @@ export function search(
             id: String(id), text: String(summary || '').substring(0, 500),
             source: 'black_diamond',
             perceptionJson: eVec ? String(eVec) : null,
+            perception40d: eVec ? String(eVec) : null,   // S4 P1-3 修复: 黑钻 emotion_vector(40D v2) 供 40D 精排分支
             calciumScore: Number(caLevel) || 1, calciumLevel: Number(caLevel) || 1,
             confidenceScore: 0.7, effectiveStrength: 1,
             createdAt: String(createdAt || ''), entityUuid: euuid ? String(euuid) : null,

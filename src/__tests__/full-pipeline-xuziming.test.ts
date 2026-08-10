@@ -4,6 +4,8 @@
  * 4. DAG闭包 → 5. Foresight → 6. 叙事组装
  */
 import { describe, it, expect } from 'vitest';
+// V12.4 阶段B 根除24D: 离线边用 perception_40d（parseStoredVector 兼容 40D v2 反解 24D 数组）
+import { parseStoredVector } from '../m4/VectorReranker.js';
 
 describe('七层全开 · 熊梓铭纪实小说检索', () => {
   it('全链路打通', async () => {
@@ -113,15 +115,15 @@ describe('七层全开 · 熊梓铭纪实小说检索', () => {
     // Step 3: 离线语义边 — 按 24D 向量余弦建边
     // ══════════════════════════════════════════════
     console.log('\n═══ Step 3: 离线语义边 + 情绪边 ═══');
-    // 取最近 200 条有向量的记忆
+    // 取最近 200 条有向量的记忆（V12.4 根除24D: 读 perception_40d 反解 24D 数组）
     const mems = db.exec(
-      "SELECT global_uid, belong_entity_uuid, perception_json, created_at FROM memories WHERE perception_json IS NOT NULL AND global_uid IS NOT NULL ORDER BY created_at DESC LIMIT 200"
+      "SELECT global_uid, belong_entity_uuid, perception_40d, created_at FROM memories WHERE perception_40d IS NOT NULL AND global_uid IS NOT NULL ORDER BY created_at DESC LIMIT 200"
     );
     let semanticEdges = 0, emotionEdges = 0;
     if (mems.length && mems[0].values) {
       const memList = mems[0].values.map((r: any) => ({
         uid: String(r[0]), euuid: String(r[1]||''),
-        vec: (() => { try { const a=JSON.parse(String(r[2]||'[]')); return Array.isArray(a)?a:[]; } catch { return []; } })(),
+        vec: parseStoredVector(String(r[2] ?? null)) ?? [],
         ts: r[3] ? new Date(String(r[3])).getTime() : 0,
       })).filter((m: any) => m.vec.length >= 6);
 
