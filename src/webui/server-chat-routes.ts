@@ -14,6 +14,143 @@ import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
 import type { FamilyGraph } from '../m4/household/FamilyGraph.js';
 import type { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import type { ChatResponse, ChatContext } from './chat.js';
+import { randomUUID } from 'node:crypto';
+
+/** TTS 异步 job 存储（S4 P1-2 修复：长文音频后台生成，不阻塞 /api/chat 响应） */
+const TTS_JOBS = new Map<string, { urls: string[]; done: boolean; createdAt: number }>();
+const TTS_JOB_TTL_MS = 120_000; // 2 分钟自动过期（防内存泄漏）
+/** 短/中回复（≤2 段）同步生成无感；长文（>2 段）走异步 job */
+export const TTS_SYNC_MAX_SEGMENTS = 2;
+
+/** 语音播报单段最大字符数（edge-tts 输入安全上限） */
+export const TTS_MAX_TEXT = 400;
+/** 语音播报单段目标句数（2~4 句，控制播报节奏：不多不少不碎） */
+export const TTS_SEGMENT_TARGET_SENTENCES = 3;
+/** 语音播报单段硬上限（句数达标但字数溢出时的强制截断） */
+export const TTS_SEGMENT_MAX_CHARS = 250;
+
+/**
+ * _truncateForTTS — 语音播报文本断句截断。
+ * 长回复（可达数千字）只播报前段：在 max 窗口内找断点。
+ * 断点两级优先级（对齐 SSE 路由的 [。！？\n] 句级约定）：
+ *   1. 句级（。！？…\n）最右断点 > 40%*max → 采用（完整句优先）
+ *   2. 逗号级（；，、;）最右断点 > 40%*max → 采用（短语兜底）
+ *   3. 回退最近句级断点（不要求越过 40% 阈值）→ 保句子完整
+ *   4. 完全无断点 → 硬截断在 max
+ * 纯函数，可单测。
+ */
+export function _truncateForTTS(text: string, max = TTS_MAX_TEXT): string {
+  const t = (text || '').trim();
+  if (t.length <= max) return t;
+  const cutoff = t.slice(0, max);
+  const SENT = new Set(['。', '！', '？', '…', '\n']);
+  const PHRASE = new Set(['；', '，', '、', ';']);
+  const threshold = Math.floor(max * 0.4);
+
+  // 找最右断点
+  let sentIdx = -1;
+  let phraseIdx = -1;
+  for (let i = cutoff.length - 1; i >= 0; i--) {
+    if (sentIdx === -1 && SENT.has(cutoff[i])) sentIdx = i;
+    if (phraseIdx === -1 && PHRASE.has(cutoff[i])) phraseIdx = i;
+    if (sentIdx !== -1 && phraseIdx !== -1) break;
+  }
+  // 1. 句级优先（完整句）
+  if (sentIdx > threshold) return cutoff.slice(0, sentIdx + 1);
+  // 2. 逗号级兜底
+  if (phraseIdx > threshold) return cutoff.slice(0, phraseIdx + 1);
+  // 3. 回退最近句级断点（保句子完整）
+  if (sentIdx >= 0) return cutoff.slice(0, sentIdx + 1);
+  // 4. 无断点 → 硬截断
+  return cutoff;
+}
+
+/**
+ * segmentForTTS — 长文分段（滚动播报核心，纯函数可单测）。
+ * 按"几句话一个断点"切段，让前端一段段连续播完整个超长文本（数千字）。
+ * 规则（双上限保安全 + 节奏）：
+ *   1. 以句子结尾（。！？…\n）为断点累计句子
+ *   2. 目标句数 TTS_SEGMENT_TARGET_SENTENCES 达到 → 切段
+ *   3. 单段字数硬上限 TTS_SEGMENT_MAX_CHARS：句数未达但字数溢出 → 立即切段
+ *   4. 无句级断点（超长单句）→ 在 TTS_SEGMENT_MAX_CHARS 处硬切
+ *   5. 短文本（≤ TTS_SEGMENT_MAX_CHARS）→ 单段原样返回
+ *   6. 空/纯空白 → 返回空数组
+ * 与 _truncateForTTS 并存：_truncateForTTS 保留给调用方兼容；多段播报走本函数。
+ */
+export function segmentForTTS(text: string, targetSentences = TTS_SEGMENT_TARGET_SENTENCES, maxChars = TTS_SEGMENT_MAX_CHARS): string[] {
+  const t = (text || '').trim();
+  if (!t) return [];
+  if (t.length <= maxChars) return [t];
+
+  const SENT_END = new Set(['。', '！', '？', '…', '\n']);
+  const segments: string[] = [];
+  let buf = '';
+  let sentCount = 0;
+
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    buf += ch;
+    if (SENT_END.has(ch)) sentCount++;
+    const segFull = (sentCount >= targetSentences || buf.length >= maxChars);
+    if (segFull) {
+      segments.push(buf.trim());
+      buf = '';
+      sentCount = 0;
+    }
+  }
+  if (buf.trim()) segments.push(buf.trim());
+
+  // 异常兜底：因超长单句产生 >maxChars 的段（无任何断点）→ 硬切
+  const out: string[] = [];
+  for (const s of segments) {
+    if (s.length <= maxChars) { out.push(s); continue; }
+    for (let i = 0; i < s.length; i += maxChars) out.push(s.slice(i, i + maxChars));
+  }
+  return out;
+}
+
+/**
+ * generateTTSAudio — 分段文本 → mp3 音频 URL 列表（同步/异步共用）。
+ * 并发限流 3（edge-tts 负载保护）；某段失败跳过不阻塞整体。
+ * S4 P2-6 修复：文件名用 randomUUID 彻底杜绝同毫秒碰撞。
+ */
+export async function generateTTSAudio(segments: string[], dataDir: string): Promise<string[]> {
+  const _env = { ...process.env, NO_PROXY: '*', no_proxy: '*', HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' };
+  const genOne = async (txt: string): Promise<string | null> => {
+    if (!txt.trim()) return null; // 空段不生成（S4 P2-4）
+    const _fn = 'tts_' + Date.now().toString(36) + '_' + randomUUID().slice(0, 8) + '.mp3';
+    const _fp = path.join(dataDir, 'audio', _fn);
+    try {
+      await execFileAsync('edge-tts', ['--text', txt, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
+      return fs.existsSync(_fp) ? '/audio/' + _fn : null;
+    } catch (_e) { console.warn('[TTS] 段生成失败:', (_e as Error)?.message || _e); return null; }
+  };
+  const CHUNK = 3;
+  const files: (string | null)[] = new Array(segments.length);
+  for (let i = 0; i < segments.length; i += CHUNK) {
+    const batch = segments.slice(i, i + CHUNK);
+    const batchFiles = await Promise.all(batch.map(s => genOne(s)));
+    batchFiles.forEach((f, j) => { files[i + j] = f; });
+  }
+  return files.filter((f): f is string => !!f);
+}
+
+/** TTS job 状态查询（S4 P1-2 异步方案：前端轮询补齐长文段） */
+export function getTTSJob(jobId: string): { urls: string[]; done: boolean } | null {
+  sweepTTSJobs();
+  const job = TTS_JOBS.get(jobId);
+  return job ? { urls: job.urls, done: job.done } : null;
+}
+
+/** TTS job 兜底清理（复审 P2-1：独立定时器防长驻内存；也被 getTTSJob 惰性触发） */
+export function sweepTTSJobs(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [k, v] of TTS_JOBS) {
+    if (now - v.createdAt > TTS_JOB_TTL_MS) { TTS_JOBS.delete(k); removed++; }
+  }
+  return removed;
+}
 
 export interface ChatRouteDeps {
   processChat: (message: string, clientMsgId?: string | null, testMode?: boolean) => Promise<ChatResponse>;
@@ -51,28 +188,56 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     // 🛡️ V4.0: 角色扮演已彻底废除，实体会晤替代。不再注入【角色扮演】标记。
     const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true);
 
-    // TTS 生成
+    // TTS 生成 — 长文分段滚动播报（V12.5）
     let audio_url: string | null = null;
+    let audio_urls: string[] = [];
+    let tts_job: string | null = null;
     const reply = result.reply || '';
-    if (body.tts !== false && reply && reply.length < 500 && reply.length > 1) {
-      try {
-        const _fn = 'tts_' + Date.now().toString(36) + '.mp3';
-        const _fp = path.join(DATA_DIR, 'audio', _fn);
-        const _env = { ...process.env, NO_PROXY: '*', no_proxy: '*', HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' };
-        await execFileAsync('edge-tts', ['--text', reply, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
-        if (fs.existsSync(_fp)) { audio_url = '/audio/' + _fn; }
-      } catch { /* TTS optional */ }
+    // 单字回复（>1）不播。长回复（可达数千字）按几句话切段，每段一个 mp3，
+    // 前端队列顺序播放 → 整个长文读完。edge-tts 输入恒 ≤TTS_SEGMENT_MAX_CHARS。
+    if (body.tts !== false && reply && reply.length > 1) {
+      const segments = segmentForTTS(reply);
+      // S4 P1-2 修复：短/中回复（≤2 段）同步生成无感；长文（>2 段）异步 job 生成，
+      //   文字立即返回（不阻塞），前端轮询 /api/tts/status 拿全量段后续播。
+      if (segments.length <= TTS_SYNC_MAX_SEGMENTS) {
+        try {
+          audio_urls = await generateTTSAudio(segments, DATA_DIR);
+          if (audio_urls.length > 0) audio_url = audio_urls[0];
+        } catch (_err) { console.warn('[TTS] 生成失败:', (_err as Error)?.message || _err); }
+      } else {
+        tts_job = 'ttsjob_' + randomUUID();
+        TTS_JOBS.set(tts_job, { urls: [], done: false, createdAt: Date.now() });
+        // fire-and-forget：后台生成，不阻塞响应
+        void generateTTSAudio(segments, DATA_DIR).then(urls => {
+          const job = TTS_JOBS.get(tts_job!);
+          if (job) { job.urls = urls; job.done = true; }
+          // 无轮询者（客户端断开）时自然过期清理
+        }).catch(e => {
+          console.warn('[TTS] 异步 job 生成失败:', (e as Error)?.message || e);
+          const job = TTS_JOBS.get(tts_job!);
+          if (job) job.done = true; // 标记完成（urls 空 → 前端不播）
+        });
+      }
     }
     // 安全序列化：防止循环引用导致 JSON.stringify 抛异常
     const safeResult = _sanitizeForJSON(result);
     const safeObject = (safeResult && typeof safeResult === 'object' && !Array.isArray(safeResult)) ? safeResult : {};
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ...(safeObject as Record<string, unknown>), audio_url }));
+    res.end(JSON.stringify({ ...(safeObject as Record<string, unknown>), audio_url, audio_urls, tts_job }));
     } catch (err) {
       console.error('[ChatRoute] /api/chat 异常:', (err as Error)?.message || err);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ reply: '抱歉，出了一点小问题，请再说一次好吗？', turn_count: 0, error: 'chat_route_error' }));
     }
+    return true;
+  }
+
+  // ── TTS job 状态轮询（S4 P1-2 异步长文音频） ──
+  if (req.method === 'GET' && url.pathname === '/api/tts/status') {
+    const jobId = (url.searchParams.get('job') || '').trim();
+    const job = jobId ? getTTSJob(jobId) : null;
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: !!job, done: job?.done ?? false, audio_urls: job?.urls ?? [] }));
     return true;
   }
 

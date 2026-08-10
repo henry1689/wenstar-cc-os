@@ -1146,6 +1146,11 @@ async function initPipeline(): Promise<void> {
   // 🛡️ V4.0: 音频文件清理（启动时 + 每 24h）
   cleanupOldAudioFiles();
   addTimer(setInterval(() => cleanupOldAudioFiles(), 24 * 3600_000));
+  // 🛡️ V12.5: TTS 异步 job 兜底清理（每 60s，复审 P2-1）
+  try {
+    const { sweepTTSJobs } = await import('./server-chat-routes.js');
+    addTimer(setInterval(() => { try { sweepTTSJobs(); } catch (_) { /* 清理失败不影响 */ } }, 60_000));
+  } catch (_) { /* TTS job 清理可选 */ }
 
   workingMemory = new MemoryWriteBuffer(storage, 50);
   workingMemory.startFlushTimer();
@@ -1546,7 +1551,7 @@ async function handleUserMessage(message: string, clientMsgId?: string | null, t
 /** SSE 客户端上限 */
 const MAX_SSE_CLIENTS = 100;
 
-/** 🛡️ 音频文件自动清理: 保留最近 100 个，其余删除 */
+/** 🛡️ 音频文件自动清理: 保留最近 500 个（S4 P2-8：长文分段播报单条回复可达 ~12 个 mp3），其余删除 */
 function cleanupOldAudioFiles(): void {
   try {
     const audioDir = path.join(DATA_DIR, 'audio');
@@ -1555,12 +1560,12 @@ function cleanupOldAudioFiles(): void {
       .filter((f: string) => f.startsWith('tts_') && f.endsWith('.mp3'))
       .sort()
       .reverse(); // 最新在前
-    if (files.length <= 100) return;
-    const toDelete = files.slice(100);
+    if (files.length <= 500) return;
+    const toDelete = files.slice(500);
     for (const f of toDelete) {
       try { unlinkSync(path.join(audioDir, f)); } catch (_) { /* ignore */ }
     }
-    if (toDelete.length > 0) console.log('[AudioClean] 清理 ' + toDelete.length + ' 个旧音频文件, 保留 ' + Math.min(files.length, 100) + ' 个');
+    if (toDelete.length > 0) console.log('[AudioClean] 清理 ' + toDelete.length + ' 个旧音频文件, 保留 ' + Math.min(files.length, 500) + ' 个');
   } catch (_) { /* 清理失败不影响主流程 */ }
 }
 

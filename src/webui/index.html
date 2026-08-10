@@ -414,6 +414,64 @@ refreshTimer=setInterval(loadM68,20000);
 loadM68();
 loadConversation(); // 加载上次的聊天记录
 
+// ── 长文语音分段滚动播放（V12.5） ──
+// 后端把超长回复按"几句话一个断点"切成多个 mp3（audio_urls），这里一段接一段连续播完整个长文。
+// S4 P0-1 + 复审 P1-1/P1-2 修复：代际 token `_audioGen` 替代布尔开关——
+//   新播报/新发送自增代际，旧队列与旧 job 的所有回调（onended/onerror/play().catch/轮询完成）见代际不符即弃，
+//   从根上杜绝串音与"过期 job 抢占当前播放"两类时序竞态。
+let _audioGen=0;
+let _audioQueueCur=null;
+function stopAudioQueue(){
+  _audioGen++;               // 使所有旧队列/旧 job 回调失效
+  if(_audioQueueCur){_audioQueueCur.onended=_audioQueueCur.onerror=null;_audioQueueCur.pause();_audioQueueCur=null;}
+}
+function playAudioQueue(urls){
+  if(!urls||!urls.length)return;
+  stopAudioQueue();          // 先停上一轮队列（代际+1），避免串音
+  const gen=_audioGen;       // 捕获本队列代际
+  let i=0;
+  const next=()=>{
+    if(gen!==_audioGen||i>=urls.length)return;  // 代际过期（被新播报顶替）→ 立即停
+    const ap=new Audio(urls[i++]);
+    _audioQueueCur=ap;
+    ap.volume=0.8;
+    // S4 P1-1 修复：onended/onerror 与 play().catch 可能双触发（资源加载失败时 error 事件 + play promise 拒绝同时发生），
+    // 用 handled 幂等护栏保证一段只跳一次，不丢失正常段；代际检查让旧队列回调彻底失效。
+    let handled=false;
+    const advance=()=>{
+      if(gen!==_audioGen)return;                // 本队列已过期（被新播报/新发送顶替）
+      if(handled)return;handled=true;
+      if(_audioQueueCur===ap)_audioQueueCur=null;
+      next();
+    };
+    ap.onended=advance;      // 一段播完 → 播下一段
+    ap.onerror=advance;      // 单段失败不中断整个队列
+    ap.play().catch(e=>{console.warn('[Audio] 播放失败:',e);advance();});
+  };
+  next();
+}
+
+// ── TTS 异步 job 轮询（S4 P1-2） ──
+// 长文回复文字先渲染、音频后台生成，此函数轮询 /api/tts/status 直到全量段就绪后播。
+// 复审 P1-1 修复：捕获启动代际，done 后校验代际仍最新才播（过期 job 不抢占当前播放）。
+function pollTTSJob(jobId){
+  const gen=_audioGen;       // 捕获本次发送的代际
+  let tries=0;
+  const timer=setInterval(async()=>{
+    tries++;
+    if(gen!==_audioGen){clearInterval(timer);return;} // 期间有新发送/新播放 → 放弃此 job
+    if(tries>120){clearInterval(timer);return;} // 60s 超时兜底
+    try{
+      const r=await fetch('/api/tts/status?job='+encodeURIComponent(jobId));
+      const d=await r.json();
+      if(d.done){
+        clearInterval(timer);
+        if(gen===_audioGen&&d.audio_urls&&d.audio_urls.length)playAudioQueue(d.audio_urls);
+      }
+    }catch(e){clearInterval(timer);console.warn('[Audio] TTS job 轮询失败:',e);}
+  },500);
+}
+
 // ── Send ──
 async function send(){
   const t=inp.value.trim();
@@ -430,7 +488,9 @@ async function send(){
 	    var _es=d.emotionMatchScore||d.sceneFitScore?'情'+d.emotionMatchScore+'场'+d.sceneFitScore:'';
 	    var _rf=d.riskFlag?'⚠️'+d.riskFlag:'';
 	    if(_es||_rf){st.textContent=(_es+_rf).substring(0,22);setTimeout(function(){st.textContent='在线'},3000);}
-    if(d.audio_url){const ap=new Audio(d.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
+    if(d.audio_urls&&d.audio_urls.length){playAudioQueue(d.audio_urls);}
+    else if(d.audio_url){const ap=new Audio(d.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
+    else if(d.tts_job){pollTTSJob(d.tts_job);}   // S4 P1-2: 长文音频异步生成，文字已渲染，轮询补齐后续播
     last=d;
     renderM1(d.m1);renderM3(d.m3);renderM4(d.m4);renderM5(d.m5);
     loadM68();
