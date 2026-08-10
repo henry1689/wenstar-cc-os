@@ -1,0 +1,51 @@
+# ============================================================
+# 天枢多路检索 & MemoryInjector 融合权重配置
+# 唯一权威来源：所有权重/预算/阈值从此读取，禁止 ts 硬编码魔法数字
+# ============================================================
+
+# ── 注入层权重（MemoryInjector 使用，拿到召回结果后排序）──
+# 说明：同等条件下数值越高优先级越高；会话上下文不在此，由 chat 主链路直接前置
+inject_priority:
+  archive_tag:     0.95   # 档案标签
+  black_diamond:   0.90   # 黑钻库珍藏记忆
+  vault:           0.70   # 金库（事实、承诺、重要沉淀）
+  memory_normal:   0.60   # 普通砂金库记忆
+
+# timeline 钙化记忆权重：min(base + calcium * scale, cap)，且最低不低于 memory_normal
+timeline_weight:
+  base:    0.30
+  scale:   0.20
+  cap:     0.90
+  min_val: 0.60   # 修复倒挂：钙化≥1 的 timeline 不低于普通砂金 0.6
+
+# ── Foundation 多路 RRF 检索域权重（m4/retrieval/fusion.ts）──
+foundation_rrf_domain_weight:
+  black_diamond: 0.25
+  vault:         0.12
+  knowledge:     0.15
+  sand_memory:   0.10
+
+# ── V13 七层管线 RRF 权重（RRFFusion.ts）──
+v13_rrf_weights:
+  spine:            0.35
+  keyword:          0.30
+  work:             0.25
+  entity:           0.20
+  emotion:          0.10
+  locus:            0.05
+  multi_hit_bonus:  1.2
+
+# ── 预算配置（MemoryInjector）──
+budget:
+  mem_ratio_normal:   0.60
+  kb_ratio_normal:    0.40
+  mem_ratio_longtext: 0.30
+  kb_ratio_longtext:  0.15
+  longtext_max_ratio: 0.80
+  work_max_chars:     4000
+  hard_max_chars:     8000
+
+# ── 过滤阈值 ──
+filter:
+  min_similarity:  0.60
+  max_fusion_items: 16
