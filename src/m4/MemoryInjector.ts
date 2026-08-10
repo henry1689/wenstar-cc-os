@@ -91,10 +91,17 @@ export function injectMemories(opts: InjectOptions): string {
     const displayText = preserveLabels && preservedLabel
       ? preservedLabel + ' ' + clean.substring(0, 300)
       : clean.substring(0, 250);
+    // 🔴 P0-1 修复: 金库【金库记忆】识别为 vault 0.7（不再被"记忆"标签误判为 0.85/0.6）。
+    // 优先级: 档案 0.95 > 黑钻 0.9 > 实体记忆 0.85 > 金库 0.7 > 普通砂金 0.6
+    let priority = 0.6;
+    if (isDiamond) priority = 0.9;
+    else if (preservedLabel.includes('档案')) priority = 0.95;
+    else if (preservedLabel.includes('金库')) priority = 0.7;  // 金库（事实/承诺）
+    else if (preservedLabel.includes('记忆')) priority = 0.85;  // 实体记忆
     items.push({
       text: displayText,
-      source: isDiamond ? 'diamond' : 'sand',
-      priority: isDiamond ? 0.9 : (preservedLabel.includes('档案') ? 0.95 : preservedLabel.includes('记忆') ? 0.85 : 0.6),
+      source: isDiamond ? 'diamond' : preservedLabel.includes('金库') ? 'vault' : 'sand',
+      priority,
     });
   }
 
@@ -127,9 +134,16 @@ export function injectMemories(opts: InjectOptions): string {
 
   // ── 预算分配：V10.1 记忆 60% + 知识库 40%（原 50/50）──
   // 实测修复: 有长文时压缩记忆/KB预算，给完整纪实让路（否则合并长文被截断 → LLM 编造）
+  // 🔴 P0-4 修复: 知识库预算动态让渡——KB 无有效命中时，额度全部给记忆。
   const _hasLongText = !!longText;
-  const memBudget = _hasLongText ? Math.floor(maxChars * 0.3) : Math.floor(maxChars * 0.6);
-  const kbBudget = _hasLongText ? Math.floor(maxChars * 0.15) : (maxChars - memBudget);
+  const _hasKbHit = !!(knowledgeBaseText && knowledgeBaseText.trim().length > 20);
+  let memBudget = _hasLongText ? Math.floor(maxChars * 0.3) : Math.floor(maxChars * 0.6);
+  let kbBudget = _hasLongText ? Math.floor(maxChars * 0.15) : (maxChars - memBudget);
+  // 无 KB 命中 → KB 预算让渡给记忆（记忆拿满，提升关键记忆召回）
+  if (!_hasKbHit && !_hasLongText) {
+    memBudget = maxChars;   // 记忆拿全部预算
+    kbBudget = 0;
+  }
 
   // ── 截断记忆 ──
   const memParts: string[] = [];

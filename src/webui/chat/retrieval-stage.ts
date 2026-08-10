@@ -114,7 +114,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           [_entityUuid]
         ) || [];
         for (const _em of (_entityMems || []).slice(0, 5)) {
-          const _t = (_em.raw_input || '').substring(0, 100);
+          // 🔴 P0-3 修复: 会晤记忆截断 100 → 250（避免关键记忆细节丢失导致 LLM 编造）
+          const _t = (_em.raw_input || '').substring(0, 250);
           if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);
         }
         if (_entityMems.length > 0) console.log('[EntityMem] 会晤实体自有记忆: ' + _entityMems.length + ' 条');
@@ -123,7 +124,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           [_entityUuid]
         ) || [];
         for (const _gr of _goldRows) {
-          const _t = (_gr.content_md || _gr.detail || '').substring(0, 100);
+          // 🔴 P0-3 修复: 会晤金库记忆截断 100 → 250
+          const _t = (_gr.content_md || _gr.detail || '').substring(0, 250);
           if (_t.length > 4 && !memoryFragments.some(function(f) { return f.includes(_t.substring(0, 20)); }))
             memoryFragments.push('【金库记忆】' + _t);
         }
@@ -132,7 +134,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           [_entityUuid]
         ) || [];
         for (const _sr of _sandRows.slice(0, 3)) {
-          const _t = (_sr.raw_input || '').substring(0, 80);
+          // 🔴 P0-3 修复: 会晤重要记忆截断 80 → 250
+          const _t = (_sr.raw_input || '').substring(0, 250);
           if (_t.length > 4 && !memoryFragments.some(function(f) { return f.includes(_t.substring(0, 20)); })) {
             const _tag = _sr.calcium_level >= 3 ? '💎' : '📌';
             memoryFragments.push('【' + _tag + '重要记忆】' + _t);

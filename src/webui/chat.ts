@@ -702,7 +702,6 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     let knowledgeBaseText = "";
     let biosGatedMemories = emotionalMemories;
-    let clueReply: string | null = null;
 
     // ── V4.0 门阀白名单: 根据当前会话对象设定检索权限（三层白名单·始终激活）──
     // 🔴 户籍管理法 V-4 修复: 会话层白名单唯一写者 = EntityMeeting（会晤激活时 addSessionEntity）。
@@ -796,11 +795,13 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     // ── V4.0 实体会晤：注入实体人物上下文（含档案+对话历史+开场协议） ──
     let _entityContextText = '';
     let _meetingEntityName: string | null = null;
+    // V12.7(批3): 提升会晤实体 UUID 到顶层 — 供 knowledgeBase.search 补 UUID 门
+    const _meetingEntityUuid: string | null = ctx._entityMeeting?.getEntityUUID?.() ?? null;
     if (ctx._entityMeeting?.isActive()) {
       try {
         // 🔴 户籍管理法（第九条 搜索闸门·收口）: 会晤激活时设置会话实体 UUID，
         // KnowledgeEngine.weightedSearch 强制按此过滤知识库（杜绝他人档案泄漏）。
-        const _meetUuid = ctx._entityMeeting.getEntityUUID?.() ?? null;
+        const _meetUuid = _meetingEntityUuid;
         if (_meetUuid) {
           const { setSessionEntityUuid } = await import('../app/knowledge/KnowledgeEngine.js');
           setSessionEntityUuid(_meetUuid);
@@ -954,7 +955,6 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     memoryFragments.length = 0; memoryFragments.push(..._preM4.memoryFragments);
     knowledgeBaseText = _preM4.knowledgeBaseText;
     biosGatedMemories = _preM4.biosGatedMemories;
-    clueReply = _preM4.clueReply;
 
     // 🔧 V5.3: KB 缓存注入——在 buildPreM4Context 填充 knowledgeBaseText 后执行
     if (_meetingEntityName && _entityContextText) {
@@ -972,7 +972,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
 
 
-    const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories);
+    // V12.7(批2): 会晤模式注入会晤实体 UUID 作为 extraPersonUuids，
+    // 堵 M4 记忆检索绕过会晤隔离墙（retrieveMemories.findByLocus 曾跨实体扫描）。
+    const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories, _meetingEntityUuid ? [_meetingEntityUuid] : undefined);
 
     // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体（角色扮演时跳过，避免污染主FG）
     if (true) { // V4.0: 非角色扮演守卫已移除
@@ -1284,12 +1286,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
 
     let reply = '';
 
-    if (clueReply) {
-
-      reply = clueReply;
-
-    } else {
-
+    // 🔧 V5.1→V12.3: 线索助理拦截已移除——模糊回忆检测只作为 LLM 提示注入
+    // （见 KnowledgeContextBuilder.clue 分支），回复永远走 LLM 主链，避免模板短句顶掉人设叙事。
+    {
       // ⏰ 时间问题拦截器（不依赖 LLM provider，确保时间绝对正确）
 
       // ⚠️ 使用 \b 和限定长度匹配，防止"现在.*时候"跨句匹配长文本
@@ -1438,7 +1437,9 @@ try {
   if (memoryText) memoryText = memoryText.replace(/（[^）]*）/g, '');
 }
 // V4.0 实体会晤：注入实体上下文（优先于 knowledgeBaseText）
-let finalKnowledgeText = _entityContextText ? (_entityContextText + '\n\n' + knowledgeBaseText) : knowledgeBaseText;
+// 🔴 P0-2 修复: 知识库去重——移除 base 层重复的 knowledgeBaseText，
+// 知识库由 memoryText（injectMemories 截断过滤后）唯一承载，避免 LLM 看两遍浪费 token。
+let finalKnowledgeText = _entityContextText || '';
       // 🆕 V4.0 P1: 正常模式下注入 FG 已知人物的简要参考档案（参考信息，非身份切换）
       if (!_entityContextText && ctx.m4) {
         try {
@@ -1573,7 +1574,9 @@ if (isFactualRecallQuery) {
             });
             const _kbText = _kbResult?.text?.trim();
             if (_kbText && _kbText.length > 1) {
-              const _extraKb = await ctx.knowledgeBase.search(_kbText, 2);
+              // V12.7(批3): 会晤模式补 belongEntityUuid 门 — 只查会晤实体自己的知识（allow-common）
+              // KnowledgeBase.search 第4参是 belongEntityUuid（兼容层，勿传第5参）
+              const _extraKb = await ctx.knowledgeBase.search(_kbText, 2, undefined, _meetingEntityUuid ?? undefined);
               if (_extraKb.length > 0 && finalKnowledgeText) {
                 finalKnowledgeText += '\n\n【知识库补充】' + _extraKb.map(function(k) { return k.title; }).join(', ') + '\n' + _extraKb.map(function(k) { return (k.content || '').substring(0, 200); }).join('\n');
                 console.log('[KBRoute] LLM路由: ' + _kbText + ' → ' + _extraKb.length + ' 条');
@@ -1892,9 +1895,9 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
 
         // 候选回复生成（不阻塞主回复 — 默认不活跃，待前端请求时使用）
 
-        // 只有非线索回复、非时间回答时才生成候选
+        // 只有非时间回答时才生成候选（V12.3: 线索拦截已移除，线索轮也正常生成候选）
 
-        if (!clueReply && !timeMatch) {
+        if (!timeMatch) {
 
           try {
 
@@ -2335,7 +2338,8 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
       try {
         const _kbWords = message.match(/[一-龥]{2,4}/g) || [];
         if (_kbWords.length >= 2 && ctx.knowledgeBase) {
-          const _kbHits = await ctx.knowledgeBase.search(_kbWords.slice(0, 2).join(" "), 2);
+          // V12.7(批3): 会晤模式补 belongEntityUuid 门（主动学习不查他人知识）
+          const _kbHits = await ctx.knowledgeBase.search(_kbWords.slice(0, 2).join(" "), 2, undefined, _meetingEntityUuid ?? undefined);
           if (_kbHits.length > 0 && _kbHits[0].title) {
             console.log("[KnowledgeAuto] 关联知识: " + _kbHits[0].title.slice(0, 30));
           }
