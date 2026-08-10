@@ -337,6 +337,15 @@ export class FusionStorageAdapter {
     return this.sqlite.findMemoriesByEntityNames(entityNames, limit);
   }
 
+  /** V12.6: 按实体 UUID 查记忆（entity 路透传）— 透传 EmotionalMemoryRecord，与 findMemoriesByEntityNames 同构。
+   *  🔴 不做 toDNA：MemoryRetriever entity 路消费 id/raw_input/seq_pos/memory_kind/calcium_score/created_at，
+   *     这些字段 EmotionalMemoryRecord 全有（memory_kind 由 rowToRecord 回填），toDNA 反而改变形状。
+   *  🔴 roleplay 过滤在调用方用 memory_kind === 'roleplay'（memory_type 从未被 rowToRecord 回填，勿用）。 */
+  findByEntityUuid(uuid: string, limit = 15): EmotionalMemoryRecord[] {
+    this.ensureReady();
+    return this.sqlite.findByEntityUuid(uuid, limit);
+  }
+
   /**
    * 实体关系摘要（双库合并）
    */
@@ -464,6 +473,11 @@ export class FusionStorageAdapter {
       created_at: record.created_at,
       calcium_score: record.calcium_score,
       calcium_level: record.calcium_level,
+      // V12.7(批1): 补 memory_kind + belong_entity_uuid — 此前 toDNA 剥字段，
+      // keyword/locus 路读侧过滤/entityUuid 恒 undefined（死过滤）。
+      // EmotionalMemoryRecord 两字段均由 rowToRecord 回填（memory_kind L2166 / belongEntityUuid L2205）。
+      memory_kind: record.memory_kind,
+      belong_entity_uuid: record.belongEntityUuid ?? undefined,
     };
   }
 

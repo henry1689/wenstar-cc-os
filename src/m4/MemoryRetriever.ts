@@ -103,7 +103,9 @@ export class MemoryRetriever {
     } catch { /* 索引查询失败不阻塞 */ }
 
     // ─── 1. 按话题前缀检索（基于分类树路由） ───
-    const byLocus = await this.storage.findByLocus(locusPath, { limit: 20 });
+    // V12.7(批2): 补 entityUuids 透传 — 会晤模式下 M4Orchestrator 已传 entityUuids，
+    // 此处未透传 → findByLocus 跨实体全库扫描，他人同话题记忆经 timeline 注入 LLM（会晤绕过）。
+    const byLocus = await this.storage.findByLocus(locusPath, { limit: 20, entityUuids: options?.entityUuids });
 
     // ─── 2. 关键词全文搜索 ───
     const byKeyword: DNA[] = [];
@@ -238,10 +240,10 @@ export class MemoryRetriever {
     // 4. 🆕 实体归属检索（belong_entity_uuid 直查，不依赖 memory_kind）
     const byEntityUuid: DNA[] = [];
     const entityUuids = options?.entityUuids || [];
-    if (entityUuids.length > 0 && typeof (this.storage as any).findByEntityUuid === 'function') {
+    if (entityUuids.length > 0 && typeof this.storage.findByEntityUuid === 'function') {
       for (const uuid of entityUuids) {
         try {
-          const entityMems = (this.storage as any).findByEntityUuid(uuid, 10);
+          const entityMems = this.storage.findByEntityUuid(uuid, 10);
           if (entityMems && entityMems.length > 0) {
             for (const em of entityMems) {
               byEntityUuid.push({
@@ -278,9 +280,9 @@ export class MemoryRetriever {
     // 5. 检索规则：正常模式排除角色扮演记忆（memory_kind='roleplay' 或 memory_type='rp_dialog'）
     //    角色扮演记忆只属于角色扮演检索管线(retrieveFullClue)，不应污染正常对话的检索结果。
     const _filtered = merged.filter(dna => {
-      const kind = (dna as any).memory_kind;
-      const mtype = (dna as any).memory_type;
-      if (kind === 'roleplay' || mtype === 'rp_dialog') return false;
+      // V12.7(批1): memory_kind 已由 toDNA 回填（此前恒 undefined 死过滤）；
+      // memory_type 从未被 rowToRecord 回填 → 删死判定，统一用 memory_kind。
+      if (dna.memory_kind === 'roleplay') return false;
       return true;
     });
     if (_filtered.length < merged.length) {
@@ -290,11 +292,12 @@ export class MemoryRetriever {
     }
 
     // 🆕 实体归属检索追加 — 绕过 memory_kind 过滤，按 UUID 直达
-    //    跳过 rp_dialog 类型（纯角色扮演对话，不含客观信息）
+    //    S4 P0-2 修复: 跳过 roleplay（memory_type 从未被 rowToRecord/DNA 回填 → 死过滤），
+    //    改用 memory_kind === 'roleplay'（byEntityUuid 构造时 L259 已回填）。
     if (byEntityUuid.length > 0) {
       for (const dna of byEntityUuid) {
         if (!seen.has(dna.branch_id)) {
-          if ((dna as any).memory_type === 'rp_dialog') continue;
+          if (dna.memory_kind === 'roleplay') continue;
           seen.add(dna.branch_id);
           merged.push(dna);
         }
@@ -430,6 +433,20 @@ export class MemoryRetriever {
    *
    * @returns 四路独立排名 + 海马体索引命中信息
    */
+  /**
+   * V12.0 六路独立召回（并行化 V12.6） — 返回 MultiRankResult 而非合并的 DNA[]
+   * ==========================================================
+   * 把 retrieveMemories 中散落的六路召回逻辑抽取为统一返回接口。
+   * 六路各自输出 RankedList（路内已按 score 降序），由上层 UnifiedSearchEngine
+   * 做 RRF 融合 + MMR 多样性，不再在 MemoryRetriever 内部拼接。
+   *
+   * V12.6 改造：六路 Promise.all 并行执行（结构收益，为未来异步存储铺路）。
+   *  🔴 不剪枝：keyword/spine 的 200 条候选窗口原样保留（改动会改变召回范围，不混入）。
+   *  🔴 不改返回结构 MultiRankResult（V13 searchV13 / MemoryAdapter 消费不变）。
+   *  🔴 不改 findBySeqPosRange 公共方法（M8/M7/图构建器复用，只在本方法内传参）。
+   *
+   * @returns 六路独立排名 + 海马体索引命中信息
+   */
   async retrieveMultiRank(
     locusPath: string,
     entities: Array<{ name: string; type: string }>,
@@ -438,7 +455,17 @@ export class MemoryRetriever {
     const sessionId = options?.sessionId ?? this._sessionId;
     const lists: RankedList[] = [];
 
-    // ─── 🧠 0. 海马体稀疏索引查询 ───
+    // ─── 0. 共享关键词集合（keyword 路 + work 路共用，提取到顶部消除耦合） ───
+    const keywords = new Set<string>();
+    for (const e of entities) {
+      if (e.name && e.name.length > 0) keywords.add(e.name);
+    }
+    if (locusPath) {
+      const last = locusPath.split('.').pop();
+      if (last && last !== 'default' && last !== 'general') keywords.add(last);
+    }
+
+    // ─── 🧠 0b. 海马体稀疏索引查询（保持串行，检索起点依赖） ───
     let indexHit = false;
     let indexedIds: string[] = [];
     try {
@@ -454,229 +481,243 @@ export class MemoryRetriever {
       }
     } catch { /* 索引查询失败不阻塞 */ }
 
-    // ─── 1. 情感/情绪路 (emotion) ───
-    const emotionItems: RankedItem[] = [];
-    const hasEmotionType = entities.some(e => e.type === 'emotion');
-    const hasMeaningfulEntity = entities.some(e => e.name.length > 0 && e.type !== 'self');
-    if (options?.perception && (hasEmotionType || hasMeaningfulEntity)) {
-      try {
-        const scored = this.storage.findByEmotionalSimilarity({
-          current_perception: options.perception,
-          entities: entities.filter(e => e.type === 'emotion').map(e => e.name),
-          similarity_mode: 'mood_congruent',
-          limit: 30,
-          excludeRoleplay: true,
-          entityUuids: options?.entityUuids,
-        });
-        for (const sm of scored) {
-          if (sm?.record) {
-            emotionItems.push({
-              id: sm.record.id ?? '',
-              text: (sm.record.raw_input ?? '').substring(0, 200),
-              score: sm.composite ?? sm.scores.emotional ?? 0.5,
-              source: 'emotion',
-              entityUuid: (sm.record as any)?.belong_entity_uuid ?? null,
-              calciumScore: sm.record.calcium_score ?? 0,
-              createdAt: sm.record.created_at ?? '',
-            });
-          }
-        }
-      } catch { /* skip */ }
-    }
-    if (emotionItems.length > 0) {
-      emotionItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'emotion', items: emotionItems });
-    }
-
-    // ─── 2. 关键词/BM25路 (keyword) ───
-    const keywordItems: RankedItem[] = [];
-    const keywords = new Set<string>();
-    for (const e of entities) {
-      if (e.name && e.name.length > 0) keywords.add(e.name);
-    }
-    if (locusPath) {
-      const last = locusPath.split('.').pop();
-      if (last && last !== 'default' && last !== 'general') keywords.add(last);
-    }
-    if (keywords.size > 0) {
-      try {
-        const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200, entityUuids: options?.entityUuids });
-        const seen = new Set<string>();
-        for (const dna of recent) {
-          if (seen.has(dna.branch_id)) continue;
-          const kind = (dna as any).memory_kind;
-          if (kind === 'roleplay') continue;
-          let hitCount = 0;
-          for (const kw of keywords) {
-            if (dna.raw_input?.includes(kw)) hitCount++;
-          }
-          if (hitCount > 0) {
-            seen.add(dna.branch_id);
-            keywordItems.push({
-              id: dna.branch_id,
-              text: (dna.raw_input ?? '').substring(0, 200),
-              score: hitCount,
-              source: 'keyword',
-              entityUuid: (dna as any).belong_entity_uuid ?? null,
-              calciumScore: dna.calcium_score ?? 0,
-              createdAt: dna.created_at ?? '',
-            });
-          }
-        }
-      } catch { /* skip */ }
-    }
-    if (keywordItems.length > 0) {
-      keywordItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'keyword', items: keywordItems });
-    }
-
-    // ─── 3. 双螺旋 state_spines 向量路 (spine) ───
-    // 🔴 P2-A2 修复: state_spines 表无 belong_entity_uuid 列，global_uid 与 memories 无法关联，
-    //   检索出的 spine 候选无法回溯到具体实体（天然"无归属"）。
-    //   会晤场景（有 entityUuids）下跳过 spine 路——否则会把全库情绪向量注入（违反 UUID 法 deny-by-default）。
-    //   户主场景（无 entityUuids）下保留（户主最高权限，spine 作为辅助信号）。
-    const spineItems: RankedItem[] = [];
-    const _spineUuids = options?.entityUuids || [];
-    if (options?.perception && _spineUuids.length === 0) {
-      try {
-        const sqlite = (this.storage as any).getSQLite?.();
-        if (sqlite && typeof sqlite.queryAll === 'function') {
-          const p = options.perception;
-          const spineRows = sqlite.queryAll(
-            `SELECT s.global_uid, s.dimension_id, s.value, s.timestamp_ms
-             FROM state_spines s WHERE s.dimension_id IN (1,2,5,13)
-               AND s.timestamp_ms > ? ORDER BY s.timestamp_ms DESC LIMIT 200`,
-            [Date.now() - 30 * 86400000]
-          );
-          if (spineRows?.length) {
-            const spineMap = new Map<string, { dims: Map<number,number>; ts: number }>();
-            for (const row of spineRows) {
-              const uid = row.global_uid as string;
-              if (!spineMap.has(uid)) spineMap.set(uid, { dims: new Map(), ts: row.timestamp_ms as number });
-              spineMap.get(uid)!.dims.set(row.dimension_id as number, row.value as number);
-            }
-            const targetDims = [p.pleasure ?? 0, p.arousal ?? 0, p.intimacy ?? 0, p.intimacy ?? 0];
-            for (const [uid, entry] of spineMap) {
-              const vec = [entry.dims.get(1) ?? 0.5, entry.dims.get(2) ?? 0.5, entry.dims.get(5) ?? 0.5, entry.dims.get(13) ?? 0.5];
-              let dot = 0, nA = 0, nB = 0;
-              for (let i = 0; i < 4; i++) { dot += vec[i] * targetDims[i]; nA += vec[i] * vec[i]; nB += targetDims[i] * targetDims[i]; }
-              const sim = nA && nB ? (dot / Math.sqrt(nA * nB) + 1) / 2 : 0.5;
-              if (sim > 0.3) {
-                spineItems.push({
-                  id: uid, text: '', source: 'spine', entityUuid: null,
-                  score: sim, calciumScore: sim * 10, createdAt: new Date(entry.ts).toISOString(),
-                });
-              }
-            }
-          }
-        }
-      } catch { /* skip */ }
-    }
-    if (spineItems.length > 0) {
-      spineItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'spine', items: spineItems });
-    }
-
-    // ─── 4. 话题前缀路 (locus) ───
-    const locusItems: RankedItem[] = [];
-    try {
-      const byLocus = await this.storage.findByLocus(locusPath, { limit: 20, entityUuids: options?.entityUuids });
-      for (const dna of byLocus) {
-        const kind = (dna as any).memory_kind;
-        if (kind === 'roleplay') continue;
-        locusItems.push({
-          id: dna.branch_id,
-          text: (dna.raw_input ?? '').substring(0, 200),
-          score: dna.seq_pos ?? 0,
-          source: 'locus',
-          entityUuid: (dna as any).belong_entity_uuid ?? null,
-          calciumScore: dna.calcium_score ?? 0,
-          createdAt: dna.created_at ?? '',
-        });
-      }
-    } catch { /* skip */ }
-    if (locusItems.length > 0) {
-      locusItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'locus', items: locusItems });
-    }
-
-    // ─── 5. 实体归属路 (entity) ───
-    const entityItems: RankedItem[] = [];
+    // ─── 六路并行召回（V12.6 Promise.all） ───
+    // 原串行 6 路各自包成独立 async 函数（自带 try-catch 隔离，异常不阻塞其他路），
+    // Promise.all 并行执行。结果按固定顺序 [emotion, keyword, spine, locus, entity, work]
+    // 合并 → 保持下游 V13 RRF 对 lists 顺序的稳定依赖。
+    // 🔴 每路守卫条件原样保留（emotion 需 perception、spine 会晤跳过、entity 需 uuid、work 需关键词）。
+    // 🔴 不剪枝：keyword/spine 的 200 条候选窗口原样保留（改动会改变召回范围）。
     const entityUuids = options?.entityUuids ?? [];
-    if (entityUuids.length > 0 && typeof (this.storage as any).findByEntityUuid === 'function') {
-      for (const uuid of entityUuids) {
+
+    // 1. 情感/情绪路 (emotion)
+    const runEmotion = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      const hasEmotionType = entities.some(e => e.type === 'emotion');
+      const hasMeaningfulEntity = entities.some(e => e.name.length > 0 && e.type !== 'self');
+      if (options?.perception && (hasEmotionType || hasMeaningfulEntity)) {
         try {
-          const entityMems = (this.storage as any).findByEntityUuid(uuid, 10);
-          if (entityMems?.length) {
-            for (const em of entityMems) {
-              if ((em as any).memory_type === 'rp_dialog') continue;
-              entityItems.push({
-                id: em.id ?? '', text: (em.raw_input ?? '').substring(0, 200),
-                score: em.seq_pos ?? 0, source: 'entity',
-                entityUuid: uuid, calciumScore: em.calcium_score ?? 0,
-                createdAt: em.created_at ?? '',
+          const scored = this.storage.findByEmotionalSimilarity({
+            current_perception: options.perception,
+            entities: entities.filter(e => e.type === 'emotion').map(e => e.name),
+            similarity_mode: 'mood_congruent',
+            limit: 30,
+            excludeRoleplay: true,
+            entityUuids: options?.entityUuids,
+          });
+          for (const sm of scored) {
+            if (sm?.record) {
+              items.push({
+                id: sm.record.id ?? '',
+                text: (sm.record.raw_input ?? '').substring(0, 200),
+                score: sm.composite ?? sm.scores.emotional ?? 0.5,
+                source: 'emotion',
+                entityUuid: sm.record?.belongEntityUuid ?? null,
+                calciumScore: sm.record.calcium_score ?? 0,
+                createdAt: sm.record.created_at ?? '',
               });
             }
           }
         } catch { /* skip */ }
       }
-    }
-    if (entityItems.length > 0) {
-      entityItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'entity', items: entityItems });
-    }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
 
-    // ─── 6. 作品直达路 (work) — 长文召回元数据桥 ───
-    // "那篇小说/继续写/标题" 由 retrieval-stage 的 ReferentResolver 直查 works 主键。
-    // 此路用关键词（实体名+locus）LIKE 匹配 works.title/summary/full_text，
-    // 让普通查询（如"星落之城"）也能召回作品标题——高权重 RRF 置顶。
-    const workItems: RankedItem[] = [];
-    try {
-      const sqlite = (this.storage as any).getSQLite?.();
-      if (sqlite && typeof sqlite.queryAll === 'function' && keywords.size > 0) {
-        // 只取 top 关键词（避免全词 OR 导致过宽召回）
-        const workKws = [...keywords].slice(0, 5).filter(kw => kw && kw.length > 1);
-        if (workKws.length > 0) {
-          const likeClauses = workKws.map(() => '(title LIKE ? OR summary LIKE ? OR full_text LIKE ?)').join(' OR ');
-          const params: any[] = [];
-          for (const kw of workKws) { params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`); }
-          const workRows = sqlite.queryAll(
-            `SELECT work_id, title, work_type, summary, full_text, belong_entity_uuid, created_at
-             FROM works WHERE ${likeClauses} ORDER BY created_at DESC LIMIT 5`,
-            params,
-          ) as any[];
-          if (workRows?.length) {
-            // 按户籍过滤：会晤时仅实体自有作品；户主钥匙（空）全放行
-            // 🔴 S5-评审修复: 无归属(owner=null)在会晤场景必须 deny（与 policePasses 语义一致）
-            const uuidSet = new Set(entityUuids);
-            for (const row of workRows) {
-              const owner = (row as any).belong_entity_uuid ?? null;
-              // 会晤（entityUuids 非空）→ 仅白名单内实体作品放行（无归属作品 deny，杜绝泄漏）
-              // 户主钥匙（entityUuids 空）→ 全放行（户主为最高权限）
-              if (entityUuids.length > 0 && (!owner || !uuidSet.has(owner))) continue;
-              const title = String((row as any).title || '');
-              const summary = String((row as any).summary || '').substring(0, 120);
-              // 🔴 S5-评审修复: 运算符优先级 bug — 每关键字对 title/summary 各自累加（显式括号），hits 非二值
-              const hits = workKws.reduce((acc: number, kw: string) =>
-                acc + (title.includes(kw) ? 1 : 0) + (((row as any).summary || '').includes(kw) ? 1 : 0), 0);
-              workItems.push({
-                id: String((row as any).work_id),
-                text: `《${title}》 ${summary}`.substring(0, 200),
-                score: Math.max(1, hits),
-                source: 'work',
-                entityUuid: owner,
-                calciumScore: 0,
-                createdAt: String((row as any).created_at || ''),
+    // 2. 关键词/BM25路 (keyword)
+    const runKeyword = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      if (keywords.size > 0) {
+        try {
+          const recent = await this.storage.findBySeqPosRange(0, 999_999_999, { limit: 200, entityUuids: options?.entityUuids });
+          const seen = new Set<string>();
+          for (const dna of recent) {
+            if (seen.has(dna.branch_id)) continue;
+            const kind = dna.memory_kind;
+            if (kind === 'roleplay') continue;
+            let hitCount = 0;
+            for (const kw of keywords) {
+              if (dna.raw_input?.includes(kw)) hitCount++;
+            }
+            if (hitCount > 0) {
+              seen.add(dna.branch_id);
+              items.push({
+                id: dna.branch_id,
+                text: (dna.raw_input ?? '').substring(0, 200),
+                score: hitCount,
+                source: 'keyword',
+                entityUuid: dna.belong_entity_uuid ?? null,
+                calciumScore: dna.calcium_score ?? 0,
+                createdAt: dna.created_at ?? '',
               });
             }
           }
+        } catch { /* skip */ }
+      }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
+
+    // 3. 双螺旋 state_spines 向量路 (spine)
+    // 🔴 P2-A2 修复: state_spines 表无 belong_entity_uuid 列，global_uid 与 memories 无法关联，
+    //   检索出的 spine 候选无法回溯到具体实体（天然"无归属"）。
+    //   会晤场景（有 entityUuids）下跳过 spine 路——否则会把全库情绪向量注入（违反 UUID 法 deny-by-default）。
+    //   户主场景（无 entityUuids）下保留（户主最高权限，spine 作为辅助信号）。
+    const runSpine = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      if (options?.perception && entityUuids.length === 0) {
+        try {
+          const sqlite = (this.storage as any).getSQLite?.();
+          if (sqlite && typeof sqlite.queryAll === 'function') {
+            const p = options.perception;
+            const spineRows = sqlite.queryAll(
+              `SELECT s.global_uid, s.dimension_id, s.value, s.timestamp_ms
+               FROM state_spines s WHERE s.dimension_id IN (1,2,5,13)
+                 AND s.timestamp_ms > ? ORDER BY s.timestamp_ms DESC LIMIT 200`,
+              [Date.now() - 30 * 86400000]
+            );
+            if (spineRows?.length) {
+              const spineMap = new Map<string, { dims: Map<number,number>; ts: number }>();
+              for (const row of spineRows) {
+                const uid = row.global_uid as string;
+                if (!spineMap.has(uid)) spineMap.set(uid, { dims: new Map(), ts: row.timestamp_ms as number });
+                spineMap.get(uid)!.dims.set(row.dimension_id as number, row.value as number);
+              }
+              const targetDims = [p.pleasure ?? 0, p.arousal ?? 0, p.intimacy ?? 0, p.intimacy ?? 0];
+              for (const [uid, entry] of spineMap) {
+                const vec = [entry.dims.get(1) ?? 0.5, entry.dims.get(2) ?? 0.5, entry.dims.get(5) ?? 0.5, entry.dims.get(13) ?? 0.5];
+                let dot = 0, nA = 0, nB = 0;
+                for (let i = 0; i < 4; i++) { dot += vec[i] * targetDims[i]; nA += vec[i] * vec[i]; nB += targetDims[i] * targetDims[i]; }
+                const sim = nA && nB ? (dot / Math.sqrt(nA * nB) + 1) / 2 : 0.5;
+                if (sim > 0.3) {
+                  items.push({
+                    id: uid, text: '', source: 'spine', entityUuid: null,
+                    score: sim, calciumScore: sim * 10, createdAt: new Date(entry.ts).toISOString(),
+                  });
+                }
+              }
+            }
+          }
+        } catch { /* skip */ }
+      }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
+
+    // 4. 话题前缀路 (locus)
+    const runLocus = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      try {
+        const byLocus = await this.storage.findByLocus(locusPath, { limit: 20, entityUuids: options?.entityUuids });
+        for (const dna of byLocus) {
+          const kind = dna.memory_kind;
+          if (kind === 'roleplay') continue;
+          items.push({
+            id: dna.branch_id,
+            text: (dna.raw_input ?? '').substring(0, 200),
+            score: dna.seq_pos ?? 0,
+            source: 'locus',
+            entityUuid: dna.belong_entity_uuid ?? null,
+            calciumScore: dna.calcium_score ?? 0,
+            createdAt: dna.created_at ?? '',
+          });
+        }
+      } catch { /* skip */ }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
+
+    // 5. 实体归属路 (entity)
+    const runEntity = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      // V12.6: FusionStorageAdapter.findByEntityUuid 透传补齐（原 only-SQLiteAdapter → 恒 false 空转）
+      if (entityUuids.length > 0 && typeof this.storage.findByEntityUuid === 'function') {
+        for (const uuid of entityUuids) {
+          try {
+            const entityMems = this.storage.findByEntityUuid(uuid, 10);
+            if (entityMems?.length) {
+              for (const em of entityMems) {
+                // S4 P0-1 修复: memory_type 从未被 rowToRecord 回填（恒 undefined）→ 死过滤。
+                // 改用 memory_kind === 'roleplay'（EmotionalMemoryRecord 有该字段且 rowToRecord 回填），
+                // 否则激活的 entity 路会把 roleplay 记忆泄漏进正常检索。
+                if ((em as any).memory_kind === 'roleplay') continue;
+                items.push({
+                  id: em.id ?? '', text: (em.raw_input ?? '').substring(0, 200),
+                  score: em.seq_pos ?? 0, source: 'entity',
+                  entityUuid: uuid, calciumScore: em.calcium_score ?? 0,
+                  createdAt: em.created_at ?? '',
+                });
+              }
+            }
+          } catch { /* skip */ }
         }
       }
-    } catch { /* work 路失败不阻塞 */ }
-    if (workItems.length > 0) {
-      workItems.sort((a, b) => b.score - a.score);
-      lists.push({ source: 'work', items: workItems });
-    }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
+
+    // 6. 作品直达路 (work) — 长文召回元数据桥
+    // "那篇小说/继续写/标题" 由 retrieval-stage 的 ReferentResolver 直查 works 主键。
+    // 此路用关键词（实体名+locus）LIKE 匹配 works.title/summary/full_text，
+    // 让普通查询（如"星落之城"）也能召回作品标题——高权重 RRF 置顶。
+    const runWork = async (): Promise<RankedItem[]> => {
+      const items: RankedItem[] = [];
+      try {
+        const sqlite = (this.storage as any).getSQLite?.();
+        if (sqlite && typeof sqlite.queryAll === 'function' && keywords.size > 0) {
+          // 只取 top 关键词（避免全词 OR 导致过宽召回）
+          const workKws = [...keywords].slice(0, 5).filter(kw => kw && kw.length > 1);
+          if (workKws.length > 0) {
+            const likeClauses = workKws.map(() => '(title LIKE ? OR summary LIKE ? OR full_text LIKE ?)').join(' OR ');
+            const params: any[] = [];
+            for (const kw of workKws) { params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`); }
+            const workRows = sqlite.queryAll(
+              `SELECT work_id, title, work_type, summary, full_text, belong_entity_uuid, created_at
+               FROM works WHERE ${likeClauses} ORDER BY created_at DESC LIMIT 5`,
+              params,
+            ) as any[];
+            if (workRows?.length) {
+              // 按户籍过滤：会晤时仅实体自有作品；户主钥匙（空）全放行
+              // 🔴 S5-评审修复: 无归属(owner=null)在会晤场景必须 deny（与 policePasses 语义一致）
+              const uuidSet = new Set(entityUuids);
+              for (const row of workRows) {
+                const owner = (row as any).belong_entity_uuid ?? null;
+                // 会晤（entityUuids 非空）→ 仅白名单内实体作品放行（无归属作品 deny，杜绝泄漏）
+                // 户主钥匙（entityUuids 空）→ 全放行（户主为最高权限）
+                if (entityUuids.length > 0 && (!owner || !uuidSet.has(owner))) continue;
+                const title = String((row as any).title || '');
+                const summary = String((row as any).summary || '').substring(0, 120);
+                // 🔴 S5-评审修复: 运算符优先级 bug — 每关键字对 title/summary 各自累加（显式括号），hits 非二值
+                const hits = workKws.reduce((acc: number, kw: string) =>
+                  acc + (title.includes(kw) ? 1 : 0) + (((row as any).summary || '').includes(kw) ? 1 : 0), 0);
+                items.push({
+                  id: String((row as any).work_id),
+                  text: `《${title}》 ${summary}`.substring(0, 200),
+                  score: Math.max(1, hits),
+                  source: 'work',
+                  entityUuid: owner,
+                  calciumScore: 0,
+                  createdAt: String((row as any).created_at || ''),
+                });
+              }
+            }
+          }
+        }
+      } catch { /* work 路失败不阻塞 */ }
+      items.sort((a, b) => b.score - a.score);
+      return items;
+    };
+
+    // 六路并行执行 → 固定顺序合并（Promise.all 数组保序，不依赖完成先后）
+    const [emotionItems, keywordItems, spineItems, locusItems, entityItems, workItems] = await Promise.all([
+      runEmotion(), runKeyword(), runSpine(), runLocus(), runEntity(), runWork(),
+    ]);
+
+    if (emotionItems.length > 0) lists.push({ source: 'emotion', items: emotionItems });
+    if (keywordItems.length > 0) lists.push({ source: 'keyword', items: keywordItems });
+    if (spineItems.length > 0) lists.push({ source: 'spine', items: spineItems });
+    if (locusItems.length > 0) lists.push({ source: 'locus', items: locusItems });
+    if (entityItems.length > 0) lists.push({ source: 'entity', items: entityItems });
+    if (workItems.length > 0) lists.push({ source: 'work', items: workItems });
 
     // 去重计数
     const allIds = new Set<string>();
@@ -715,12 +756,9 @@ export class MemoryRetriever {
           // ③ 强度平滑迭代: 基于情感匹配度微调强度
           if (currentPerception) {
             const oldStrength = (mem as any).effective_strength || 1.0;
-            // 比较当前 arousal 与记忆原始 arousal（同尺度 [-1,1]），而非 calcium_score
-            let origArousal = 0.5;
-            try {
-              const orig = JSON.parse((mem as any).perception_json || '{}');
-              if (typeof orig.arousal === 'number') origArousal = orig.arousal;
-            } catch (e) { console.warn(`[MemoryRetriever] 操作失败`, (e as Error)?.message || e); }
+            // V12.4 阶段B 根除24D: DNA 记录本就无 perception_json（原逻辑恒走中性默认），
+            // arousal 无 40D 槽位 → 中性 0.5；强度匹配度降级为仅按当前 arousal 与中性的距离
+            const origArousal = 0.5;
             const arousalDiff = Math.abs((currentPerception.arousal || 0) - origArousal);
             const matchScore = Math.max(0, 1 - arousalDiff);
             const newStrength = oldStrength * 0.95 + 0.05 * matchScore;
@@ -729,8 +767,8 @@ export class MemoryRetriever {
               [newStrength, new Date().toISOString(), id]
             );
 
-            // ④ 情绪差异感知追加: 当前 pleasure ≠ 原始时叠加新维度
-            const origPleasure = (() => { try { return JSON.parse((mem as any).perception_json || '{}').pleasure || 0; } catch { return 0; } })();
+            // ④ 情绪差异感知追加: 当前 pleasure ≠ 原始时叠加新维度（原始 pleasure 无数据源 → 0，同旧行为）
+            const origPleasure = 0;
             const currPleasure = currentPerception.pleasure || 0;
             if (Math.abs(currPleasure - origPleasure) > 0.3) {
               const v2 = JSON.stringify({ pleasure: currPleasure, arousal: currentPerception.arousal, dominance: currentPerception.dominance, tagged_at: new Date().toISOString() });
