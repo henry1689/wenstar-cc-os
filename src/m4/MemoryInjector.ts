@@ -159,11 +159,14 @@ export function injectMemories(opts: InjectOptions): string {
   // 🔴 P1 配置化: 预算比例从 yaml 读取
   const _hasLongText = !!longText;
   const _hasKbHit = !!(knowledgeBaseText && knowledgeBaseText.trim().length > 20);
+  // 🔴 D4 修复: kbBudget 用 kb_ratio_normal（yaml 配置真实生效，而非 maxChars - memBudget）
   let memBudget = _hasLongText ? Math.floor(maxChars * BUD.mem_ratio_longtext) : Math.floor(maxChars * BUD.mem_ratio_normal);
-  let kbBudget = _hasLongText ? Math.floor(maxChars * BUD.kb_ratio_longtext) : (maxChars - memBudget);
+  let kbBudget = _hasLongText ? Math.floor(maxChars * BUD.kb_ratio_longtext) : Math.floor(maxChars * BUD.kb_ratio_normal);
   // 无 KB 命中 → KB 预算让渡给记忆（记忆拿满，提升关键记忆召回）
+  // 🔴 D7 修复: 让渡时扣除作品占用（workFullText 独立预算），避免硬上限从头部截断吃掉记忆
   if (!_hasKbHit && !_hasLongText) {
-    memBudget = maxChars;   // 记忆拿全部预算
+    const _workReserve = workFullText ? Math.min(BUD.work_max_chars, Math.floor(maxChars * 0.4)) : 0;
+    memBudget = Math.max(0, maxChars - _workReserve);   // 记忆拿除作品外的全部预算
     kbBudget = 0;
   }
 

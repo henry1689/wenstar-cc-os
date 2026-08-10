@@ -85,7 +85,13 @@ export function getRetrievalFusionConfig(): RetrievalFusionConfig {
   return _cache;
 }
 
-/** 重新加载（配置变更后调用） */
+/**
+ * 重新加载（配置变更后调用）。
+ * 🔴 D5 说明: RRF 权重（RRFFusion/fusion.ts）在模块加载时 IIFE 冻结，
+ * reload 对 RRF 层不生效，仅 MemoryInjector（每调用读一次）会更新。
+ * RRF 权重属启动级配置，运行时热更非核心需求——如需热更 RRF，
+ * 需将 DEFAULT_RRF_CONFIG/FOUNDATION_DEFAULT_WEIGHTS 改为函数内读取（影响所有引用方）。
+ */
 export function reloadRetrievalFusionConfig(): RetrievalFusionConfig {
   _cache = null;
   return getRetrievalFusionConfig();
