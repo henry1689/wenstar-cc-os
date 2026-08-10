@@ -502,9 +502,11 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       const params: any[] = [`%${kw}%`, `%${kw}%`];
       if (interactionType) { sql += ` AND interaction_type = ?`; params.push(interactionType); }
       // V13: entityUuid 过滤 — 精准隔离人物知识
-      // 🔴 户籍管理法：收编 → UUIDPoliceFilter（deny-by-default，杜绝 OR IS NULL 逃生口）
+      // V12.7(批3): allowUnowned:true → 与 L574 post-filter + weightedSearch 对称的 allow-common
+      // 语义（belong = 该实体 OR 公共无归属）。此前纯 IN 排除公共知识，两处过滤不一致，
+      // 且违背批3 S2 承诺的"自己的 + 公共"语义。
       if (belongEntityUuid) {
-        const _police = buildSqlClause({ visibleUuids: new Set([belongEntityUuid]) });
+        const _police = buildSqlClause({ visibleUuids: new Set([belongEntityUuid]), allowUnowned: true });
         sql += _police.clause;
         params.push(..._police.params);
       }

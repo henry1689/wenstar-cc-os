@@ -56,7 +56,6 @@ export interface PreM4Output {
   knowledgeBaseText: string;
   memoryFragments: string[];
   biosGatedMemories: any[];
-  clueReply: string | null;
   bionicMemories: any[];
 }
 
@@ -254,7 +253,10 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
           }
         }
         if (_fbKeywords.length > 0) {
-          const _fallback = await ctx.knowledgeBase.search(_fbKeywords.slice(0, 3).join(' '), 3);
+          // V12.7(批3): 会晤模式补 belong 门（allow-common：自己的 + 公共）— 此前兜底 search 全库泄漏
+          // 🔴 参数错位修复: _meetingEntityUuid 原落 interactionType(第4参)→ SQL 拼 AND interaction_type='<uuid>' 恒空。
+          // 移到第5参 belongEntityUuid（对照 L121/146 weightedSearch 的第5参正确写法）。
+          const _fallback = await ctx.knowledgeBase.search(_fbKeywords.slice(0, 3).join(' '), 3, undefined, undefined, ctx._meetingEntityUuid ?? undefined);
           if (_fallback.length > 0) {
             const fbC = _fallback.map((k: any) => '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 500)).join('\n\n');
             knowledgeBaseText = knowledgeBaseText ? knowledgeBaseText + '\n\n【知识库补充】\n' + fbC : fbC;
@@ -326,7 +328,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     const _isIntimateMode = (p.intimacy || 0) >= 2 || /高潮|操|干|插|顶|射|做爱|性交|爱爱|上床|湿了|硬了|进去|想要|吻我|抱我|摸我|亲我|胸|乳头|阴|龟头|鸡巴|阴道|舔|吸/.test(message);
     if (_isIntimateMode && ctx.knowledgeBase) {
       const _intimateKeywords = ['性爱技巧', '两性知识', '前戏', '高潮', '做爱', '亲密', '性体验', '身体感受'];
-      const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4);
+      // V12.7(批3): 会晤模式补 belong 门（allow-common：两性知识多为公共，但需排除他人私密）
+      // 🔴 参数错位修复: _meetingEntityUuid 原落 interactionType(第4参)→ 恒空。移到第5参 belongEntityUuid。
+      const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4, undefined, undefined, ctx._meetingEntityUuid ?? undefined);
       if (_intimateKb.length > 0) {
         const _intimateContent = _intimateKb.map((k: any) => {
           const _cleanTitle = k.title || '';
@@ -390,7 +394,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
 
   // ── 线索助理 ──
   // 🛡️ V5.1: 会晤模式下保留线索助理阻断（用户记忆线索不适用于会晤实体）
-  let clueReply: string | null = null;
+  // 🛡️ V12.3: 线索拦截不再产出最终回复，改为向 LLM 注入提示——
+  //   模糊回忆时让 LLM 用人设口吻自然追问，避免模板短句（M5ClueAssistant FEATURE_OPTIONS）顶掉人设叙事。
   if (!_isEntityMeeting) {
   try {
     // V4.0: 角色扮演已移除，线索助理始终运行
@@ -398,10 +403,20 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         originalQuery: message, perception: p, m8Engine: ctx.m8,
         bionicMemories: bionicMemories,
       });
-      if (clueResult?.needsQuestion && clueResult?.questionText) {
-        clueReply = clueResult.questionText;
+      if (clueResult?.needsQuestion) {
+        knowledgeBaseText = appendCluePrompt(knowledgeBaseText);
       } else if (clueResult?.isReady && clueResult?.searchResult?.entries?.length) {
-        memoryFragments.push('【线索参考】用户可能在回忆某件事，但如果你不确定具体内容就说不记得了');
+        // V12.3: 高置信线索命中——注入真实检索记忆，辅助 LLM 自然带出（此前只注入一句空话）
+        const _hits = clueResult.searchResult.entries
+          .filter((e: any) => (e?.composite_score ?? 0) >= 0.3)
+          .map((e: any) => e?.entry?.raw_input || e?.raw_content || e?.text || e?.content || '')
+          .filter(Boolean)
+          .slice(0, 3);
+        if (_hits.length > 0) {
+          knowledgeBaseText = appendClueRecall(knowledgeBaseText, _hits);
+        } else {
+          memoryFragments.push('【线索参考】用户可能在回忆某件事，但如果你不确定具体内容就说不记得了');
+        }
       }
   } catch (err: any) { console.warn('[ClueAssistant] 失败:', err); }
   } // 🛡️ V5.1: 会晤隔离墙 — 线索助理结束
@@ -422,7 +437,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     } catch (e: any) { console.warn('[BIOS] 闸门异常，降级使用原记忆:', e.message); }
   }
 
-	  return { knowledgeBaseText, memoryFragments, biosGatedMemories, clueReply, bionicMemories };
+	  return { knowledgeBaseText, memoryFragments, biosGatedMemories, bionicMemories };
 }
 
 /** VAD 曲调提示 — 从 chat.ts 内联函数迁移 */
@@ -501,4 +516,29 @@ export async function refinePostM4Context(input: PostM4Input): Promise<PostM4Out
   }
 
 	  return { knowledgeBaseText };
+}
+
+// ═══════════════════════════════════════════════════════
+//  V12.3: 线索助理注入文案 — 纯函数（可单测）
+//   线索拦截不再产出最终回复，改为向 knowledgeBaseText 追加提示。
+// ═══════════════════════════════════════════════════════
+
+/** 模糊回忆 → LLM 自然追问提示（替换旧模板短句拦截） */
+export function appendCluePrompt(knowledgeBaseText: string): string {
+  const _cluePrompt = [
+    '【线索提示】鸿艺似乎在回忆某件具体的事，但说得比较模糊。',
+    '你可以用温柔自然的语气轻轻追问一句帮他回忆（如"是哪次呀？""你说的那个是哪家？"），',
+    '但千万不要编造具体的时间、地点、人物或事件细节。',
+  ].join('');
+  return knowledgeBaseText
+    ? knowledgeBaseText + '\n\n' + _cluePrompt
+    : _cluePrompt;
+}
+
+/** 高置信线索命中 → 注入真实检索记忆（辅助 LLM 自然带出） */
+export function appendClueRecall(knowledgeBaseText: string, hits: string[]): string {
+  const _clueMemo = '【线索回忆参考】鸿艺模糊提到的这件事，可能与你记忆中的以下片段有关（若相关可以自然提起，不确定就说不记得）：\n' + hits.join('\n');
+  return knowledgeBaseText
+    ? knowledgeBaseText + '\n\n' + _clueMemo
+    : _clueMemo;
 }

@@ -76,7 +76,7 @@ export class M4Orchestrator {
   /**
    * 对 M3 决策执行完整的 M4 知识融合流程
    */
-  async orchestrate(decision: M3Decision, emotionalSummaries?: ScoredMemory[]): Promise<M4Context> {
+  async orchestrate(decision: M3Decision, emotionalSummaries?: ScoredMemory[], extraPersonUuids?: string[]): Promise<M4Context> {
     const entities = decision.enhanced.entity_genes.map((g) => ({
       name: g.name,
       type: g.type,
@@ -96,10 +96,13 @@ export class M4Orchestrator {
       ? [...entities, ...decomposed.subQueries.map(sq => ({ name: sq, type: 'event' as const }))]
       : entities;
     // 🆕 V10.7: 解析 person 实体的 FG UUID，供实体归属检索通道使用
-    const personUuids = entities
+    // V12.7(批2): 合并 extraPersonUuids（会晤模式由 chat.ts 注入会晤实体 UUID，
+    // 保证 retrieveMemories 内 findByLocus 至少按会晤实体过滤，堵会晤绕过）。
+    const basePersonUuids = entities
       .filter(e => e.type === 'person' && e.name !== '我')
       .map(e => this.familyGraph.getUUIDByName(e.name))
       .filter(Boolean) as string[];
+    const personUuids = [...new Set([...basePersonUuids, ...(extraPersonUuids ?? [])])];
 
     let memories = await this.memoryRetriever.retrieveMemories(locusPath, enhancedEntities, {
       perception: decision.enhanced.perception,

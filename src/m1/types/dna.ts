@@ -52,6 +52,19 @@ export interface DNA {
   calcium_level?: number;
 
   /**
+   * V12.7(批1): 记忆种类标记（'episodic' | 'roleplay'）— 由 M2 存储回填。
+   * 隔离保障：roleplay 记忆不得进入正常检索（读侧 memory_kind === 'roleplay' 过滤）。
+   * 此前 toDNA() 不复制该字段 → keyword/locus 路过滤恒 undefined（死代码）。
+   */
+  memory_kind?: string;
+
+  /**
+   * V12.7(批1): 实体归属 UUID（户籍）— 由 M2 存储回填。
+   * 让 keyword/locus 路的 RankedItem.entityUuid 真实化（此前恒 null → V13 过滤塌缩）。
+   */
+  belong_entity_uuid?: string;
+
+  /**
    * 场景语义标签（由 DNAEncoder 在编码时派生）。
    * 纯规则产生，从 locus_path + entity_genes 推导，
    * 不涉及 LLM 或外部查询。

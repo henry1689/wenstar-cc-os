@@ -169,6 +169,10 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     const locusPath = (input.dna as any).locus_path || 'chat';
     const now = new Date().toISOString();
     const primaryEmotion = topic || 'chat';
+    // V12.7(批1): 会晤（扮演他人）记忆写库显式打 roleplay 标记 — 隔离保障。
+    // 会晤实体对话 = 玉瑶扮演他人，此前硬编码 'episodic' → 读侧过滤先天无标记可滤，
+    // 实时 roleplay 碎片以普通记忆身份泄漏进户主检索。此处显式标记供读侧排除。
+    const memoryKind = _meetingUUID ? 'roleplay' : 'episodic';
 
     // V13: Foresight 前瞻时态检测
     const foresight = detectForesight({ content: input.message, timestampMs: Date.now() });
@@ -180,7 +184,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       perceptionJson: pJson, calciumScore, calciumLevel,
       locusPath, leafZone: 'user', rawInput: input.message,
       primaryEmotion, memoryType: 'dialog',
-      memoryKind: 'episodic',
+      memoryKind,
       lifecycleState: calciumLevel >= 2 ? 'active' : 'candidate',
       confidenceScore: 0.6,
       stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
@@ -236,7 +240,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       perceptionJson: asstPJson, calciumScore, calciumLevel,
       locusPath, leafZone: 'assistant', rawInput: cleanReply,
       primaryEmotion, memoryType: 'dialog',
-      memoryKind: 'episodic',
+      memoryKind,
       lifecycleState: calciumLevel >= 2 ? 'active' : 'candidate',
       confidenceScore: 0.6,
       stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
