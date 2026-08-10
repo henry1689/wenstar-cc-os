@@ -239,11 +239,12 @@ export function injectMemories(opts: InjectOptions): string {
     console.log(`[MemoryInjector] ${deduped.length} items → ${memParts.length} injected (${memChars} chars), KB ${kbText.length} chars`);
   }
 
-  // S5-评审: 总输出硬约束 — 记忆+知识库+作品合计不超过 hardMax（优先保记忆，其次作品）
-  // 🔴 P1 配置化: 硬上限从 yaml
-  if (result.length > hardMax) {
-    const truncated = result.substring(0, hardMax);
-    console.log(`[MemoryInjector] 总输出超预算 ${result.length}→${hardMax} 截断`);
+  // S5-评审: 总输出硬约束 — 记忆+知识库+作品合计不超过预算（优先保记忆，其次作品）
+  // 🔴 P1 配置化: 硬上限 = min(调用方 maxChars, 配置 hard_max_chars)，尊重请求预算
+  const _effectiveCap = Math.min(hardMax, maxChars);
+  if (result.length > _effectiveCap) {
+    const truncated = result.substring(0, _effectiveCap);
+    console.log(`[MemoryInjector] 总输出超预算 ${result.length}→${_effectiveCap} 截断`);
     return truncated + '\n…(上下文超预算已截断)';
   }
 
