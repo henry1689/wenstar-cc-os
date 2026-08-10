@@ -79,7 +79,8 @@ export function getRetrievalFusionConfig(): RetrievalFusionConfig {
     };
   } catch (e) {
     console.warn('[RetrievalFusionConfig] yaml 加载失败，使用默认值:', (e as Error)?.message);
-    _cache = DEFAULTS;
+    // 🔴 D6 修复: 返回深拷贝（避免调用方误改共享 DEFAULTS 污染全局）
+    _cache = JSON.parse(JSON.stringify(DEFAULTS)) as RetrievalFusionConfig;
   }
   return _cache;
 }

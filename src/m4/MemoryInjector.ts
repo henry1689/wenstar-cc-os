@@ -107,7 +107,9 @@ export function injectMemories(opts: InjectOptions): string {
     // 🔴 P0-1 + P1 配置化: 金库【金库记忆】识别为 vault，优先级从 yaml 读取。
     // 优先级: 档案 > 黑钻 > 实体记忆 > 金库 > 普通砂金（数值见 retrieval-fusion.config.yaml）
     // 🔴 P2 建议2: 从原始 frag 判断金库（normal 模式也识别【金库记忆】，不再依赖 preservedLabel）。
-    const isVault = frag.includes('金库') || frag.includes('📌');
+    // 🔴 D1 修复: 只认【金库记忆】标签（金库真实来源 formatHit/SQL 均带此标签），
+    // 去掉 '📌' — 它与【📌重要记忆】(钙化≥2 砂金) 冲突，导致高钙化记忆被误判为金库降权。
+    const isVault = frag.includes('金库');
     let priority = PRI.memory_normal;
     if (isDiamond) priority = PRI.black_diamond;
     else if (frag.includes('档案') || preservedLabel.includes('档案')) priority = PRI.archive_tag;

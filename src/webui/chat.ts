@@ -1421,6 +1421,9 @@ try {
   }
 
   const { injectMemories } = await import('../m4/MemoryInjector.js');
+  // 🔴 D3 修复: maxChars 从配置读取（hard_max_chars），不硬编码 8000
+  const { getRetrievalFusionConfig } = await import('../config/retrieval-fusion-config.js');
+  const _hardCap = getRetrievalFusionConfig().budget.hard_max_chars;
   // 🔴 P2 建议1: 事实查询增强 — 用户问"答应过/记得你说过/之前说好"时拉高金库优先级
   const _vaultBoost = /答应过|记得你说过|之前说好|承诺过|答应我|你说过要|之前约定|说好了/.test(message);
   memoryText = injectMemories({
@@ -1428,7 +1431,7 @@ try {
     m4Timeline: _m4Timeline,
     knowledgeBaseText,
     vaultHits: _vaultHits,
-    maxChars: 8000,
+    maxChars: _hardCap,
     preserveLabels: !!_meetingEntityName,
     vaultBoost: _vaultBoost,
     // V12.1: 实体感知 — 标注当前活跃实体名，LLM 可区分记忆归属
@@ -1859,7 +1862,9 @@ try {
 if (_ruleEngineBlocked && _ruleEngineReply) {
   reply = _ruleEngineReply;
 } else {
-reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, knowledgeBaseText ? (knowledgeBaseText.split('\n').filter(l => l.trim()).join('\n') + '\n\n' + message) : message, _currentRole, !!_meetingEntityName);
+// 🔴 D2 修复: userMessage 移除 knowledgeBaseText — KB 由 finalKnowledgeText（memoryText）唯一承载，
+// 避免同一份知识重复注入 LLM 浪费 token（此前 userMessage + memoryText 两处注入）。
+reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, message, _currentRole, !!_meetingEntityName);
 }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph
