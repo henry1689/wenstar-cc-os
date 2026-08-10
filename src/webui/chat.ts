@@ -1421,6 +1421,8 @@ try {
   }
 
   const { injectMemories } = await import('../m4/MemoryInjector.js');
+  // 🔴 P2 建议1: 事实查询增强 — 用户问"答应过/记得你说过/之前说好"时拉高金库优先级
+  const _vaultBoost = /答应过|记得你说过|之前说好|承诺过|答应我|你说过要|之前约定|说好了/.test(message);
   memoryText = injectMemories({
     memoryFragments,
     m4Timeline: _m4Timeline,
@@ -1428,6 +1430,7 @@ try {
     vaultHits: _vaultHits,
     maxChars: 8000,
     preserveLabels: !!_meetingEntityName,
+    vaultBoost: _vaultBoost,
     // V12.1: 实体感知 — 标注当前活跃实体名，LLM 可区分记忆归属
     entityNames: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2).map((g: any) => g.name).slice(0, 3),
   });

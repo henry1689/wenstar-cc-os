@@ -36,6 +36,8 @@ export interface InjectOptions {
   preserveLabels?: boolean;
   /** V12.1: 当前活跃的实体名列表 — 用于在记忆上下文中标注归属 */
   entityNames?: string[];
+  /** 🔴 P2 建议1: 事实查询增强 — 用户问"答应过/记得你说过"时拉高金库优先级 */
+  vaultBoost?: boolean;
 }
 
 /**
@@ -49,6 +51,7 @@ export function injectMemories(opts: InjectOptions): string {
     vaultHits = [],
     maxChars = 8000,
     preserveLabels = false,
+    vaultBoost = false,
   } = opts;
 
   // 🔴 P1 配置化: 权重/预算从 yaml 读取（无魔法数字）
@@ -103,14 +106,17 @@ export function injectMemories(opts: InjectOptions): string {
       : clean.substring(0, 250);
     // 🔴 P0-1 + P1 配置化: 金库【金库记忆】识别为 vault，优先级从 yaml 读取。
     // 优先级: 档案 > 黑钻 > 实体记忆 > 金库 > 普通砂金（数值见 retrieval-fusion.config.yaml）
+    // 🔴 P2 建议2: 从原始 frag 判断金库（normal 模式也识别【金库记忆】，不再依赖 preservedLabel）。
+    const isVault = frag.includes('金库') || frag.includes('📌');
     let priority = PRI.memory_normal;
     if (isDiamond) priority = PRI.black_diamond;
-    else if (preservedLabel.includes('档案')) priority = PRI.archive_tag;
-    else if (preservedLabel.includes('金库')) priority = PRI.vault;  // 金库（事实/承诺）
-    else if (preservedLabel.includes('记忆')) priority = PRI.memory_normal + 0.25;  // 实体记忆（档案与黑钻之间）
+    else if (frag.includes('档案') || preservedLabel.includes('档案')) priority = PRI.archive_tag;
+    // 🔴 P2 建议1: 事实查询增强 — vaultBoost 时金库优先级临时拉高（上浮 0.2，封顶 0.95）
+    else if (isVault) priority = vaultBoost ? Math.min(PRI.vault + 0.2, 0.95) : PRI.vault;  // 金库（事实/承诺）
+    else if (frag.includes('记忆') || preservedLabel.includes('记忆')) priority = PRI.memory_normal + 0.25;  // 实体记忆
     items.push({
       text: displayText,
-      source: isDiamond ? 'diamond' : preservedLabel.includes('金库') ? 'vault' : 'sand',
+      source: isDiamond ? 'diamond' : isVault ? 'vault' : 'sand',
       priority,
     });
   }
@@ -170,6 +176,10 @@ export function injectMemories(opts: InjectOptions): string {
                   item.source === 'vault' ? '📌' :
                   item.source === 'timeline' ? '🕐' : '💭';
     const line = hasPreservedLabel ? item.text : `${label} ${item.text}`;
+    // 🔴 P2 建议3: 调试日志 — 打印每条记忆 source/priority/截断长度（排查记忆丢失/截断）
+    if (process.env.RETRIEVAL_DEBUG === 'true') {
+      console.log(`[MemoryInjector] item source=${item.source} priority=${item.priority.toFixed(2)} chars=${item.text.length} total=${memChars + line.length}/${memBudget}`);
+    }
     if (memChars + line.length > memBudget) break;
     memParts.push(line);
     memChars += line.length + 1;
