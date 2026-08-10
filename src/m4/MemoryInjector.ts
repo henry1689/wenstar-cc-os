@@ -10,6 +10,9 @@
  * - 后续所有记忆调参只在此模块一处完成
  */
 
+// 🔴 P1 配置化: 权重/预算从 yaml 读取，消除硬编码魔法数字
+import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
+
 /** 记忆片段（统一表示） */
 export interface MemoryItem {
   text: string;           // 记忆文本
@@ -47,6 +50,13 @@ export function injectMemories(opts: InjectOptions): string {
     maxChars = 8000,
     preserveLabels = false,
   } = opts;
+
+  // 🔴 P1 配置化: 权重/预算从 yaml 读取（无魔法数字）
+  const cfg = getRetrievalFusionConfig();
+  const PRI = cfg.inject_priority;
+  const TW = cfg.timeline_weight;
+  const BUD = cfg.budget;
+  const hardMax = BUD.hard_max_chars;
 
   const items: MemoryItem[] = [];
   // V22 作品: 完整作品文本（最多 1 篇，独立预算，不参与 250 截断）
@@ -91,13 +101,13 @@ export function injectMemories(opts: InjectOptions): string {
     const displayText = preserveLabels && preservedLabel
       ? preservedLabel + ' ' + clean.substring(0, 300)
       : clean.substring(0, 250);
-    // 🔴 P0-1 修复: 金库【金库记忆】识别为 vault 0.7（不再被"记忆"标签误判为 0.85/0.6）。
-    // 优先级: 档案 0.95 > 黑钻 0.9 > 实体记忆 0.85 > 金库 0.7 > 普通砂金 0.6
-    let priority = 0.6;
-    if (isDiamond) priority = 0.9;
-    else if (preservedLabel.includes('档案')) priority = 0.95;
-    else if (preservedLabel.includes('金库')) priority = 0.7;  // 金库（事实/承诺）
-    else if (preservedLabel.includes('记忆')) priority = 0.85;  // 实体记忆
+    // 🔴 P0-1 + P1 配置化: 金库【金库记忆】识别为 vault，优先级从 yaml 读取。
+    // 优先级: 档案 > 黑钻 > 实体记忆 > 金库 > 普通砂金（数值见 retrieval-fusion.config.yaml）
+    let priority = PRI.memory_normal;
+    if (isDiamond) priority = PRI.black_diamond;
+    else if (preservedLabel.includes('档案')) priority = PRI.archive_tag;
+    else if (preservedLabel.includes('金库')) priority = PRI.vault;  // 金库（事实/承诺）
+    else if (preservedLabel.includes('记忆')) priority = PRI.memory_normal + 0.25;  // 实体记忆（档案与黑钻之间）
     items.push({
       text: displayText,
       source: isDiamond ? 'diamond' : preservedLabel.includes('金库') ? 'vault' : 'sand',
@@ -110,8 +120,11 @@ export function injectMemories(opts: InjectOptions): string {
     const calcium = t.calcium_level ?? 1;
     const clean = (t.summary || '').replace(/（[^）]*）/g, '').trim();
     if (clean.length < 5) continue;
-    // 钙化等级越高优先级越高
-    const priority = Math.min(0.3 + calcium * 0.2, 0.9);
+    // 钙化等级越高优先级越高；🔴 P1 修复倒挂: timeline 最低不低于普通砂金
+    const priority = Math.max(
+      Math.min(TW.base + calcium * TW.scale, TW.cap),
+      TW.min_val,
+    );
     items.push({ text: clean.substring(0, 120), source: 'timeline', priority });
   }
 
@@ -122,7 +135,7 @@ export function injectMemories(opts: InjectOptions): string {
     items.push({
       text: clean.substring(0, 150),
       source: 'vault',
-      priority: 0.7,
+      priority: PRI.vault,  // 🔴 P1 配置化: 金库优先级从 yaml
     });
   }
 
@@ -135,10 +148,11 @@ export function injectMemories(opts: InjectOptions): string {
   // ── 预算分配：V10.1 记忆 60% + 知识库 40%（原 50/50）──
   // 实测修复: 有长文时压缩记忆/KB预算，给完整纪实让路（否则合并长文被截断 → LLM 编造）
   // 🔴 P0-4 修复: 知识库预算动态让渡——KB 无有效命中时，额度全部给记忆。
+  // 🔴 P1 配置化: 预算比例从 yaml 读取
   const _hasLongText = !!longText;
   const _hasKbHit = !!(knowledgeBaseText && knowledgeBaseText.trim().length > 20);
-  let memBudget = _hasLongText ? Math.floor(maxChars * 0.3) : Math.floor(maxChars * 0.6);
-  let kbBudget = _hasLongText ? Math.floor(maxChars * 0.15) : (maxChars - memBudget);
+  let memBudget = _hasLongText ? Math.floor(maxChars * BUD.mem_ratio_longtext) : Math.floor(maxChars * BUD.mem_ratio_normal);
+  let kbBudget = _hasLongText ? Math.floor(maxChars * BUD.kb_ratio_longtext) : (maxChars - memBudget);
   // 无 KB 命中 → KB 预算让渡给记忆（记忆拿满，提升关键记忆召回）
   if (!_hasKbHit && !_hasLongText) {
     memBudget = maxChars;   // 记忆拿全部预算
@@ -195,14 +209,15 @@ export function injectMemories(opts: InjectOptions): string {
   const _priorityParts: string[] = [];
   if (longText) {
     // 实测修复: 合并多篇纪实（4305+1814+1290=7409字），预算需覆盖完整系列
-    const longBudget = Math.max(4000, Math.floor(maxChars * 0.8));
+    // 🔴 P1 配置化: 长文预算比例从 yaml
+    const longBudget = Math.max(BUD.work_max_chars, Math.floor(maxChars * BUD.longtext_max_ratio));
     _priorityParts.push(longText.length > longBudget
       ? longText.substring(0, longBudget) + '\n…(对话原文超长已截断)'
       : longText);
   }
   if (workFullText && !longText) {  // 长文已占用预算时，作品降级为摘要不完整注入
-    const WORK_MAX_CHARS = 4000;
-    const workBudget = Math.min(WORK_MAX_CHARS, Math.floor(maxChars * 0.4));
+    // 🔴 P1 配置化: 作品预算从 yaml
+    const workBudget = Math.min(BUD.work_max_chars, Math.floor(maxChars * 0.4));
     _priorityParts.push(workFullText.length > workBudget
       ? workFullText.substring(0, workBudget) + '\n…(作品超长已截断)'
       : workFullText);
@@ -214,10 +229,11 @@ export function injectMemories(opts: InjectOptions): string {
     console.log(`[MemoryInjector] ${deduped.length} items → ${memParts.length} injected (${memChars} chars), KB ${kbText.length} chars`);
   }
 
-  // S5-评审: 总输出硬约束 — 记忆+知识库+作品合计不超过 maxChars（优先保记忆，其次作品）
-  if (result.length > maxChars) {
-    const truncated = result.substring(0, maxChars);
-    console.log(`[MemoryInjector] 总输出超预算 ${result.length}→${maxChars} 截断`);
+  // S5-评审: 总输出硬约束 — 记忆+知识库+作品合计不超过 hardMax（优先保记忆，其次作品）
+  // 🔴 P1 配置化: 硬上限从 yaml
+  if (result.length > hardMax) {
+    const truncated = result.substring(0, hardMax);
+    console.log(`[MemoryInjector] 总输出超预算 ${result.length}→${hardMax} 截断`);
     return truncated + '\n…(上下文超预算已截断)';
   }
 
