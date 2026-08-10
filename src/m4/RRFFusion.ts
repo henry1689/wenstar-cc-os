@@ -12,6 +12,8 @@
 
 import type { RankedList } from './types/retrieval.js';
 import type { RRFFusedItem } from './types/retrieval.js';
+// 🔴 P1 配置化: V13 RRF 权重从 yaml 读取（消除魔法数字）
+import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
 
 export interface RRFConfig {
   /** RRF 平滑常数 */
@@ -22,19 +24,22 @@ export interface RRFConfig {
   multiHitBonus: number;
 }
 
-/** 默认 RRF 配置 */
-export const DEFAULT_RRF_CONFIG: RRFConfig = {
-  k: 60,
-  weights: {
-    spine:   0.35,   // 24D 向量语义路（主力信号）
-    keyword: 0.30,   // n-gram 关键词路（精确匹配）
-    work:    0.25,   // 作品直达路（长文召回，指称解析命中即置顶）
-    entity:  0.20,   // 实体归属路（实体定向）
-    emotion: 0.10,   // 情绪路（权重较低，情绪共振放 L1 预筛层）
-    locus:   0.05,   // 时序邻近路（时序围栏已在 L0 处理）
-  },
-  multiHitBonus: 1.2,
-};
+/** 默认 RRF 配置 — 🔴 P1 配置化: 权重从 yaml 读取（retrieval-fusion.config.yaml） */
+export const DEFAULT_RRF_CONFIG: RRFConfig = (() => {
+  const w = getRetrievalFusionConfig().v13_rrf_weights;
+  return {
+    k: 60,
+    weights: {
+      spine:   w.spine ?? 0.35,   // 24D 向量语义路（主力信号）
+      keyword: w.keyword ?? 0.30, // n-gram 关键词路（精确匹配）
+      work:    w.work ?? 0.25,    // 作品直达路（长文召回，指称解析命中即置顶）
+      entity:  w.entity ?? 0.20,  // 实体归属路（实体定向）
+      emotion: w.emotion ?? 0.10, // 情绪路（权重较低，情绪共振放 L1 预筛层）
+      locus:   w.locus ?? 0.05,   // 时序邻近路（时序围栏已在 L0 处理）
+    },
+    multiHitBonus: w.multi_hit_bonus ?? 1.2,
+  };
+})();
 
 /**
  * Weighted RRF 融合

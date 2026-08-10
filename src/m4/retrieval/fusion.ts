@@ -18,21 +18,26 @@
  */
 
 import { weightedRRF, DEFAULT_RRF_CONFIG, type RRFConfig } from '../RRFFusion.js';
+import { getRetrievalFusionConfig } from '../../config/retrieval-fusion-config.js';
 import { mmrDiversify, type MMRConfig } from '../MMRDiversifier.js';
 import type { RankedItem, RankedList } from '../types/retrieval.js';
 import type { SearchHit, RouteHitList, FuseOptions, FuseResult } from './types.js';
 import { dedupeKeyOf } from './types.js';
 
-/** 默认融合权重 = 现有 6 路权重 + 新增域路由权重 */
-export const FOUNDATION_DEFAULT_WEIGHTS: Record<string, number> = {
-  ...DEFAULT_RRF_CONFIG.weights,
-  diamond: 0.25,       // 黑钻固化记忆（高价值）
-  knowledge: 0.15,     // 知识库
-  vault: 0.10,         // 金库 promote 记录
-  note: 0.08,          // 玉瑶记事
-  profile: 0.08,       // FG 人物档案
-  conversation: 0.05,  // 对话直取
-};
+/** 默认融合权重 = 现有 6 路权重 + 新增域路由权重
+ *  🔴 P1 配置化: Foundation 域权重从 yaml 读取（retrieval-fusion.config.yaml） */
+export const FOUNDATION_DEFAULT_WEIGHTS: Record<string, number> = (() => {
+  const fw = getRetrievalFusionConfig().foundation_rrf_domain_weight;
+  return {
+    ...DEFAULT_RRF_CONFIG.weights,
+    diamond: fw.black_diamond ?? 0.25,   // 黑钻固化记忆（高价值）
+    knowledge: fw.knowledge ?? 0.15,     // 知识库
+    vault: fw.vault ?? 0.10,             // 金库 promote 记录
+    note: 0.08,                          // 玉瑶记事
+    profile: 0.08,                       // FG 人物档案
+    conversation: 0.05,                  // 对话直取
+  };
+})();
 
 /**
  * 时间近因比率（复刻 UnifiedSearchEngine P3-B2 的 7 天线性衰减，参数化纯函数）。
