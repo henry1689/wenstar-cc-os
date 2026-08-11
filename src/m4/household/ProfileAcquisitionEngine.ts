@@ -16,7 +16,8 @@
  * - 升级免疫：修改 PAE 代码必须通过 integrity guard 前后对比
  */
 
-import { PAE_CONFIG, PAE_INTEGRITY_CHECKS, REGISTRATION_FIELD_MAP, PRIORITY_THRESHOLDS, FORMAT_VALIDATORS, resolveRegistrationDef } from '../../config/profile-acquisition-guard.js';
+import { PAE_CONFIG, PAE_INTEGRITY_CHECKS, REGISTRATION_FIELD_MAP, PRIORITY_THRESHOLDS, FORMAT_VALIDATORS, resolveRegistrationDef, getPAETimeoutMs, hasProfileSignal } from '../../config/profile-acquisition-guard.js';
+import { getRetrievalFusionConfig } from '../../config/retrieval-fusion-config.js';
 import {
   buildExtractionSystemPrompt,
   buildExtractionUserMessage,
@@ -70,6 +71,8 @@ export interface AcquisitionOptions {
   existingProfiles?: Map<string, PersonProfile>;
   /** FG 家族上下文 */
   fgContext?: Array<{ entity: string; relation: string }>;
+  /** 🔴 P1-5 S4-M5: 会晤模式标记 — Layer2 短路旁路（会晤保持 PAE 全开，不因无档案信号漏采集） */
+  isMeeting?: boolean;
 }
 
 /** 单次采集报告 */
@@ -256,6 +259,20 @@ export class ProfileAcquisitionEngine {
 
     if (!conversationText || mentionedPersons.length === 0) return report;
 
+    // 🔴 P1-4 短路 Layer2 (acquire 内纵深防御，防其他调用方):
+    // pre_generation 模式消息无档案信号 → 直接返回空（LLM 提取必然空，省一次调用）。
+    // 会晤旁路由 chat.ts Layer1 负责（不传 meeting 时该处已放行）；post_generation 不短路。
+    try {
+      const _paeCfg = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+      // S4-M5: 会晤(isMeeting)不短路——会晤消息常含持续档案信息，且信号集刻意收窄
+      if (_paeCfg?.enabled && _paeCfg?.pae_signal_shortcircuit && options.mode === 'pre_generation' && !options.isMeeting) {
+        if (!hasProfileSignal(conversationText)) {
+          report.elapsedMs = Date.now() - startTime;
+          return report;
+        }
+      }
+    } catch { /* 短路判定失败不阻塞采集 */ }
+
     // 去重 + 限流
     const dedupedPersons = [...new Set(mentionedPersons)].filter((n) => n && n !== '我');
     if (dedupedPersons.length === 0) return report;
@@ -410,7 +427,8 @@ export class ProfileAcquisitionEngine {
       responseText = await Promise.race([
         llmPromise,
         new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('PAE_LLM_TIMEOUT')), PAE_CONFIG.llmTimeout)
+          // 🔴 P1-4: 超时 45s→pae_timeout_ms(默认8s) — 原 45s 是最危险阻塞源
+          setTimeout(() => reject(new Error('PAE_LLM_TIMEOUT')), getPAETimeoutMs())
         ),
       ]);
     } catch (err) {

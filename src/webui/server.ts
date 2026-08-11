@@ -1147,10 +1147,18 @@ async function initPipeline(): Promise<void> {
   cleanupOldAudioFiles();
   addTimer(setInterval(() => cleanupOldAudioFiles(), 24 * 3600_000));
   // 🛡️ V12.5: TTS 异步 job 兜底清理（每 60s，复审 P2-1）
+  // 🔴 P1-5 m10: 并入 CHAT_JOBS 清理（流式 job 防长驻内存，独立定时器而非仅惰性触发）
   try {
-    const { sweepTTSJobs } = await import('./server-chat-routes.js');
-    addTimer(setInterval(() => { try { sweepTTSJobs(); } catch (_) { /* 清理失败不影响 */ } }, 60_000));
-  } catch (_) { /* TTS job 清理可选 */ }
+    const { sweepTTSJobs, sweepChatJobs } = await import('./server-chat-routes.js');
+    addTimer(setInterval(() => { try { sweepTTSJobs(); sweepChatJobs(); } catch (_) { /* 清理失败不影响 */ } }, 60_000));
+  } catch (_) { /* TTS/流式 job 清理可选 */ }
+
+  // 🔴 P1-1 S4-M1: Bionic 健康快照周期刷新 — healthCache 最长 60s，超期短路失效
+  //   （否则 Bionic 宕机时 search 短路仅进程前 1 分钟有效）。每 60s 探测一次刷新快照。
+  try {
+    const { bionic } = await import('../adapter/bionic-adapter.js');
+    addTimer(setInterval(() => { void bionic.health().catch(() => {}); }, 60_000));
+  } catch (_) { /* Bionic 健康刷新可选 */ }
 
   workingMemory = new MemoryWriteBuffer(storage, 50);
   workingMemory.startFlushTimer();
@@ -1459,7 +1467,7 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 }
 
 
-async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
+async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean, onToken?: (delta: { text?: string }) => void): Promise<ChatResponse> {
   // 🔥 V10.0: 自然语言会晤触发 — 支持"我想找XX聊聊""瑶瑶，找XX来"等句式
   if (entityMeeting && !entityMeeting.isActive()) {
     const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
@@ -1502,7 +1510,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
     _entityMeeting: entityMeeting,
     clientMsgId: clientMsgId || null,
     testMode: testMode || false,
-  });
+  }, onToken ? { onToken } : undefined);
 }
 
 /**
@@ -1597,6 +1605,15 @@ function broadcastEvent(event: string, data: any): void {
   const now = Date.now();
   if (now - _lastSseEvent < MIN_EVENT_INTERVAL) return;
   _lastSseEvent = now;
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try { client.write(msg); } catch { sseClients.delete(client); }
+  }
+}
+
+/** 🔴 P1-5 流式: 直写 SSE 客户端池（绕过 broadcastEvent 1.5s 限速），推 chat-token/chat-done。
+ *  仅由 server-chat-routes 的流式分支调用；普通 SSE 事件仍走 broadcastEvent（限速防刷）。 */
+export function pushToSSEClients(event: string, data: any): void {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of sseClients) {
     try { client.write(msg); } catch { sseClients.delete(client); }
@@ -1785,6 +1802,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   if (await handleChatRoutes({
     processChat, resetPipeline: async () => { maintenance.stop(); await initPipeline(); },
+    pushToSSEClients,
     conversationHistory, conversationDB, storage, familyGraph, m6, maintenance,
     DATA_DIR, PROJECT_ROOT, PROJECT_DIR: path.join(__dirname, '..', '..'),
     saveConversationHistory, listApiKeys: listKeys as any, setApiKey: setKey as any,

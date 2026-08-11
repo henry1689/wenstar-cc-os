@@ -21,11 +21,22 @@ import type { Perception24D } from '../m3/types/perception.js';
 import { LocalCache } from '../app/tools/LocalCache.js';
 import { createHash } from 'node:crypto';
 import { ConfigService } from '../config/ConfigService.js';
+import { RetrieverCircuitBreaker } from '../app/knowledge/RetrieverCircuitBreaker.js';
+import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
 
 // ── 配置（改造④：不在模块级读 process.env，使用 ConfigService 运行时懒加载） ──
 
 // 外部查询缓存：按 query+userId 缓存 30 秒（短期防重复，不阻塞新鲜结果）
 const bionicSearchCache = new LocalCache<string, any[]>({ ttlMs: 30_000, namespace: 'bionic_search' });
+
+/** P1-1: 仿生智脑检索熔断器 — 连续3次失败熔断30s，降级本地缓存。
+ *  S4-m8: timeoutMs 固定 5000 兜底（race），实际超时由 search() 内按 enabled 选的
+ *  _timeoutMs 控制（bionicFetch 的 AbortController 先触发）——enabled:false 回退旧 5000ms。 */
+const _bionicBreaker = new RetrieverCircuitBreaker('bionic_search', {
+  timeoutMs: 5000,
+  threshold: 3,
+  cooldownMs: 30_000,
+});
 
 /** P1: 情感指纹缓存 — 离线降级用 */
 const _bionicLocalCache = new LocalCache<string, any>({ ttlMs: 60_000, namespace: 'bionic_fallback', maxKeys: 200 });
@@ -148,23 +159,50 @@ class BionicAdapter {
     if (cached) return cached as BionicSearchResult[];
 
     const _ctxHash = _genCtxHash(query);
-    const r = await bionicFetch<any>(
-      `/search?q=${encodeURIComponent(query.slice(0, 200))}&user_id=${encodeURIComponent(userId)}&limit=5`
-    ).catch(async function(err) {
-      console.warn('[Bionic] 搜索失败, 尝试本地缓存:', err.message);
-      const _cached = await _bionicLocalCache.get(_ctxHash).catch(function() { return null; });
-      if (_cached && Array.isArray(_cached)) {
-        console.log('[Bionic] 离线降级(缓存命中): ' + query.slice(0, 40));
-        return { results: _cached };
+    const _reduction = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+    const _enabled = !!_reduction?.enabled;
+    // S4-m8: enabled:false → 回退旧 5000ms（一键回滚语义完整）
+    const _timeoutMs = _enabled ? (_reduction?.bionic_timeout_ms ?? 2500) : 5000;
+
+    // P1-1 ① 健康快照短路: 已缓存快照明确显示不可达 → 不发网络，直接降级本地缓存/空
+    //（保守策略：仅 cached && reachable===false 触发；reachable 未知/在线不额外探测，避免引入延迟）
+    if (_enabled && _reduction?.bionic_health_shortcircuit) {
+      const snapshot = this.getHealthSnapshot();
+      if (snapshot.cached && snapshot.reachable === false) {
+        const _local = await _bionicLocalCache.get(_ctxHash).catch(() => null);
+        if (_local && Array.isArray(_local)) {
+          console.log('[Bionic] 健康快照短路(本地缓存命中): ' + query.slice(0, 40));
+          return _local as BionicSearchResult[];
+        }
+        console.log('[Bionic] 健康快照短路(不可达, 空返回): ' + query.slice(0, 40));
+        return [];
       }
-      throw err;
-    });
-    const results = r?.results ?? [];
-    if (results.length > 0) {
-      bionicSearchCache.set(cacheKey, results).catch(function() {});
-      _bionicLocalCache.set(_ctxHash, results).catch(function() {});
     }
-    return results;
+
+    // P1-1 ② 熔断器包裹: 超时(_timeoutMs) / 连续失败阈值内 → 降级本地缓存或空
+    return _bionicBreaker.call(
+      async () => {
+        const r = await bionicFetch<any>(
+          `/search?q=${encodeURIComponent(query.slice(0, 200))}&user_id=${encodeURIComponent(userId)}&limit=5`,
+          undefined,
+          _timeoutMs,
+        );
+        const results = r?.results ?? [];
+        if (results.length > 0) {
+          bionicSearchCache.set(cacheKey, results).catch(function() {});
+          _bionicLocalCache.set(_ctxHash, results).catch(function() {});
+        }
+        return results;
+      },
+      async () => {
+        const _cached = await _bionicLocalCache.get(_ctxHash).catch(() => null);
+        if (_cached && Array.isArray(_cached)) {
+          console.log('[Bionic] 熔断/降级(本地缓存命中): ' + query.slice(0, 40));
+          return _cached as BionicSearchResult[];
+        }
+        return [];
+      },
+    );
   }
 
   /** 存入歌单（异步，对话结束后调用） */

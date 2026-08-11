@@ -7,6 +7,50 @@
  *
  * V3.3: 户籍登记卡格式重构 — 字段优先级分级 + 待采集主动提级 + 门阀格式验证
  */
+import { getRetrievalFusionConfig } from './retrieval-fusion-config.js';
+
+/**
+ * 🔴 P1-4: 人物档案信号检测 — 消息中是否存在可能携带档案信息的事实陈述。
+ * 无信号(仅提及人名、无工作/年龄/亲属/健康/联系等事实) → 跳过 LLM 提取，省一次 8s 调用。
+ * 信号集刻意收窄：误放行的代价只是多一次 LLM 调用；误短路会漏采集档案（代价更大）。
+ * 会晤模式由调用方旁路，不依赖本函数。
+ */
+export function hasProfileSignal(message: string): boolean {
+  if (!message) return false;
+  // ① 归属/亲属关系: X是(我的)妈妈/爸爸/老公… 或 X的妈妈/爸爸（含单字 妈/爸）
+  if (/[一-龥]{1,4}(?:是我|就是我的|是|为)(?:的)?(?:妈妈|爸爸|老公|老婆|丈夫|妻子|儿子|女儿|哥哥|姐姐|弟弟|妹妹|男朋友|女朋友|同学|同事|朋友|老板|老师|医生|师傅|妈|爸)/.test(message)) return true;
+  if (/[一-龥]{1,4}(?:的|家)(?:妈妈|爸爸|老公|老婆|儿子|女儿|哥哥|姐姐|弟弟|妹妹|奶奶|爷爷|外婆|外公|婆婆|公公)/.test(message)) return true;
+  // ② 姓名陈述
+  if (/(?:叫|名字(?:是|叫)?|姓|全名|大名)[一-龥]{1,4}/.test(message)) return true;
+  // ③ 认识/介绍/提及他人
+  if (/(?:介绍|认识|引荐|好久不见|见过(?:面|一次)?|听说|聊到|谈到|说起|提到|想起)/.test(message)) return true;
+  // ④ 职业/工作/单位
+  if (/(?:做|是|在|从事|负责).{0,3}(?:医生|老师|律师|会计|工程师|护士|程序员|老板|经理|司机|创业|设计师|公务员|销售|程序员|运营)/.test(message)) return true;
+  if (/(?:在|于).{0,4}(?:公司|医院|学校|工厂|银行|单位|机构|事务所|大学)/.test(message)) return true;
+  if (/(?:工作|上班|职业|退休|升职|跳槽|辞职)/.test(message)) return true;
+  // ⑤ 年龄/生日
+  if (/(?:今年|\d{1,2})岁|出生|生日|属[牛虎兔龙蛇马羊猴鸡狗猪]/u.test(message)) return true;
+  // ⑥ 健康/状态
+  if (/(?:生病|住院|体检|感冒|发烧|失眠|受伤|康复|健康|不舒服|手术)/.test(message)) return true;
+  // ⑦ 联系方式/住址
+  if (/(?:电话|手机|微信号?|邮箱|住(?:在|址)|地址)/.test(message)) return true;
+  return false;
+}
+
+/**
+ * 🔴 P1-4: PAE LLM 超时（读 p1_speed.llm_reduction.pae_timeout_ms，yaml 缺失/关闭时兜底 PAE_CONFIG.llmTimeout=45s）。
+ * 原 45s 是最危险阻塞源——对话回复卡在这等一次 LLM 提取。
+ * S4-m9: llm_reduction.enabled===false → 回退旧 45s（一键回滚语义完整）。
+ */
+export function getPAETimeoutMs(): number {
+  try {
+    const cfg = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+    if (!cfg?.enabled) return PAE_CONFIG.llmTimeout;
+    return cfg?.pae_timeout_ms ?? PAE_CONFIG.llmTimeout;
+  } catch {
+    return PAE_CONFIG.llmTimeout;
+  }
+}
 
 export const PAE_CONFIG = {
   // ── 置信度闸门 ──

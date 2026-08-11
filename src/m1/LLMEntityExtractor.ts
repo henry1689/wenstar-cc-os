@@ -44,7 +44,10 @@ function isValidPersonName(name: string): boolean {
   if (name.length < 2 || name.length > 4) return false;
   if (PERSON_BLACKLIST.has(name)) return false;
   if (RESPECT_PATTERN.test(name)) return true;
-  return PERSON_NAME_REGEX.test(name);
+  if (PERSON_NAME_REGEX.test(name)) return true;
+  // S4-M4: 放行 阿X/小X 昵称形态（小美/阿珍）——否则 LLM 提取结果被 filterEntities 丢弃，
+  //   小X 非姓氏昵称无法进入 entity_genes，PAE 建档级联落空
+  return /^[阿小][一-龥]{1,2}$/.test(name);
 }
 
 /** 第二层：实体过滤 — 类型白名单 + 黑名单 + 人名正则 */
@@ -134,7 +137,7 @@ const REGEX_FALLBACK_RULES: Array<{ type: EntityType; patterns: RegExp[] }> = [
   ]},
 ];
 
-function regexFallback(text: string): LLMExtractedEntity[] {
+export function regexFallback(text: string): LLMExtractedEntity[] {
   const seen = new Set<string>();
   const result: LLMExtractedEntity[] = [];
   for (const rule of REGEX_FALLBACK_RULES) {
@@ -157,6 +160,23 @@ function regexFallback(text: string): LLMExtractedEntity[] {
     final.push(e);
   }
   return final;
+}
+
+/**
+ * 🔴 P1-3: 实体信号检测 — 消息中是否存在值得走 LLM 精确实体提取的信号。
+ * 无信号(纯闲聊)时 ChatEntry 跳过 LLM 调用，直接正则兜底（行为 == LLM 返回空数组 + regexFallback 降级）。
+ * 信号 = 人名形态(姓氏开头具体人名) / 职场称谓(张总·王经理) / 家庭称谓 / 事件 / 情绪词。
+ * 会晤模式由 ChatEntry 旁路（恒走 LLM），不依赖本函数。
+ */
+export function hasEntitySignal(message: string): boolean {
+  if (!message || message.length < 2) return false;
+  // 人名形态: 姓氏 + 1-2 字，或 阿X/小X 昵称（具体人名 LLM 比正则词表更精确，值得调用）
+  // S4-M4 修正: 补 阿/小 昵称形态（复用 chat.ts:483 同款）——否则"阿珍今年40岁"被跳过 LLM → entity_genes 缺失 → PAE 建档级联落空
+  if (new RegExp('[' + SURNAMES + '][一-龥]{1,2}|阿[一-龥]|小[一-龥]').test(message)) return true;
+  // 职场称谓: 张总 / 王经理 / 李主任
+  if (RESPECT_PATTERN.test(message)) return true;
+  // 家庭称谓 / 事件 / 情绪词: 正则词表命中即判定有实体信号
+  return regexFallback(message).length > 0;
 }
 
 // ─── 主入口 ───

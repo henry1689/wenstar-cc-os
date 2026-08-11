@@ -65,6 +65,16 @@ export interface ConversationTurn {
   belongEntityUuid?: string;
 }
 
+/**
+ * 🔴 P1-5: LLM 流式 token 增量。
+ * 服务端已完成思维链剥离，仅推送可安全展示的答案增量（thinking 不推——人设安全）。
+ * 流式预览 ≈ M5 校准前草稿；最终文本以 done 帧 reply 覆盖气泡。
+ */
+export interface LLMTokenDelta {
+  /** 可安全展示的答案增量（已剥离思维链前缀） */
+  text?: string;
+}
+
 export interface LLMProvider {
   generate(params: {
     strategy: StrategyConfig;
@@ -80,6 +90,8 @@ export interface LLMProvider {
     role?: import('../../app/role/RoleClassifier.js').RoleType;
     /** 🆕 V4.0: 是否处于实体会晤模式 */
     isEntityMeeting?: boolean;
+    /** 🔴 P1-5 流式: 可选回调，服务端按 token 增量推送（已剥离思维链）。返回契约不变 */
+    onToken?: (delta: LLMTokenDelta) => void;
   }): Promise<{ text: string; usage?: { prompt: number; completion: number } }>;
 
   /** 切换角色 (可选实现) */

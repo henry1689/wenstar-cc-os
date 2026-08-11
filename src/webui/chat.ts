@@ -88,6 +88,8 @@ import { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import { filterPrivateConversations } from '../m4/household/EntityPrivacyFilter.js';
 // 🔴 P0-2 会话模式分级: 读取 prompt_depth_enabled 总开关
 import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
+// 🔴 P1-4 短路: PAE 档案信号检测（有人物提及但无档案事实陈述 → 跳过 LLM 采集）
+import { hasProfileSignal } from '../config/profile-acquisition-guard.js';
 
 /**
  * 🔴 P0-2 会话模式分级: 计算 prompt 加载深度。
@@ -330,7 +332,7 @@ const MEETING_PROP_POINTS: Array<{ line: number; stage: string; desc: string; vi
   { line: 1778, stage: 'L13-自名检测', desc: '检查回复中是否自报姓名', via: 'reply.includes(entityName)' },
 ];
 
-export async function processChat(message: string, ctx: ChatContext): Promise<ChatResponse> {
+export async function processChat(message: string, ctx: ChatContext, streamOpts?: { onToken?: (delta: import('../m5/types/index.js').LLMTokenDelta) => void }): Promise<ChatResponse> {
 
   try {
     // 🔥 天权海马体节律调度: 进入 θ 节律（活跃对话），暂停离线巩固
@@ -1079,6 +1081,8 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     }
 
     // ── V3.2 Hook B: 档案自动采集 — LLM 提取用户消息中的人物档案信息 ──
+    // 🔴 P1-4 短路 Layer1: 有人物提及但消息无档案信号(工作/年龄/亲属/健康/介绍等事实陈述) → 跳过 LLM 采集，省一次 8s 调用。
+    //   会晤(_meetingEntityName 激活)旁路不短路——会晤消息常含持续档案信息。
     let _acquisitionReport: any = null;
     if (ctx._profileAcquisitionEngine ) {
       try {
@@ -1086,7 +1090,9 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
           .filter((g: any) => g.type === 'person' && g.name && g.name !== '我')
           .map((g: any) => g.name as string);
         const _uniquePersons: string[] = [...new Set(_mentionedPersons)];
-        if (_uniquePersons.length > 0) {
+        const _paeCfg = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+        const _paeShort = !!(_paeCfg?.enabled && _paeCfg?.pae_signal_shortcircuit) && !_meetingEntityName;
+        if (_uniquePersons.length > 0 && (!_paeShort || hasProfileSignal(message))) {
           _acquisitionReport = await ctx._profileAcquisitionEngine.acquire(
             message,
             _uniquePersons,
@@ -1094,8 +1100,12 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
               fgContext: ctx_m4?.family_context || [],
               mode: 'pre_generation',
               source: 'user_message',
+              // S4-M5: 会晤旁路 Layer2（acquire 内短路）
+              isMeeting: !!_meetingEntityName,
             }
           );
+        } else if (_paeShort && _uniquePersons.length > 0) {
+          console.log('[PAE] Hook B 短路(无档案信号): 跳过 ' + _uniquePersons.join('、'));
         }
       } catch (_paeErr) {
         // PAE 失败不阻塞对话流程
@@ -1621,24 +1631,29 @@ if (isFactualRecallQuery && !PROMPT_ASSEMBLER_STRICT) {
 	}
         // 已禁用：过渡话术导致回复呈现内心独白风格
 
-        // P4: LLM 辅助知识路由 — 知识查询模式时补充检索
+        // P4: 知识路由 — knowledge_query 模式时补充检索
+        // 🔴 P1-2 纯规则替代 LLM 路由: n-gram 正则直接抽中文关键词，省一次 LLM 调用。
+        //    不牺牲精度依据: KnowledgeEngine.search 内部已有同构 n-gram 兜底；会晤(_meetingEntityName)保留 LLM 路由（实体专属知识语义）。
         // 🔴 LLM 保守合并: casual(闲聊) 分级时跳过本次额外 LLM 调用（知识查询意图已在分级中识别为 deep）
         if (memoryGate.mode === 'knowledge_query' && ctx.llmProvider && message.length > 3 && _depth !== 'casual') {
           try {
+            const _reduction = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+            const _useRule = !!(_reduction?.enabled && _reduction?.kb_route_rule) && !_meetingEntityName;
             const _kbPrompt = '从以下问题中提取2-4个最可能用于知识库搜索的关键词（中文），只返回关键词用逗号分隔。问题: ' + message;
-            const _kbResult = await (ctx.llmProvider as any).generate({
-              strategy: { strategy_id: 'keyword-extraction', params: { tone: 'neutral', depth: 'shallow', max_length: 100 } },
-              cognition: { current: { perception_snapshot: { pleasure: 0, arousal: 0, intimacy: 0 }, raw_input: _kbPrompt, calcium: 0 } },
-              userMessage: _kbPrompt,
-            });
-            const _kbText = _kbResult?.text?.trim();
+            const _kbText = _useRule
+              ? (message.match(/[一-龥]{2,4}/g) || []).slice(0, 3).join(' ')
+              : (await (ctx.llmProvider as any).generate({
+                  strategy: { strategy_id: 'keyword-extraction', params: { tone: 'neutral', depth: 'shallow', max_length: 100 } },
+                  cognition: { current: { perception_snapshot: { pleasure: 0, arousal: 0, intimacy: 0 }, raw_input: _kbPrompt, calcium: 0 } },
+                  userMessage: _kbPrompt,
+                }))?.text?.trim();
             if (_kbText && _kbText.length > 1) {
               // V12.7(批3): 会晤模式补 belongEntityUuid 门 — 只查会晤实体自己的知识（allow-common）
               // KnowledgeBase.search 第4参是 belongEntityUuid（兼容层，勿传第5参）
               const _extraKb = await ctx.knowledgeBase.search(_kbText, 2, undefined, _meetingEntityUuid ?? undefined);
               if (_extraKb.length > 0 && finalKnowledgeText) {
                 finalKnowledgeText += '\n\n【知识库补充】' + _extraKb.map(function(k) { return k.title; }).join(', ') + '\n' + _extraKb.map(function(k) { return (k.content || '').substring(0, 200); }).join('\n');
-                console.log('[KBRoute] LLM路由: ' + _kbText + ' → ' + _extraKb.length + ' 条');
+                console.log('[KBRoute] ' + (_useRule ? '规则' : 'LLM') + '路由: ' + _kbText + ' → ' + _extraKb.length + ' 条');
               }
             }
           } catch (_err) {
@@ -1923,7 +1938,7 @@ if (_ruleEngineBlocked && _ruleEngineReply) {
 } else {
 // 🔴 D2 修复: userMessage 移除 knowledgeBaseText — KB 由 finalKnowledgeText（memoryText）唯一承载，
 // 避免同一份知识重复注入 LLM 浪费 token（此前 userMessage + memoryText 两处注入）。
-reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, message, _currentRole, !!_meetingEntityName);
+reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, message, _currentRole, !!_meetingEntityName, streamOpts);
 }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph

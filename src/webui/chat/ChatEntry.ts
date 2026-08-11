@@ -7,6 +7,7 @@
  * V4.0: 移除角色扮演检测（实体会晤替代）
  */
 import type { ChatContext } from '../chat.js';
+import { getRetrievalFusionConfig } from '../../config/retrieval-fusion-config.js';
 import { ENABLE_TEMPORAL_RULE_ENGINE, worldRuleMode } from '../../engine/temporal/TemporalConfig.js';
 import { fetchWeatherNow, fetchForecast3d, cityLookup, isApiAvailable } from '../../engine/temporal/weather_qweather_client.js';
 
@@ -117,8 +118,15 @@ export async function runChatEntry(
   }
 
   // P3: LLM 辅助实体提取
+  // 🔴 P1-3 条件化: 无实体信号(纯闲聊)跳过 LLM 调用（省一次 LLM，5s 超时窗口也不占），
+  //   正则兜底保留 emotion/event 召回（行为 == LLM 返回空数组 + regexFallback 降级）。
+  //   会晤(_entityMeeting.isActive) 与有信号消息恒走 LLM，提取精度不降。
   try {
-    const { extractEntitiesLLM } = await import('../../m1/LLMEntityExtractor.js');
+    const { extractEntitiesLLM, regexFallback, hasEntitySignal } = await import('../../m1/LLMEntityExtractor.js');
+    const _meetingActive = !!ctx._entityMeeting?.isActive?.();
+    const _reduction = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
+    const _condEnabled = !!(_reduction?.enabled && _reduction?.entity_conditional);
+    const _useLLM = _meetingActive || !_condEnabled || hasEntitySignal(message);
     const llmGenerate = async (prompt: string) => {
       const r = await (ctx.llmProvider).generate({
         strategy: { strategy_id: 'entity-extraction', params: { tone: 'neutral', depth: 'shallow', max_length: 256 } } as any,
@@ -127,7 +135,9 @@ export async function runChatEntry(
       });
       return r.text;
     };
-    const llmEntities = await extractEntitiesLLM(message, llmGenerate);
+    const llmEntities = _useLLM
+      ? await extractEntitiesLLM(message, llmGenerate)
+      : (() => { const fb = regexFallback(message); console.log('[LLMEntity] 条件化跳过LLM(无实体信号), 正则兜底: ' + (fb as any[]).map((e: any) => e.name).join(',') || '∅'); return fb; })();
     if (llmEntities.length > 0) {
       const llmNames = new Set(llmEntities.map((e: any) => e.name));
       const keptRules = dna.entity_genes.filter((g: any) =>

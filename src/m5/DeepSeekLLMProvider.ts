@@ -8,7 +8,7 @@
  *   DEEPSEEK_API_KEY — 你的 DeepSeek API Key
  *   DEEPSEEK_MODEL — 模型名，默认 deepseek-v4-flash
  */
-import type { LLMProvider, StrategyConfig, CognitionObject, ConversationTurn } from './types/index.js';
+import type { LLMProvider, StrategyConfig, CognitionObject, ConversationTurn, LLMTokenDelta } from './types/index.js';
 import { buildSystemPrompt, STYLE_ANCHORS } from './persona/lover-persona.js';
 import { selectLLMConfig, getScenarioConfig, getProviderConfig } from '../common/const/llm-config.js';
 import { buildSystemPrompt as buildCoreSystemPrompt } from './prompts/core-rules.js';
@@ -54,6 +54,83 @@ interface DeepSeekResponse {
 /** 清理 lone surrogate — JSON.stringify 遇到未配对代理字符会产生非法 hex 转义，API 400 拒收 */
 function sanitizeUTF16(text: string): string {
   return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�');
+}
+
+// ── 🔴 P1-5 流式: 思维链剥离（模块级，流式状态机 + 非流式后处理共用） ──
+
+/** 思维链首段关键词 — 命中即判定该段为内心独白，剥离丢弃。
+ * S4-M2 修正: 剔除答案开头常用词（记得/另外/此外/综上所述/简单来说/也就是说/所以这/注意/这是一个/我在想/我应该），
+ * 只保留强内心独白措辞 + 系统级表述——否则"记得上次…"这类答案确认性首句会被误删（全局质量回归）。 */
+const THINKING_KEYWORDS = /让[我你]想|让我回|心里|想到|脑中|好好回|在意|吃醋|心酸|我们被问|当前场景|当前时间|我需要|考虑到|根据规则|从历史|在角色扮演|但根据|用户最后|用户可能|用户当前|我的回复|这个角色|最安全|但注意|可能这是|我决定|最简单的做法/;
+
+/**
+ * P1-5: 剥离思维链前缀 — 按句段剥离开头含思维关键词的句子，直到第一个非思维句。
+ * 纯函数：流式状态机与非流式后处理复用同一逻辑，保证"流式预览 == M5 校准前草稿"。
+ * DeepSeek V4-flash 的 reasoning_content 格式通常是："思考句1。思考句2……\n\n回答句1。回答句2。"
+ * S4 评审修正：原"只剥第一段（双换行/结尾边界）"在"思维链+答案无双换行"时会把答案一起剥掉
+ * （流式下答案永不推送）→ 改为逐句剥离，更符合"剥1-3句内心独白"原意。
+ */
+export function stripThinkingPrefix(text: string): string {
+  if (!text) return '';
+  // 按句末标点/换行切段（保留分隔符），逐句判断：含思维关键词的句子剥离，直到第一个非思维句
+  const parts = text.split(/(?<=[。！？…\n])/);
+  let keepFrom = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i].trim()) continue;
+    if (THINKING_KEYWORDS.test(parts[i])) keepFrom = i + 1;
+    else break;
+  }
+  return parts.slice(keepFrom).join('').trimStart();
+}
+
+/**
+ * P1-5: 流式思维链剥离状态机 — 增量剥离 thinking，只把答案增量交给 onToken。
+ * v4-flash 流式可能只有 reasoning_content（content 空）：缓冲 reasoning，首段边界命中
+ * THINKING_KEYWORDS 即剥离丢弃；content 非空立即切答案区直推。
+ * 保守原则：拿不准是否思维链 → 不推（宁缺毋滥；最终 done 帧 reply 覆盖气泡）。
+ */
+class StreamThinkingStripper {
+  private buf = '';
+  private crossed = false; // 已进入答案区
+  reset(): void { this.buf = ''; this.crossed = false; }
+  /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
+  push(content: string | undefined, reasoning: string | undefined): string {
+    // 答案区优先：content 非空立即直推
+    if (content && content.length > 0) {
+      this.crossed = true;
+      this.buf = '';
+      return content;
+    }
+    const rz = reasoning || '';
+    if (!rz) return '';
+    // 已进入答案区 → reasoning 增量当答案直推
+    if (this.crossed) return rz;
+    // 未进入答案区：累积缓冲，尝试剥离首段
+    this.buf += rz;
+    const stripped = stripThinkingPrefix(this.buf);
+    if (stripped !== this.buf && stripped.trim().length > 0) {
+      // 首段被判为思维链 → 已剥离，跨入答案区，推剩余
+      this.crossed = true;
+      const out = stripped;
+      this.buf = '';
+      return out;
+    }
+    // 首段无思维词且已有句读 + 足够长 → 视为答案开头，推
+    if (stripped === this.buf && this.buf.length >= 6 && /[。！？…\n]/.test(this.buf)) {
+      this.crossed = true;
+      const out = this.buf;
+      this.buf = '';
+      return out;
+    }
+    return ''; // 仍在思维链区（或首段未判），不推
+  }
+}
+
+/** P1-5: 流式结果（text 为剥离后答案累积） */
+interface StreamChatResult {
+  text: string;
+  usage?: { prompt: number; completion: number };
+  sawToken: boolean;
 }
 
 function resolveApiKey(): string | undefined {
@@ -106,9 +183,15 @@ export class DeepSeekLLMProvider implements LLMProvider {
 
   /**
    * 调用 DeepSeek API（带超时+重试，5s~30s→降级）
+   * 🔴 P1-5: streamOpts.onToken 存在时走流式路径（streamChat），返回契约不变。
    * 返回 { text, usage } 或抛出错误
    */
-  private async callDeepSeekApi(messages: DeepSeekMessage[], maxTokens: number, temperature: number, extraParams: { frequency_penalty?: number; presence_penalty?: number; reasoning_effort?: string; level?: number; timeoutMs?: number } = {}): Promise<{ text: string; usage?: { prompt: number; completion: number } }> {
+  private async callDeepSeekApi(messages: DeepSeekMessage[], maxTokens: number, temperature: number, extraParams: { frequency_penalty?: number; presence_penalty?: number; reasoning_effort?: string; level?: number; timeoutMs?: number } = {}, streamOpts?: { onToken?: (delta: LLMTokenDelta) => void }): Promise<{ text: string; usage?: { prompt: number; completion: number } }> {
+    // 🔴 P1-5 流式分支: onToken 提供时启用流式（token 增量旁路推送，重试只在首 token 前）
+    if (streamOpts?.onToken) {
+      const r = await this.streamChat(messages, maxTokens, temperature, extraParams, streamOpts.onToken);
+      return { text: r.text, usage: r.usage };
+    }
     const lastError: string[] = [];
     const maxRetries = 2;
 
@@ -165,17 +248,8 @@ export class DeepSeekLLMProvider implements LLMProvider {
           text = msg.reasoning_content.trim();
         }
         if (!text) throw new Error('Empty response from DeepSeek');
-        // 后处理：剥离思维链前缀
-        // DeepSeek V4-flash 的 reasoning_content 格式通常是：
-        //   "思考句1。思考句2……\n\n回答句1。回答句2。"
-        // 思维部分通常在第一个双换行之前，或只包含1个短段落
-        // 策略：如果开头有1-3句内心独白（含特定关键词），则去掉
-        const THINKING_KEYWORDS = /让[我你]想|让我回|记得|心里|想到|脑中|好好回|在意|吃醋|心酸|我们被问|这是一个|当前场景|当前时间|我需要|注意|考虑到|根据规则|从历史|在角色扮演|但根据|所以这|可能[是用]户|作为[一我]|我的角色|我应该|最安全|但注意|可能这是|另外|此外|综上所述|简单来[说讲]|也就是说|用户最后|用户可能|用户当前|我的回复|这个角色|我在想|我决定|最简单的做法/;
-        // 去掉开头第一个段落（以双换行结束），如果它包含思维关键词
-        const firstPara = text.match(/^(.+?)(\n\n|$)/);
-        if (firstPara && THINKING_KEYWORDS.test(firstPara[1])) {
-          text = text.substring(firstPara[1].length + (firstPara[2]?.length || 0)).trimStart();
-        }
+        // 后处理：剥离思维链前缀（纯函数，流式状态机共用 — P1-5）
+        text = stripThinkingPrefix(text);
 
         return {
           text,
@@ -202,6 +276,148 @@ export class DeepSeekLLMProvider implements LLMProvider {
     throw new Error(`API call failed after ${maxRetries + 1} attempts: ${lastError.join(' -> ')}`);
   }
 
+  // ═══════ 🔴 P1-5 流式 ═══════
+
+  /**
+   * 流式聊天 — SSE 解析 + 思维链增量剥离，onToken 旁路推送答案增量。
+   * 重试只在首 token 前（sawToken=false）；已推 token 后失败直接抛（不可重放）。
+   */
+  private async streamChat(
+    messages: DeepSeekMessage[],
+    maxTokens: number,
+    temperature: number,
+    extraParams: { frequency_penalty?: number; presence_penalty?: number; reasoning_effort?: string; level?: number; timeoutMs?: number },
+    onToken: (delta: LLMTokenDelta) => void,
+  ): Promise<StreamChatResult> {
+    const maxRetries = 2;
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.streamChatOnce(messages, maxTokens, temperature, extraParams, onToken);
+      } catch (err: any) {
+        lastErr = err;
+        if (err?.sawToken) throw err; // 已推过 token → 部分输出无法重放，不重试
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('streamChat unreachable');
+  }
+
+  /** 单次 SSE 流式读取（TextDecoder stream:true 防中文跨 chunk 乱码） */
+  private async streamChatOnce(
+    messages: DeepSeekMessage[],
+    maxTokens: number,
+    temperature: number,
+    extraParams: any,
+    onToken: (delta: LLMTokenDelta) => void,
+  ): Promise<StreamChatResult> {
+    const _dl = extraParams?.level ?? 0;
+    const _timeoutMs = extraParams?.timeoutMs || (_dl >= 2 ? 30000 : _dl <= -2 ? 20000 : 30000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), _timeoutMs);
+    let sawToken = false;
+    try {
+      const response = await fetch(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${resolveApiKey() || process.env['DEEPSEEK_API_KEY'] || ''}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: maxTokens,
+          messages: messages.map(m => ({ ...m, content: sanitizeUTF16(m.content) })),
+          temperature,
+          top_p: 0.95,
+          frequency_penalty: extraParams?.frequency_penalty ?? 0.0,
+          presence_penalty: extraParams?.presence_penalty ?? 0.2,
+          ...(extraParams?.reasoning_effort ? { reasoning_effort: extraParams.reasoning_effort } : {}),
+          stream: true,
+        }),
+      });
+      clearTimeout(timeout);
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`DeepSeek stream API ${response.status}: ${errText.substring(0, 200)}`);
+      }
+      if (!response.body) throw new Error('DeepSeek stream: no response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8'); // stream:true 防中文跨 chunk 乱码
+      const stripper = new StreamThinkingStripper();
+      let text = '';
+      let usage: { prompt: number; completion: number } | undefined;
+      let buf = '';
+      let finished = false;
+
+      for (;;) {
+        if (finished) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (!frame.startsWith('data:')) continue;
+          const data = frame.slice(5).trim();
+          if (data === '[DONE]') { finished = true; break; }
+          try {
+            const json = JSON.parse(data);
+            const delta = json?.choices?.[0]?.delta;
+            if (json?.usage && !usage) {
+              usage = { prompt: json.usage.prompt_tokens ?? 0, completion: json.usage.completion_tokens ?? 0 };
+            }
+            if (!delta) continue;
+            const content = typeof delta.content === 'string' ? delta.content : '';
+            const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+            if (!content && !reasoning) continue;
+            const push = stripper.push(content, reasoning);
+            if (push) {
+              sawToken = true;
+              text += push;
+              onToken({ text: push });
+            }
+          } catch { /* 忽略单帧解析错误（SSE 注释/keepalive 等） */ }
+        }
+      }
+      try { reader.releaseLock(); } catch { /* 已释放 */ }
+
+      // 流结束：flush 剩余无 \n\n 尾帧
+      if (!finished && buf.trim().startsWith('data:')) {
+        const data = buf.trim().slice(5).trim();
+        if (data !== '[DONE]') {
+          try {
+            const json = JSON.parse(data);
+            const delta = json?.choices?.[0]?.delta;
+            if (delta) {
+              const content = typeof delta.content === 'string' ? delta.content : '';
+              const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+              const push = stripper.push(content, reasoning);
+              if (push) { sawToken = true; text += push; onToken({ text: push }); }
+            }
+          } catch { /* 忽略 */ }
+        }
+      }
+      return { text, usage, sawToken };
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        const e: any = new Error('stream timeout');
+        e.sawToken = sawToken;
+        throw e;
+      }
+      err.sawToken = sawToken;
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async generate(params: {
     strategy: StrategyConfig;
     cognition: CognitionObject;
@@ -211,6 +427,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
     userMessage?: string;
     role?: RoleType;
     isEntityMeeting?: boolean;
+    onToken?: (delta: LLMTokenDelta) => void;
   }): Promise<{ text: string; usage?: { prompt: number; completion: number } }> {
     const rawInput = params.userMessage ?? params.cognition.current.raw_input ?? '';
     const history = params.conversationHistory ?? [];
@@ -253,7 +470,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
       messages.push({ role: 'user', content: sanitize(rawInput) });
       try {
         const _rpCfg = getScenarioConfig('roleplay');
-      return await this.callDeepSeekApi(messages, _rpCfg.maxTokens, _rpCfg.temperature, { frequency_penalty: _rpCfg.frequencyPenalty, presence_penalty: _rpCfg.presencePenalty, reasoning_effort: _rpCfg.reasoningEffort, timeoutMs: _rpCfg.timeoutMs });
+      return await this.callDeepSeekApi(messages, _rpCfg.maxTokens, _rpCfg.temperature, { frequency_penalty: _rpCfg.frequencyPenalty, presence_penalty: _rpCfg.presencePenalty, reasoning_effort: _rpCfg.reasoningEffort, timeoutMs: _rpCfg.timeoutMs }, params.onToken ? { onToken: params.onToken } : undefined);
       } catch (err) {
         console.error('[Roleplay]', err instanceof Error ? err.message : err);
         return { text: '…' };
@@ -465,7 +682,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
         level: level,
         timeoutMs: _timeoutMs,
         reasoning_effort: _reasoningEffort,
-      } as any);
+      } as any, params.onToken ? { onToken: params.onToken } : undefined);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!process.env['DEEPSEEK_API_KEY'] && !resolveApiKey()) {

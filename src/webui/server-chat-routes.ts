@@ -15,6 +15,8 @@ import type { FamilyGraph } from '../m4/household/FamilyGraph.js';
 import type { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import type { ChatResponse, ChatContext } from './chat.js';
 import { randomUUID } from 'node:crypto';
+// 🔴 P1-5 S4-M3: streaming.enabled/job_ttl_ms 接线（enabled:false 一键回退同步路径）
+import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
 
 /** TTS 异步 job 存储（S4 P1-2 修复：长文音频后台生成，不阻塞 /api/chat 响应） */
 const TTS_JOBS = new Map<string, { urls: string[]; done: boolean; createdAt: number }>();
@@ -152,8 +154,82 @@ export function sweepTTSJobs(): number {
   return removed;
 }
 
+// ── 🔴 P1-5 流式聊天 job 存储（路径 B: POST /api/chat {stream:true} → jobId → 轮询/SSE） ──
+
+/** 流式聊天 job */
+export interface ChatJob {
+  status: 'running' | 'done' | 'error';
+  /** 已推送的 token 增量（前端轮询时一次性取回补齐） */
+  tokens: string[];
+  /** 最终 reply（done 后，M5 校准 + 幻觉校验的完整结果，覆盖气泡） */
+  reply: string;
+  /** 完整 ChatResponse（done 后） */
+  result: any | null;
+  audio: { audio_url: string | null; audio_urls: string[]; tts_job: string | null };
+  createdAt: number;
+  error?: string;
+}
+const CHAT_JOBS = new Map<string, ChatJob>();
+/** 3 分钟自动过期（防内存泄漏；与 p1_speed.streaming.job_ttl_ms 对齐） */
+const CHAT_JOB_TTL_MS = 180_000;
+
+/** 流式 job 状态查询（惰性 sweep） */
+export function getChatJob(jobId: string): ChatJob | null {
+  sweepChatJobs();
+  return CHAT_JOBS.get(jobId) || null;
+}
+
+/** 流式 job 兜底清理（惰性触发 + server.ts 60s 定时器；防长驻内存）
+ * S4-M3: job_ttl_ms 从配置读取（默认 180s） */
+export function sweepChatJobs(): number {
+  const now = Date.now();
+  const ttl = getRetrievalFusionConfig()?.p1_speed?.streaming?.job_ttl_ms ?? CHAT_JOB_TTL_MS;
+  let removed = 0;
+  for (const [k, v] of CHAT_JOBS) {
+    if (now - v.createdAt > ttl) { CHAT_JOBS.delete(k); removed++; }
+  }
+  return removed;
+}
+
+/**
+ * 🔴 P1-5: TTS 结果构建（同步路径与流式 job 路径共用）。
+ * 长文分段滚动播报（V12.5）：≤2 段同步生成无感；>2 段异步 job 轮询补齐。
+ */
+async function buildTTSResult(
+  reply: string,
+  ttsEnabled: boolean,
+  dataDir: string,
+): Promise<{ audio_url: string | null; audio_urls: string[]; tts_job: string | null }> {
+  let audio_url: string | null = null;
+  let audio_urls: string[] = [];
+  let tts_job: string | null = null;
+  if (ttsEnabled && reply && reply.length > 1) {
+    const segments = segmentForTTS(reply);
+    if (segments.length <= TTS_SYNC_MAX_SEGMENTS) {
+      try {
+        audio_urls = await generateTTSAudio(segments, dataDir);
+        if (audio_urls.length > 0) audio_url = audio_urls[0];
+      } catch (_err) { console.warn('[TTS] 生成失败:', (_err as Error)?.message || _err); }
+    } else {
+      tts_job = 'ttsjob_' + randomUUID();
+      TTS_JOBS.set(tts_job, { urls: [], done: false, createdAt: Date.now() });
+      void generateTTSAudio(segments, dataDir).then(urls => {
+        const job = TTS_JOBS.get(tts_job!);
+        if (job) { job.urls = urls; job.done = true; }
+      }).catch(e => {
+        console.warn('[TTS] 异步 job 生成失败:', (e as Error)?.message || e);
+        const job = TTS_JOBS.get(tts_job!);
+        if (job) job.done = true;
+      });
+    }
+  }
+  return { audio_url, audio_urls, tts_job };
+}
+
 export interface ChatRouteDeps {
-  processChat: (message: string, clientMsgId?: string | null, testMode?: boolean) => Promise<ChatResponse>;
+  processChat: (message: string, clientMsgId?: string | null, testMode?: boolean, onToken?: (delta: { text?: string }) => void) => Promise<ChatResponse>;
+  /** 🔴 P1-5 流式: 直写 SSE 客户端池（绕过 broadcastEvent 1.5s 限速） */
+  pushToSSEClients?: (event: string, data: any) => void;
   resetPipeline: () => Promise<void>;
   conversationHistory: any[];
   conversationDB: any;
@@ -186,39 +262,46 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     const body = JSON.parse(bodyText);
     if (!body.message || typeof body.message !== 'string') { res.writeHead(400); res.end(JSON.stringify({ error: 'message required' })); return true; }
     // 🛡️ V4.0: 角色扮演已彻底废除，实体会晤替代。不再注入【角色扮演】标记。
+
+    // 🔴 P1-5 流式分支（路径 B）: body.stream===true 才进 job 分支，默认同步路径向后兼容。
+    //   S4-M3: streaming.enabled===false → 回退同步路径（一键回滚旧行为）。
+    //   job 后台跑完整 processChat（幻觉校验/持久化/TTS 全部落地逻辑不破坏），
+    //   onToken 旁路推 chat-token/chat-done 到 SSE；前端轮询 /api/chat/job/status 兜底。
+    if (body.stream === true && getRetrievalFusionConfig()?.p1_speed?.streaming?.enabled !== false) {
+      const jobId = 'chatjob_' + randomUUID();
+      const job: ChatJob = { status: 'running', tokens: [], reply: '', result: null, audio: { audio_url: null, audio_urls: [], tts_job: null }, createdAt: Date.now() };
+      CHAT_JOBS.set(jobId, job);
+      void (async () => {
+        try {
+          const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true, (delta) => {
+            if (delta?.text) {
+              job.tokens.push(delta.text);
+              deps.pushToSSEClients?.('chat-token', { job_id: jobId, token: delta.text });
+            }
+          });
+          job.result = result;
+          job.reply = result.reply || '';
+          // TTS 与同步路径共用（buildTTSResult），后台生成不阻塞
+          job.audio = await buildTTSResult(job.reply, body.tts !== false, DATA_DIR);
+          job.status = 'done';
+          deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: job.audio.audio_url, audio_urls: job.audio.audio_urls, tts_job: job.audio.tts_job });
+          console.log('[ChatStream] done: ' + jobId + ' tokens=' + job.tokens.length + ' len=' + job.reply.length);
+        } catch (e) {
+          job.status = 'error';
+          job.error = (e as Error)?.message || String(e);
+          deps.pushToSSEClients?.('chat-error', { job_id: jobId, error: job.error });
+          console.warn('[ChatStream] error: ' + jobId, job.error);
+        }
+      })();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ stream: true, job_id: jobId, poll_hint_ms: getRetrievalFusionConfig()?.p1_speed?.streaming?.poll_hint_ms ?? 150 }));
+      return true;
+    }
+
     const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true);
 
-    // TTS 生成 — 长文分段滚动播报（V12.5）
-    let audio_url: string | null = null;
-    let audio_urls: string[] = [];
-    let tts_job: string | null = null;
-    const reply = result.reply || '';
-    // 单字回复（>1）不播。长回复（可达数千字）按几句话切段，每段一个 mp3，
-    // 前端队列顺序播放 → 整个长文读完。edge-tts 输入恒 ≤TTS_SEGMENT_MAX_CHARS。
-    if (body.tts !== false && reply && reply.length > 1) {
-      const segments = segmentForTTS(reply);
-      // S4 P1-2 修复：短/中回复（≤2 段）同步生成无感；长文（>2 段）异步 job 生成，
-      //   文字立即返回（不阻塞），前端轮询 /api/tts/status 拿全量段后续播。
-      if (segments.length <= TTS_SYNC_MAX_SEGMENTS) {
-        try {
-          audio_urls = await generateTTSAudio(segments, DATA_DIR);
-          if (audio_urls.length > 0) audio_url = audio_urls[0];
-        } catch (_err) { console.warn('[TTS] 生成失败:', (_err as Error)?.message || _err); }
-      } else {
-        tts_job = 'ttsjob_' + randomUUID();
-        TTS_JOBS.set(tts_job, { urls: [], done: false, createdAt: Date.now() });
-        // fire-and-forget：后台生成，不阻塞响应
-        void generateTTSAudio(segments, DATA_DIR).then(urls => {
-          const job = TTS_JOBS.get(tts_job!);
-          if (job) { job.urls = urls; job.done = true; }
-          // 无轮询者（客户端断开）时自然过期清理
-        }).catch(e => {
-          console.warn('[TTS] 异步 job 生成失败:', (e as Error)?.message || e);
-          const job = TTS_JOBS.get(tts_job!);
-          if (job) job.done = true; // 标记完成（urls 空 → 前端不播）
-        });
-      }
-    }
+    // TTS 生成 — 长文分段滚动播报（V12.5，P1-5 抽 helper 与流式路径共用）
+    const { audio_url, audio_urls, tts_job } = await buildTTSResult(result.reply || '', body.tts !== false, DATA_DIR);
     // 安全序列化：防止循环引用导致 JSON.stringify 抛异常
     const safeResult = _sanitizeForJSON(result);
     const safeObject = (safeResult && typeof safeResult === 'object' && !Array.isArray(safeResult)) ? safeResult : {};
@@ -238,6 +321,30 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     const job = jobId ? getTTSJob(jobId) : null;
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: !!job, done: job?.done ?? false, audio_urls: job?.urls ?? [] }));
+    return true;
+  }
+
+  // ── 🔴 P1-5 流式聊天 job 状态轮询（路径 B 兜底：SSE 断开时轮询补齐） ──
+  if (req.method === 'GET' && url.pathname === '/api/chat/job/status') {
+    const jobId = (url.searchParams.get('job') || '').trim();
+    const job = jobId ? getChatJob(jobId) : null;
+    if (!job) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false }));
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true,
+      status: job.status,
+      reply: job.reply,
+      tokens: job.tokens,   // S4-m11: SSE 断开时轮询一次性取回补齐中间 token
+      result: job.result,
+      audio_url: job.audio?.audio_url ?? null,
+      audio_urls: job.audio?.audio_urls ?? [],
+      tts_job: job.audio?.tts_job ?? null,
+      error: job.error || null,
+    }));
     return true;
   }
 

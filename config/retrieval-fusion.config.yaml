@@ -56,3 +56,21 @@ speed_filter:
   second_filter_threshold: 0.15   # P0-1 二次精筛阈值: 记忆 vs 用户 query 相关性低于此值丢弃。S4-B2 实测: 相关记忆 0.17-0.51、无关 0.00 → 取 0.15 保相关除无关
   max_normal_memory_count: 10     # P0-3 普通碎片(sand/timeline)入池上限
   prompt_depth_enabled: true      # P0-2 会话模式分级加载总开关（false 强制 standard）
+
+# ── 第二阶段 P1 响应提速 ──
+# 说明: 降低 LLM 调用次数 + 外部依赖熔断。不牺牲质量/准确度，会晤模式默认全开（meeting_bypass）。
+# enabled:false 一键回退全部旧行为
+p1_speed:
+  streaming:
+    enabled: true          # 总开关: token 流式（job + 轮询/SSE）
+    job_ttl_ms: 180000     # chat job TTL
+    poll_hint_ms: 150      # 前端轮询间隔提示
+  llm_reduction:
+    enabled: true          # 总开关: false 恢复旧 4 条 LLM 全开
+    meeting_bypass: true   # 会晤激活时跳过所有缩减（保持 4 条 LLM 全开）
+    entity_conditional: true       # 实体提取条件化（无白名单/人名形态信号不走 LLM）
+    pae_timeout_ms: 8000           # PAE LLM 超时（原 45s，最危险阻塞源）
+    pae_signal_shortcircuit: true  # PAE 无新增档案信号短路
+    kb_route_rule: true            # KB 路由纯规则（会晤保留 LLM）
+    bionic_health_shortcircuit: true # Bionic 健康快照短路（7200 不可用不发网络）
+    bionic_timeout_ms: 2500        # Bionic 搜索超时（原 5s）

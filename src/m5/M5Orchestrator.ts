@@ -3,7 +3,7 @@
 // ⚖️ 五重铁律协议在此模块全程强制执行
 
 import type { M4Context } from '../m4/types/index.js';
-import type { LLMProvider, CognitionObject, StrategyConfig, ConversationTurn } from './types/index.js';
+import type { LLMProvider, CognitionObject, StrategyConfig, ConversationTurn, LLMTokenDelta } from './types/index.js';
 import { CognitionAssembler } from './CognitionAssembler.js';
 import { StrategySelector } from './StrategySelector.js';
 import { MockLLMProvider } from './MockLLMProvider.js';
@@ -37,7 +37,7 @@ export class M5Orchestrator {
    * @param knowledgeBase 知识库内容
    * @param userMessage 用户当前消息（用于场景记忆更新）
    */
-  async orchestrate(m4ctx: M4Context, conversationHistory?: ConversationTurn[], knowledgeBase?: string, userMessage?: string, currentRole?: RoleType, isEntityMeeting?: boolean): Promise<string> {
+  async orchestrate(m4ctx: M4Context, conversationHistory?: ConversationTurn[], knowledgeBase?: string, userMessage?: string, currentRole?: RoleType, isEntityMeeting?: boolean, streamOpts?: { onToken?: (delta: LLMTokenDelta) => void }): Promise<string> {
     // P0-1: 提取最近一条 timeline 的 dna_root_id 完成全链路闭环
     const dnaRootId = m4ctx.memory_summary.timeline
       .slice(-1)
@@ -87,7 +87,7 @@ export class M5Orchestrator {
     let usedMockFallback = false;
     try {
       const currentTime = new Date().toISOString();
-      const result = await this.llm.generate({ strategy, cognition, conversationHistory, knowledgeBase: combinedKnowledge, currentTime, userMessage, role: this._currentRole, isEntityMeeting });
+      const result = await this.llm.generate({ strategy, cognition, conversationHistory, knowledgeBase: combinedKnowledge, currentTime, userMessage, role: this._currentRole, isEntityMeeting, onToken: streamOpts?.onToken });
       draft = result.text;
     } catch (err) {
       console.error('[M5] LLM生成失败:', err);

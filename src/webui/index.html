@@ -473,11 +473,15 @@ function pollTTSJob(jobId){
 }
 
 // ── Send ──
+// 🔴 P1-5: 流式总开关（true 走 job+轮询/SSE 路径 B；false 回退同步路径向后兼容）
+let _useStream=true;
+let _streamES=null;   // 当前流式 EventSource（发送前关闭旧的，防连接堆积）
 async function send(){
   const t=inp.value.trim();
   if(!t||busy)return;
   addMsg('u',t);inp.value='';inp.style.height='auto';
   busy=true;snd.disabled=true;st.textContent='思考…';showTy();
+  if(_useStream){await sendStream(t);return;}
 
   try{
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t})});
@@ -498,6 +502,99 @@ async function send(){
     console.error(e);addMsg('a','嗯…你再说一遍好不好？');
     toast('请求失败，已用兜底');
   }finally{busy=false;snd.disabled=false;st.textContent='在线'}
+}
+function scrollChat(){requestAnimationFrame(()=>chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'}));}
+
+// 🔴 P1-5 流式发送（路径 B: POST {stream:true} → job_id → 150ms 轮询 + SSE chat-token/chat-done）
+// 气泡实时追加 token（SSE）；done 后拿校准后最终 reply 覆盖气泡；TTS/面板渲染照旧。
+// 代际护栏 _audioGen + _streamGen 使过期 job/ES 回调全部失效，杜绝串音与抢占。
+async function sendStream(t){
+  const gen=++_audioGen;               // 流式代际护栏
+  if(_streamES){try{_streamES.close()}catch(e){}_streamES=null;}
+  addMsg('a','');                      // 创建空气泡（内部移除思考中占位）
+  const b=chat.lastElementChild.querySelector('.bb');
+  if(!b){busy=false;snd.disabled=false;st.textContent='在线';return;}
+  let lastTxt='';let timer=null;let done=0;
+  const clearBusy=()=>{if(gen===_audioGen){busy=false;snd.disabled=false;st.textContent='在线';}};
+  // 最终补齐：校准后 reply 覆盖气泡 + TTS + M1/M3/M4/M5 面板 + 轮次
+  const finalizeStream=async(dd)=>{
+    if(gen!==_audioGen||done)return;   // S4-M6: done 守卫防"轮询+SSE"双路径双播
+    done=1;if(timer)clearInterval(timer);
+    const finalTxt=dd.reply||lastTxt||'';
+    b.textContent=finalTxt;scrollChat();
+    if(dd.result){
+      tc.textContent=dd.result.turn_count+' 轮';
+      var _es=dd.result.emotionMatchScore||dd.result.sceneFitScore?'情'+dd.result.emotionMatchScore+'场'+dd.result.sceneFitScore:'';
+      var _rf=dd.result.riskFlag?'⚠️'+dd.result.riskFlag:'';
+      if(_es||_rf){st.textContent=(_es+_rf).substring(0,22);setTimeout(function(){st.textContent='在线'},3000);}
+      renderM1(dd.result.m1);renderM3(dd.result.m3);renderM4(dd.result.m4);renderM5(dd.result.m5);loadM68();
+      last=dd.result;
+    }
+    if(dd.audio_urls&&dd.audio_urls.length){playAudioQueue(dd.audio_urls);}
+    else if(dd.audio_url){const ap=new Audio(dd.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
+    else if(dd.tts_job){pollTTSJob(dd.tts_job);}   // S4 P1-2: 长文音频异步生成，文字已渲染，轮询补齐后续播
+    clearBusy();
+  };
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,stream:true})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d0=await r.json();
+    if(!d0.job_id){
+      // S4-M3 复核: streaming.enabled:false 时服务端走同步路径返回完整结果（有 reply 无 job_id）
+      // → 按同步结果渲染，不丢真实回复（旧"抛错显示兜底"导致回滚时永远报错）
+      if(d0.reply){
+        b.textContent=d0.reply;scrollChat();
+        tc.textContent=(d0.turn_count||0)+' 轮';
+        if(d0.audio_urls&&d0.audio_urls.length){playAudioQueue(d0.audio_urls);}
+        else if(d0.audio_url){const ap=new Audio(d0.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
+        else if(d0.tts_job){pollTTSJob(d0.tts_job);}
+        if(d0.m1){renderM1(d0.m1);renderM3(d0.m3);renderM4(d0.m4);renderM5(d0.m5);loadM68();}
+        last=d0;clearBusy();return;
+      }
+      throw new Error('no job_id');
+    }
+    const jobId=d0.job_id;
+    // 轮询补齐（SSE 断开/不推送时兜底；间隔取服务端 poll_hint_ms 或 150ms）
+    timer=setInterval(async()=>{
+      if(gen!==_audioGen||done){clearInterval(timer);return;}
+      try{
+        const rr=await fetch('/api/chat/job/status?job='+encodeURIComponent(jobId));
+        const dd=await rr.json();
+        if(gen!==_audioGen||done){clearInterval(timer);return;}
+        if(dd.ok&&dd.status==='done'){clearInterval(timer);await finalizeStream(dd);return;}
+        // S4-m11: running 时用服务端累积 tokens 补齐（SSE 掉线时中途有字）
+        if(dd.ok&&dd.tokens&&dd.tokens.length){
+          const t=dd.tokens.join('');
+          if(t.length>lastTxt.length){lastTxt=t;b.textContent=t;scrollChat();}
+        }
+      }catch(e){}
+    },(d0.poll_hint_ms||150));
+    // SSE 增强：实时追加 token；done 帧覆盖气泡
+    try{
+      const es=new EventSource('/events');
+      _streamES=es;
+      es.addEventListener('chat-token',(ev)=>{
+        if(gen!==_audioGen){es.close();return;}
+        try{const dd=JSON.parse(ev.data);if(dd.job_id===jobId&&dd.token){b.textContent+=dd.token;lastTxt+=dd.token;scrollChat();}}catch(e){}
+      });
+      es.addEventListener('chat-done',(ev)=>{
+        es.close();if(_streamES===es)_streamES=null;
+        if(gen!==_audioGen)return;
+        try{const dd=JSON.parse(ev.data);if(dd.job_id===jobId)finalizeStream(dd);}catch(e){}
+      });
+      es.addEventListener('chat-error',(ev)=>{
+        es.close();if(_streamES===es)_streamES=null;
+        if(gen!==_audioGen)return;
+        b.textContent=lastTxt||'…';clearBusy();toast('流式出错，已显示已有内容');
+      });
+      // S4-m12: SSE 掉线 → 主动关闭（避免浏览器无限重连风暴），改走 150ms 轮询兜底
+      es.onerror=()=>{try{es.close()}catch(e){} if(_streamES===es)_streamES=null;};
+    }catch(e){console.warn('[Stream] EventSource 失败，走轮询兜底');}
+    // 60s 超时兜底（S4-m12: 同时关闭残留 ES，防连接泄漏）
+    setTimeout(()=>{if(gen===_audioGen&&!done){if(timer)clearInterval(timer);if(_streamES){try{_streamES.close()}catch(e){}_streamES=null;}b.textContent=lastTxt||'…';clearBusy();}},60000);
+  }catch(e){
+    console.error(e);b.textContent='嗯…你再说一遍好不好？';toast('请求失败，已用兜底');clearBusy();
+  }
 }
 
 // ── 加载上次聊天记录 ──

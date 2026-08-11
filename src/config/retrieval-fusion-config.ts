@@ -50,6 +50,28 @@ export interface SpeedFilterConfig {
   prompt_depth_enabled: boolean;
 }
 
+/** 🔴 第二阶段 P1: 流式输出配置 */
+export interface StreamingConfig {
+  enabled: boolean;
+  job_ttl_ms: number;
+  poll_hint_ms: number;
+}
+/** 🔴 第二阶段 P1: LLM 调用削减 + 外部熔断配置（不牺牲质量，会晤旁路） */
+export interface LLMReductionConfig {
+  enabled: boolean;
+  meeting_bypass: boolean;
+  entity_conditional: boolean;
+  pae_timeout_ms: number;
+  pae_signal_shortcircuit: boolean;
+  kb_route_rule: boolean;
+  bionic_health_shortcircuit: boolean;
+  bionic_timeout_ms: number;
+}
+export interface P1SpeedConfig {
+  streaming: StreamingConfig;
+  llm_reduction: LLMReductionConfig;
+}
+
 export interface RetrievalFusionConfig {
   inject_priority: InjectPriorityConfig;
   timeline_weight: TimelineWeightConfig;
@@ -58,6 +80,7 @@ export interface RetrievalFusionConfig {
   budget: BudgetConfig;
   filter: FilterConfig;
   speed_filter: SpeedFilterConfig;
+  p1_speed: P1SpeedConfig;
 }
 
 // ── 默认值（yaml 缺失时兜底，保持系统可用）──
@@ -69,6 +92,14 @@ const DEFAULTS: RetrievalFusionConfig = {
   budget: { mem_ratio_normal: 0.6, kb_ratio_normal: 0.4, mem_ratio_longtext: 0.3, kb_ratio_longtext: 0.15, longtext_max_ratio: 0.8, work_max_chars: 4000, hard_max_chars: 8000 },
   filter: { min_similarity: 0.6, max_fusion_items: 16 },
   speed_filter: { second_filter_threshold: 0.15, max_normal_memory_count: 10, prompt_depth_enabled: true },
+  p1_speed: {
+    streaming: { enabled: true, job_ttl_ms: 180000, poll_hint_ms: 150 },
+    llm_reduction: {
+      enabled: true, meeting_bypass: true, entity_conditional: true,
+      pae_timeout_ms: 8000, pae_signal_shortcircuit: true,
+      kb_route_rule: true, bionic_health_shortcircuit: true, bionic_timeout_ms: 2500,
+    },
+  },
 };
 
 let _cache: RetrievalFusionConfig | null = null;
@@ -88,6 +119,10 @@ export function getRetrievalFusionConfig(): RetrievalFusionConfig {
       budget: { ...DEFAULTS.budget, ...(parsed.budget || {}) },
       filter: { ...DEFAULTS.filter, ...(parsed.filter || {}) },
       speed_filter: { ...DEFAULTS.speed_filter, ...(parsed.speed_filter || {}) },
+      p1_speed: {
+        streaming: { ...DEFAULTS.p1_speed.streaming, ...(parsed.p1_speed?.streaming || {}) },
+        llm_reduction: { ...DEFAULTS.p1_speed.llm_reduction, ...(parsed.p1_speed?.llm_reduction || {}) },
+      },
     };
   } catch (e) {
     console.warn('[RetrievalFusionConfig] yaml 加载失败，使用默认值:', (e as Error)?.message);
