@@ -86,10 +86,40 @@ import { alignmentGuard } from '../app/alignment/VectorAlignmentGuard.js';
 import { autoPromoteCandidatesV2 } from '../app/vault/VaultManager.js';
 import { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import { filterPrivateConversations } from '../m4/household/EntityPrivacyFilter.js';
+// 🔴 P0-2 会话模式分级: 读取 prompt_depth_enabled 总开关
+import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
+
+/**
+ * 🔴 P0-2 会话模式分级: 计算 prompt 加载深度。
+ * 纯函数（导出便于单测）。优先级: 会晤 > 话题切换 > 闲聊 > 事实查询 > 默认。
+ * - deep    = 会晤实体/新话题切换 → 完整 PFC 5 builder + 全量记忆
+ * - casual  = 闲聊 → 精简 PFC + 记忆精筛 + KB 路由跳过
+ * - standard= 常规
+ * 注(S4-M1): 事实查询(isFactualRecallQuery)实际走 deep —— isTopicShift 先命中（事实查询消息
+ *   通常非 casual/非跟进 → 新话题判定 true），且事实准确优先需完整 PFC + 全量记忆核实，
+ *   deep 是正确行为。casual 的 KB 路由跳过不会在事实查询时触发（需要 KB 检索）。
+ */
+export function computePromptDepth(deps: {
+  isMeeting: boolean;
+  isTopicShift: boolean;
+  isCasualChat: boolean;
+  isFactualRecallQuery: boolean;
+  currentRole: string;
+  depthEnabled: boolean;
+}): 'deep' | 'standard' | 'casual' {
+  if (!deps.depthEnabled) return 'standard';      // 总开关 false → 强制 standard（一键回退）
+  if (deps.isMeeting) return 'deep';              // 会晤 = 深度全量
+  if (deps.isTopicShift) return 'deep';           // 新话题切换 = 深度（事实查询通常在此命中 → deep 保准确）
+  if (deps.isCasualChat) return 'casual';         // 闲聊 = 精简
+  return 'standard';
+}
 
 
 // 全局异步任务队列（VAD 谱曲等不阻塞主回复的后台任务）
 const chatTaskQueue = new AsyncTaskQueue({ concurrency: 1, retryCount: 1, autoRemoveCompleted: true });
+// 🔴 P0-4 瘦身法开关: true=重复块交给 PromptAssembler 承载（旧链路跳过，降 token），
+// false=恢复旧链路全部注入（回退用）。改完需重启服务生效。
+const PROMPT_ASSEMBLER_STRICT = true;
 // SP1-1: VAD 服务健康缓存
 let _vadAvailable: boolean | undefined = undefined;
 
@@ -1245,6 +1275,20 @@ export async function processChat(message: string, ctx: ChatContext): Promise<Ch
     const { LUNAR_2026 } = await import('../config/app-identity.js');
     const lunarDate = LUNAR_2026[_md] || '';
 
+    // 🔴 P0-2 会话模式分级: 计算 prompt 深度（deep=会晤/新话题全量，standard=常规，casual=闲聊精简）
+    // 优先级: 会晤 > 话题切换 > 闲聊 > 事实查询
+    const _depth = computePromptDepth({
+      isMeeting: !!_meetingEntityName,
+      isTopicShift,
+      isCasualChat,
+      isFactualRecallQuery,
+      currentRole: _currentRole,
+      depthEnabled: getRetrievalFusionConfig().speed_filter.prompt_depth_enabled,
+    });
+    if (process.env.RETRIEVAL_DEBUG === 'true') {
+      console.log(`[PromptDepth] depth=${_depth} meeting=${!!_meetingEntityName} topicShift=${isTopicShift} casual=${isCasualChat} factual=${isFactualRecallQuery}`);
+    }
+
     const timeGuard = `[当前时间] ${beijingTime}（北京时间）${lunarDate ? ' 农历' + lunarDate : ''}——回答时间、日期、节气、节日问题必须以此为准，不能编造。`;
 
     // 通用幻觉防护：禁止编造过去事件、日期、用户生活细节
@@ -1436,6 +1480,8 @@ try {
     vaultBoost: _vaultBoost,
     // V12.1: 实体感知 — 标注当前活跃实体名，LLM 可区分记忆归属
     entityNames: (dna.entity_genes || []).filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2).map((g: any) => g.name).slice(0, 3),
+    // 🔴 P0-1 二次精筛: 会晤模式不传 query（保护实体自有记忆不被误滤），普通模式传用户消息
+    query: _meetingEntityName ? undefined : message,
   });
 } catch (_miErr) {
   // 降级: MemoryInjector 不可用时保留旧行为
@@ -1519,6 +1565,8 @@ let finalKnowledgeText = _entityContextText || '';
               temporalBlock: _temporalBlock || undefined,
               weatherContext: _weatherContext || undefined,
               enableTemporalEngine: ENABLE_TEMPORAL_RULE_ENGINE,
+              // 🔴 P0-2 会话模式分级: 传 depth，casual 时 PFC 只跑廉价 builder
+              depth: _depth,
             }, decision);
           } else {
             // 降级: 旧 process() 路径（PFC 不支持 processEnhanced 时）
@@ -1542,7 +1590,9 @@ let finalKnowledgeText = _entityContextText || '';
         }
       } catch (_pfcErr) { /* PFC 不可用不阻塞，fallback 到空上下文 */ }
 
-if (isFactualRecallQuery) {
+// 🔴 P0-4 瘦身法: 事实问答守卫由 PromptAssembler(factual_recall 块)承载，
+// strict 模式下旧链路跳过（避免重复注入浪费 token）。回退开关 PROMPT_ASSEMBLER_STRICT=false 恢复旧行为。
+if (isFactualRecallQuery && !PROMPT_ASSEMBLER_STRICT) {
   finalKnowledgeText = factualRecallGuard + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
 }
 
@@ -1560,17 +1610,20 @@ if (isFactualRecallQuery) {
 	};
 	// 🛡️ V4.0: 会晤模式下跳过角色路由注入——实体有自己的身份
 	const roleHint = _meetingEntityName ? null : _roleInstruction[_currentRole];
-	if (roleHint ) {
+	// 🔴 P0-4 瘦身法: 角色路由(role_hint)/亲密过滤(intimacy_filter)由 assembler 承载，
+	// strict 模式旧链路跳过。roleHint 变量仍需保留（assembler 段读取）。
+	if (roleHint && !PROMPT_ASSEMBLER_STRICT) {
 	  finalKnowledgeText = (finalKnowledgeText || '') + '\n\n【当前角色】' + roleHint;
 	}
 
-	if (intimacyFilter) {
+	if (intimacyFilter && !PROMPT_ASSEMBLER_STRICT) {
 	  finalKnowledgeText = intimacyFilter + '\n\n' + (finalKnowledgeText || '');
 	}
         // 已禁用：过渡话术导致回复呈现内心独白风格
 
         // P4: LLM 辅助知识路由 — 知识查询模式时补充检索
-        if (memoryGate.mode === 'knowledge_query' && ctx.llmProvider && message.length > 3) {
+        // 🔴 LLM 保守合并: casual(闲聊) 分级时跳过本次额外 LLM 调用（知识查询意图已在分级中识别为 deep）
+        if (memoryGate.mode === 'knowledge_query' && ctx.llmProvider && message.length > 3 && _depth !== 'casual') {
           try {
             const _kbPrompt = '从以下问题中提取2-4个最可能用于知识库搜索的关键词（中文），只返回关键词用逗号分隔。问题: ' + message;
             const _kbResult = await (ctx.llmProvider as any).generate({
@@ -1607,7 +1660,8 @@ if (isFactualRecallQuery) {
         // ① 过往记忆参考：作为情感背景注入，但不强制 LLM 在当前回复中复述
         //    原来"用自然的方式在回复中提及这段过往"导致 LLM 把上一轮的场景(浴缸等)强行带回本轮——即使话题已切换。
         //    改为"如果相关可以自然参考，不要强行衔接"——记忆是背景，不是剧本。
-        if (memoryText  && !finalKnowledgeText.includes('【相关记忆】')) {
+        // 🔴 P0-4 瘦身法: memory_context 由 assembler 承载，strict 模式旧链路跳过。
+        if (memoryText && !PROMPT_ASSEMBLER_STRICT && !finalKnowledgeText.includes('【相关记忆】')) {
           const historyLink = '【情感背景·过往记忆】' + memoryText + '\n（以上是你以前的记忆片段。你**现在不在那些场景里**。如果当前话题提到了记忆中的人或事，可以用"我记得以前…"的方式轻轻提起。但**绝对不要从记忆里的场景开始说话**——你是正在和对方聊天的活人，不是在重演过去的场景。）';
           finalKnowledgeText = historyLink + (finalKnowledgeText ? '\n\n' + finalKnowledgeText : '');
         }
@@ -1617,13 +1671,14 @@ if (isFactualRecallQuery) {
         //    创建的角色人物(徐诗韵/徐诗雨/熊梓铭)全在 social_context，与玉瑶本人无关。
         const _allKnownNames = [...new Set((ctx_m4?.family_context || []).map((p: any) => p.entity).filter(Boolean))];
         const _msgMentionsFamily = _allKnownNames.some((n: string) => n.length > 1 && message.includes(n));
-        if (familyConstraint  && (_msgMentionsFamily || isFactualRecallQuery)) {
+        // 🔴 P0-4 瘦身法: family_constraint 由 assembler 承载，strict 模式旧链路跳过
+        if (familyConstraint && (_msgMentionsFamily || isFactualRecallQuery) && !PROMPT_ASSEMBLER_STRICT) {
           finalKnowledgeText = familyConstraint + '\n\n' + finalKnowledgeText;
           finalKnowledgeText += '【强制】未在档案中的外貌特征(身高/脸型/眼镜/发型等)你不知道，绝对不能编造。';
         }
 
-        // 主人大脑镜像注入
-        if (ctx.masterProfile && !_meetingEntityName) {
+        // 主人大脑镜像注入 — 🔴 P0-4 瘦身法: master_profile 由 assembler 承载，strict 模式旧链路跳过
+        if (ctx.masterProfile && !_meetingEntityName && !PROMPT_ASSEMBLER_STRICT) {
           const aboutYou = ctx.masterProfile.retrieveAboutYou(5);
           if (aboutYou) {
             finalKnowledgeText = aboutYou + finalKnowledgeText;
@@ -1780,7 +1835,8 @@ try {
   // 🟡 memory: 记忆片段
   if (memoryText && !finalKnowledgeText.includes('【相关记忆】')) {
     const _memBlock = '【情感背景·过往记忆】' + memoryText + '\n（以上是你以前的记忆片段。你**现在不在那些场景里**。如果当前话题提到了记忆中的人或事，可以用"我记得以前…"的方式轻轻提起。但**绝对不要从记忆里的场景开始说话**——你是正在和对方聊天的活人，不是在重演过去的场景。）';
-    assembler.add(memoryBlock('memory_context', _memBlock, ['normal']));
+    // 🔴 S4-B1 修复: 含 entity_meeting —— 会晤模式 strict 下 memoryText 由 assembler 唯一承载
+    assembler.add(memoryBlock('memory_context', _memBlock, ['normal', 'entity_meeting']));
   }
   // 🟢 persona: M6 自我模型（会晤模式禁用）
   try {
@@ -1851,7 +1907,10 @@ try {
 
   const _mode = _isMeeting ? 'entity_meeting' as const : 'normal' as const;
   const _assembled = assembler.render({ mode: _mode, maxChars: 12000 });
-  if (_assembled.text.length > 0 && _assembled.blocks.length >= 2) {
+  // 🔴 P0-4 瘦身法: strict 模式下 assembler 是重复块的唯一承载（旧链路已跳过）→ 放宽到 ≥1 块，
+  // 避免单块场景丢内容。非 strict 模式保持 ≥2 块旧行为。
+  const _minBlocks = PROMPT_ASSEMBLER_STRICT ? 1 : 2;
+  if (_assembled.text.length > 0 && _assembled.blocks.length >= _minBlocks) {
     // PFC + entityContext 从旧管线注入，新块从 assembler
     finalKnowledgeText = _assembled.text + '\n\n' + (finalKnowledgeText || '');
     console.log('[PromptAssembler] ' + _assembled.blocks.length + ' blocks, ' + _assembled.charCount + ' chars' + (_assembled.dropped.length > 0 ? ', ' + _assembled.dropped.length + ' dropped' : ''));

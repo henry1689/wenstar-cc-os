@@ -12,11 +12,17 @@
 
 // 🔴 P1 配置化: 权重/预算从 yaml 读取，消除硬编码魔法数字
 import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
+// 🔴 P0-1 二次精筛: 记忆 vs 用户 query 相关性打分（纯算法，零外部依赖）
+import { computeQueryRelevance } from './rerank/AlgorithmicCrossEncoder.js';
+
+/** 记忆片段类别（第二阶段 P0: 精筛/条数上限的豁免依据） */
+export type MemoryKind = 'diamond' | 'vault' | 'sand' | 'timeline' | 'context' | 'knowledge';
 
 /** 记忆片段（统一表示） */
 export interface MemoryItem {
   text: string;           // 记忆文本
   source: 'diamond' | 'vault' | 'sand' | 'knowledge' | 'timeline' | 'work';
+  kind: MemoryKind;       // 🔴 P0-3: 类别标记（豁免依据）
   priority: number;       // 0-1, 越高越重要
 }
 
@@ -38,6 +44,10 @@ export interface InjectOptions {
   entityNames?: string[];
   /** 🔴 P2 建议1: 事实查询增强 — 用户问"答应过/记得你说过"时拉高金库优先级 */
   vaultBoost?: boolean;
+  /** 🔴 P0-1 二次精筛: 用户当前消息（query）。会晤模式不传 → 自动关闭精筛保护实体记忆 */
+  query?: string;
+  /** 🔴 P0-1: 强制跳过二次精筛（兜底用） */
+  skipSecondaryFilter?: boolean;
 }
 
 /**
@@ -52,6 +62,8 @@ export function injectMemories(opts: InjectOptions): string {
     maxChars = 8000,
     preserveLabels = false,
     vaultBoost = false,
+    query,
+    skipSecondaryFilter = false,
   } = opts;
 
   // 🔴 P1 配置化: 权重/预算从 yaml 读取（无魔法数字）
@@ -110,6 +122,11 @@ export function injectMemories(opts: InjectOptions): string {
     // 🔴 D1 修复: 只认【金库记忆】标签（金库真实来源 formatHit/SQL 均带此标签），
     // 去掉 '📌' — 它与【📌重要记忆】(钙化≥2 砂金) 冲突，导致高钙化记忆被误判为金库降权。
     const isVault = frag.includes('金库');
+    // 🔴 P0-3 kind 判定: 基于原始 frag 标签（清洗已在 L96-100 剥离标签），豁免依据
+    // context = 当前会话上下文/实体自有记忆（绝对优先，不精筛不计数）
+    const kind: MemoryKind = isDiamond ? 'diamond' : isVault ? 'vault' :
+      frag.startsWith('📖') ? 'knowledge' :
+      /^(【用户曾提到】|【用户状态】|【时间检索】|【回忆】|【对话·|【.+的记忆】)/.test(frag) ? 'context' : 'sand';
     let priority = PRI.memory_normal;
     if (isDiamond) priority = PRI.black_diamond;
     else if (frag.includes('档案') || preservedLabel.includes('档案')) priority = PRI.archive_tag;
@@ -119,6 +136,7 @@ export function injectMemories(opts: InjectOptions): string {
     items.push({
       text: displayText,
       source: isDiamond ? 'diamond' : isVault ? 'vault' : 'sand',
+      kind,
       priority,
     });
   }
@@ -133,7 +151,7 @@ export function injectMemories(opts: InjectOptions): string {
       Math.min(TW.base + calcium * TW.scale, TW.cap),
       TW.min_val,
     );
-    items.push({ text: clean.substring(0, 120), source: 'timeline', priority });
+    items.push({ text: clean.substring(0, 120), source: 'timeline', kind: 'timeline', priority });
   }
 
   // ── 来源 3: vault_log 金库（用户说过的事实/承诺） ──
@@ -143,12 +161,54 @@ export function injectMemories(opts: InjectOptions): string {
     items.push({
       text: clean.substring(0, 150),
       source: 'vault',
+      kind: 'vault',
       priority: PRI.vault,  // 🔴 P1 配置化: 金库优先级从 yaml
     });
   }
 
+  // ── 🔴 P0-1 二次精筛: 记忆 vs 用户 query 相关性过滤（在去重之前，避免高优先无关记忆被 dedup 保留） ──
+  // 豁免: diamond/context/knowledge 不删（作品/长文已在收集阶段路由独立预算，天然不碰）
+  //       vaultBoost 命中时额外豁免 vault（"答应过"场景金库不被滤）
+  //       text.length > 600 豁免（长记忆保护）
+  //       会晤模式不传 query → 自动跳过
+  const SPF = cfg.speed_filter;
+  let _filtered = items;
+  if (query && !skipSecondaryFilter && query.trim().length >= 4) {
+    // 动态 import 避免循环依赖（computeQueryRelevance 与 injectMemories 同属 m4 检索域）
+    _filtered = _filtered.filter(it => {
+      if (it.kind === 'diamond' || it.kind === 'context' || it.kind === 'knowledge') return true;
+      if (it.kind === 'vault' && vaultBoost) return true;
+      // 注: 无 >600 豁免 —— MemoryItem.text 收集时已截断(250/300/120/150)，
+      // 长文本保护由【作品】/【对话原文】独立预算承载（收集阶段路由，天然不精筛）。
+      const rel = computeQueryRelevance(query, it.text);
+      const pass = rel >= SPF.second_filter_threshold;
+      if (process.env.RETRIEVAL_DEBUG === 'true') {
+        console.log(`[MemoryInjector] 精筛 kind=${it.kind} rel=${rel.toFixed(2)} ${pass ? '保留' : '剔除'} (阈值${SPF.second_filter_threshold}) "${it.text.substring(0, 20)}"`);
+      }
+      return pass;
+    });
+    if (_filtered.length !== items.length) {
+      console.log(`[MemoryInjector] 二次精筛: ${items.length} → ${_filtered.length} 条 (query="${query.substring(0, 20)}")`);
+    }
+  }
+
+  // ── 🔴 P0-3 普通碎片上限: sand/timeline 最多 max_normal_memory_count 条，其余按 priority 丢弃 ──
+  // 豁免: diamond/vault/knowledge/context（金库对条数豁免，但对 query 相关性仍受精筛）
+  const _capped: MemoryItem[] = [];
+  const _normal: MemoryItem[] = [];
+  for (const it of _filtered) {
+    if (it.kind === 'sand' || it.kind === 'timeline') _normal.push(it);
+    else _capped.push(it);
+  }
+  if (_normal.length > SPF.max_normal_memory_count) {
+    _normal.sort((a, b) => b.priority - a.priority);
+    _normal.length = SPF.max_normal_memory_count;
+    console.log(`[MemoryInjector] 普通碎片上限: 超${SPF.max_normal_memory_count}条，按 priority 保留前${SPF.max_normal_memory_count}条`);
+  }
+  _filtered = [..._capped, ..._normal];
+
   // ── 去重：Jaccard 相似度 > 0.4 视为重复，保留优先级更高的 ──
-  const deduped = deduplicate(items);
+  const deduped = deduplicate(_filtered);
 
   // ── 按优先级降序 ──
   deduped.sort((a, b) => b.priority - a.priority);

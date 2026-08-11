@@ -175,7 +175,13 @@ export async function extractEntitiesLLM(
   if (!llmGenerate || !text || text.length < 2) return [];
 
   // 缓存命中直接返回（仅缓存有结果的，空结果不缓存）
-  const _ck = text.substring(0, 120);
+  // 🔴 LLM 保守合并: 归一化缓存 key — 去标点/空白/语气词，提升同实体不同措辞的命中率
+  //   （原 text.substring(0,120) 按原文前缀精确匹配，措辞差异即 miss）
+  const _ck = text
+    .replace(/[，。！？、；：""''（）【】\s~！?]/g, '')
+    // S4-M2 修复: 长词优先（你们/我们 在 你/我 前），否则有序交替总先匹配单字 → 残留"们"
+    .replace(/^(你们|我们|你|我|帮|请问|麻烦|对了|啊|呀|吧|呢|吗)/, '')
+    .substring(0, 120);
   const _cc = _cacheGet(_ck);
   if (_cc) { console.log('[LLMEntity] 缓存: ' + _cc.length + ' 实体'); return _cc; }
 

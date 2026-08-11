@@ -40,6 +40,15 @@ export interface FilterConfig {
   min_similarity: number;
   max_fusion_items: number;
 }
+/** 🔴 第二阶段 P0: 响应速度专项 — 精筛/分级/条数限制配置 */
+export interface SpeedFilterConfig {
+  /** P0-1 二次精筛阈值: 记忆 vs 用户 query 的相关性低于此值丢弃 [0,1] */
+  second_filter_threshold: number;
+  /** P0-3 普通碎片(sand/timeline)入池上限，超出按 priority 取前 N 条 */
+  max_normal_memory_count: number;
+  /** P0-2 会话模式分级加载总开关: false 时强制 standard，一键回退 */
+  prompt_depth_enabled: boolean;
+}
 
 export interface RetrievalFusionConfig {
   inject_priority: InjectPriorityConfig;
@@ -48,6 +57,7 @@ export interface RetrievalFusionConfig {
   v13_rrf_weights: Record<string, number> & { multi_hit_bonus: number };
   budget: BudgetConfig;
   filter: FilterConfig;
+  speed_filter: SpeedFilterConfig;
 }
 
 // ── 默认值（yaml 缺失时兜底，保持系统可用）──
@@ -58,6 +68,7 @@ const DEFAULTS: RetrievalFusionConfig = {
   v13_rrf_weights: { spine: 0.35, keyword: 0.3, work: 0.25, entity: 0.2, emotion: 0.1, locus: 0.05, multi_hit_bonus: 1.2 },
   budget: { mem_ratio_normal: 0.6, kb_ratio_normal: 0.4, mem_ratio_longtext: 0.3, kb_ratio_longtext: 0.15, longtext_max_ratio: 0.8, work_max_chars: 4000, hard_max_chars: 8000 },
   filter: { min_similarity: 0.6, max_fusion_items: 16 },
+  speed_filter: { second_filter_threshold: 0.15, max_normal_memory_count: 10, prompt_depth_enabled: true },
 };
 
 let _cache: RetrievalFusionConfig | null = null;
@@ -76,6 +87,7 @@ export function getRetrievalFusionConfig(): RetrievalFusionConfig {
       v13_rrf_weights: { ...DEFAULTS.v13_rrf_weights, ...(parsed.v13_rrf_weights || {}) },
       budget: { ...DEFAULTS.budget, ...(parsed.budget || {}) },
       filter: { ...DEFAULTS.filter, ...(parsed.filter || {}) },
+      speed_filter: { ...DEFAULTS.speed_filter, ...(parsed.speed_filter || {}) },
     };
   } catch (e) {
     console.warn('[RetrievalFusionConfig] yaml 加载失败，使用默认值:', (e as Error)?.message);

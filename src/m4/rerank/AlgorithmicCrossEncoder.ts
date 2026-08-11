@@ -19,6 +19,44 @@
 
 import type { CrossEncoderReranker, CrossEncoderCandidate, CrossEncoderResult, CrossEncoderRerankOptions } from './CrossEncoderReranker.js';
 
+/**
+ * 🔴 第二阶段 P0-1: 提取导出的纯文本相关性打分函数（二次精筛用）。
+ * 从原 _computeRelevance 提取，去掉 entityBoost(≤0.1)/calciumBoost(≤0.3) 两个精排专属项，
+ * 仅保留 jaccard + keywordDensity 并归一化: (0.35+0.25)/0.6=1.0 → 满分 1.0，阈值可解释。
+ * 原 _computeRelevance 不动，rerank 精排行为零影响。
+ */
+export function computeQueryRelevance(query: string, docText: string): number {
+  const tokens = _tokenizeShared(query);
+  if (tokens.size === 0) return 0;
+  const docTokens = _tokenizeShared(docText);
+  if (docTokens.size === 0) return 0;
+
+  // 1. Jaccard 重叠度 [0, 1]
+  const intersection = [...tokens].filter(t => docTokens.has(t)).length;
+  const union = new Set([...tokens, ...docTokens]).size;
+  const jaccard = union > 0 ? intersection / union : 0;
+
+  // 2. 关键词命中密度: 查询词在文档中的覆盖比例（长文档抗稀释的关键）
+  const keywordDensity = intersection / tokens.size;
+
+  // 归一化: 0.35*jaccard + 0.25*keywordDensity 满分 0.6 → 除 0.6 映射到 [0,1]
+  const score = (0.35 * jaccard + 0.25 * keywordDensity) / 0.6;
+  return Math.min(score, 1.0);
+}
+
+/** 共享的中文 1-3 字 n-gram tokenize（类内部 _tokenize 的复用实现） */
+function _tokenizeShared(text: string): Set<string> {
+  const cleaned = (text || '').replace(/[，。！？、；：""''（）《》【】\s\d\-\/\\@#$%^&*+=~`|]/g, '').trim();
+  const tokens = new Set<string>();
+  if (cleaned.length < 2) { tokens.add(cleaned); return tokens; }
+  for (let len = 1; len <= 3; len++) {
+    for (let i = 0; i <= cleaned.length - len; i++) {
+      tokens.add(cleaned.substring(i, i + len));
+    }
+  }
+  return tokens;
+}
+
 export class AlgorithmicCrossEncoder implements CrossEncoderReranker {
   private _ready = true;
 
@@ -50,17 +88,9 @@ export class AlgorithmicCrossEncoder implements CrossEncoderReranker {
     return results.slice(0, topK);
   }
 
-  /** 中文 n-gram tokenization（1-3 字符） */
+  /** 中文 n-gram tokenization（1-3 字符）— 复用导出共享实现，避免复制 */
   private _tokenize(text: string): Set<string> {
-    const cleaned = (text || '').replace(/[，。！？、；：""''（）《》【】\s\d\-\/\\@#$%^&*+=~`|]/g, '').trim();
-    const tokens = new Set<string>();
-    if (cleaned.length < 2) { tokens.add(cleaned); return tokens; }
-    for (let len = 1; len <= 3; len++) {
-      for (let i = 0; i <= cleaned.length - len; i++) {
-        tokens.add(cleaned.substring(i, i + len));
-      }
-    }
-    return tokens;
+    return _tokenizeShared(text);
   }
 
   private _computeRelevance(

@@ -182,7 +182,9 @@ export function identityBlock(id: string, content: string, modes: ChatModeKind[]
 }
 
 /** 创建 memory 块 */
-export function memoryBlock(id: string, content: string, modes: ChatModeKind[] = ['normal'], priority = 500): PromptBlock {
+// 🔴 S4-B1 修复: memory 块默认含 entity_meeting —— strict 模式下旧链路跳过 memoryText 注入，
+// memory_context 由 assembler 唯一承载，若仅限 normal 会晤模式 memoryText(实体记忆+KB) 静默丢失。
+export function memoryBlock(id: string, content: string, modes: ChatModeKind[] = ['normal', 'entity_meeting'], priority = 500): PromptBlock {
   return { id, type: 'memory', priority, source: 'MemoryInjector', modeScope: modes, content, conflictPolicy: 'override' };
 }
 

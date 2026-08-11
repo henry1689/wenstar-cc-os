@@ -709,28 +709,42 @@ export class PrefrontalCortex {
     let emotionContext: { pleasure: number; arousal: number; intimacy: number; dominantEmotion?: string } | undefined;
 
     try {
+      // 🔴 P0-2 分级: casual(闲聊) 只跑廉价 builder（CoreMemory + EmotionRegulation），
+      // 跳过 ExperienceSummary(facade/SQLite 最大延迟项)/ForgettingContext/SYSTEM_PROMPT。
+      // deep/standard 保持 5 builder 全量。
+      const _depth = input.depth || 'standard';
+      const _casual = _depth === 'casual';
       const [coreMem, expSummary, emotionReg, forgetCtx, cortexPrompt] = await Promise.all([
         this._buildCoreMemory(_rp, input.ctxM4, _msg),
-        this._buildExperienceSummary(
-          _dna?.entity_genes?.filter((g: any) => g.name && g.name.length > 1 && g.name !== '我').map((g: any) => g.name) || [],
-          _p || { pleasure: 0, arousal: 0, intimacy: 0 },
-          _dna?.scene_tags,
-          _msg,
-        ),
+        _casual
+          ? Promise.resolve(null)
+          : this._buildExperienceSummary(
+              _dna?.entity_genes?.filter((g: any) => g.name && g.name.length > 1 && g.name !== '我').map((g: any) => g.name) || [],
+              _p || { pleasure: 0, arousal: 0, intimacy: 0 },
+              _dna?.scene_tags,
+              _msg,
+            ),
         Promise.resolve(this._buildEmotionRegulation(
           _p || { pleasure: 0, arousal: 0, intimacy: 0 },
           input.emotionalMemories || [],
         )),
-        this._buildForgettingContext(_msg),
-        this._composeSystemPrompt(
-          _p || { pleasure: 0, arousal: 0, intimacy: 0 },
-          _role,
-          !!(globalThis as any).__familyGraph,
-          !!(globalThis as any).__knowledgeBase,
-          (input.emotionalMemories || []).length > 0,
-          _msg,
-        ),
+        _casual
+          ? Promise.resolve(null)
+          : this._buildForgettingContext(_msg),
+        _casual
+          ? Promise.resolve('')
+          : this._composeSystemPrompt(
+              _p || { pleasure: 0, arousal: 0, intimacy: 0 },
+              _role,
+              !!(globalThis as any).__familyGraph,
+              !!(globalThis as any).__knowledgeBase,
+              (input.emotionalMemories || []).length > 0,
+              _msg,
+            ),
       ]);
+      if (process.env.RETRIEVAL_DEBUG === 'true') {
+        console.log(`[PFC] depth=${_depth} builders=${_casual ? 'core+emotion' : 'all 5'}`);
+      }
 
       // 拼装 assembledContext
       const blocks: Array<{ content: string; priority: number }> = [];

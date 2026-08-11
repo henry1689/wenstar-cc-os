@@ -198,6 +198,8 @@ export interface PrefrontalInput {
   weatherContext?: string;
   /** 是否启用时空规则引擎 */
   enableTemporalEngine?: boolean;
+  /** 🔴 P0-2 会话模式分级: deep=会晤/新话题全量，standard=常规，casual=闲聊精简 */
+  depth?: 'deep' | 'standard' | 'casual';
 }
 
 /** V4.0 Phase 3: 上下文块 — PFC 组装 LLM 上下文的标准化输入 */

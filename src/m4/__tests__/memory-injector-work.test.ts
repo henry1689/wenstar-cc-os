@@ -96,3 +96,104 @@ describe('MemoryInjector — 作品独立注入 (V22)', () => {
     expect(result).toContain('💭');
   });
 });
+
+describe('MemoryInjector — P0-3 普通碎片上限 (≤10)', () => {
+  it('>10 条普通砂金 → 只注入 ≤10 条', () => {
+    const frags: string[] = [];
+    for (let i = 0; i < 15; i++) frags.push('普通砂金记忆' + i + '的详细内容描述' + '话'.repeat(10));
+    const result = injectMemories({ memoryFragments: frags, m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
+    // 💭 前缀的记忆条数 ≤10（普通砂金才有 💭）
+    const count = (result.match(/💭/g) || []).length;
+    expect(count).toBeLessThanOrEqual(10);
+  });
+
+  it('黑钻/金库/作品/长文 不计入普通上限（豁免全保留）', () => {
+    const frags: string[] = [];
+    for (let i = 0; i < 12; i++) frags.push('普通砂金' + i);
+    frags.push('💎 珍藏记忆：那晚我们看星星的场景');
+    frags.push('【金库记忆】鸿艺答应过带我去看海');
+    frags.push('【作品】《星》' + '正文'.repeat(30));
+    const result = injectMemories({ memoryFragments: frags, m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000 });
+    // 黑钻💎、金库📌、作品【作品】都应保留
+    expect(result).toContain('💎');
+    expect(result).toContain('📌');
+    expect(result).toContain('【作品】');
+    // 普通砂金 ≤10
+    expect((result.match(/💭/g) || []).length).toBeLessThanOrEqual(10);
+  });
+});
+
+describe('MemoryInjector — P0-1 二次精筛 (query)', () => {
+  it('query 相关记忆保留、无关剔除', () => {
+    const related = '【记忆】周末我们去公园散步，你穿了件蓝色外套';
+    const unrelated = '【记忆】上次修电脑花了三百块钱';
+    const result = injectMemories({
+      memoryFragments: [related, unrelated],
+      m4Timeline: [], knowledgeBaseText: '', vaultHits: [],
+      maxChars: 8000,
+      query: '我们周末去公园散步',
+    });
+    // 相关记忆应保留，无关记忆应被剔除
+    expect(result).toContain('公园散步');
+    expect(result).not.toContain('修电脑');
+  });
+
+  it('query 为空/短句 → 跳过精筛（不误杀）', () => {
+    const frag = '【记忆】某条普通记忆内容';
+    const result = injectMemories({ memoryFragments: [frag], m4Timeline: [], knowledgeBaseText: '', vaultHits: [], maxChars: 8000, query: '嗯' });
+    expect(result).toContain('普通记忆');
+  });
+
+  it('黑钻/当前上下文/KB 即使低相关也不删（豁免）', () => {
+    const diamond = '💎 珍藏记忆：我们第一次见面';
+    const context = '【回忆】上周的电影特别好看';
+    const result = injectMemories({
+      memoryFragments: [diamond, context],
+      m4Timeline: [], knowledgeBaseText: '', vaultHits: [],
+      maxChars: 8000,
+      query: '关于量子物理的完全无关话题',
+    });
+    expect(result).toContain('珍藏记忆');
+    expect(result).toContain('上周的电影');
+  });
+
+  it('长文【对话原文】不被精筛触碰（独立预算）', () => {
+    const longFrag = '【对话原文】' + '我们去年冬天去哈尔滨看冰雕，'.repeat(50);
+    const result = injectMemories({
+      memoryFragments: [longFrag],
+      m4Timeline: [], knowledgeBaseText: '', vaultHits: [],
+      maxChars: 8000,
+      query: '今天天气怎么样',
+    });
+    expect(result).toContain('【对话原文】');
+  });
+
+  it('vaultBoost 命中时金库豁免精筛（事实查询场景）', () => {
+    const vault = '【金库记忆】鸿艺说今年会带我去看海';
+    const result = injectMemories({
+      memoryFragments: [vault],
+      m4Timeline: [], knowledgeBaseText: '', vaultHits: [],
+      maxChars: 8000,
+      query: '关于物理的完全无关话题',
+      vaultBoost: true,
+    });
+    // vaultBoost 命中 → 金库豁免精筛，正常注入（normal 模式标签剥离为 📌 前缀）
+    expect(result).toContain('📌');
+    expect(result).toContain('带我去看海');
+  });
+});
+
+describe('MemoryInjector — S4-B1 会晤模式不丢 memoryText/KB', () => {
+  it('会晤模式（不传 query）→ 精筛关闭，KB 完整保留', () => {
+    const kb = '【关于你的知识库档案】玉瑶是太虚境的核心意识体，负责记忆与情感管理。'.repeat(3);
+    const result = injectMemories({
+      memoryFragments: ['【徐诗雨的记忆】我们上周聊过她养的小猫'],
+      m4Timeline: [], knowledgeBaseText: kb, vaultHits: [],
+      maxChars: 8000,
+      preserveLabels: true,  // 会晤模式保留标签
+      // 会晤模式 chat.ts 传 query=undefined → 精筛跳过
+    });
+    expect(result).toContain('徐诗雨');
+    expect(result).toContain('太虚境的核心意识体');
+  });
+});

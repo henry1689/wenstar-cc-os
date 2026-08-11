@@ -49,3 +49,10 @@ budget:
 filter:
   min_similarity:  0.60
   max_fusion_items: 16
+
+# ── 第二阶段 P0 响应速度专项 ──
+# 说明: 无损耗提速，普通闲聊/碎片记忆瘦身；黑钻/金库/作品/长文/当前上下文豁免
+speed_filter:
+  second_filter_threshold: 0.15   # P0-1 二次精筛阈值: 记忆 vs 用户 query 相关性低于此值丢弃。S4-B2 实测: 相关记忆 0.17-0.51、无关 0.00 → 取 0.15 保相关除无关
+  max_normal_memory_count: 10     # P0-3 普通碎片(sand/timeline)入池上限
+  prompt_depth_enabled: true      # P0-2 会话模式分级加载总开关（false 强制 standard）

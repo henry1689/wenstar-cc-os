@@ -8,5 +8,8 @@ describe('retrieval-fusion-config', () => {
     expect(cfg.timeline_weight.min_val).toBe(0.6);
     expect(cfg.budget.hard_max_chars).toBe(8000);
     expect(cfg.budget.mem_ratio_normal).toBe(0.6);
+    expect(cfg.speed_filter.second_filter_threshold).toBe(0.15);
+    expect(cfg.speed_filter.max_normal_memory_count).toBe(10);
+    expect(cfg.speed_filter.prompt_depth_enabled).toBe(true);
   });
 });
