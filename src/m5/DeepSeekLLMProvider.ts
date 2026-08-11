@@ -58,6 +58,9 @@ function sanitizeUTF16(text: string): string {
 
 // ── 🔴 P1-5 流式: 思维链剥离（模块级，流式状态机 + 非流式后处理共用） ──
 
+/** P1-6 探针: 确认生产服务加载含结构识别的最新代码（模块加载时打印） */
+// (探针已移除 — 剥离逻辑经生产实测验证)
+
 /** 思维链首段关键词 — 命中即判定该段为内心独白，剥离丢弃。
  * S4-M2 修正: 剔除答案开头常用词（记得/另外/此外/综上所述/简单来说/也就是说/所以这/注意/这是一个/我在想/我应该），
  * 只保留强内心独白措辞 + 系统级表述——否则"记得上次…"这类答案确认性首句会被误删（全局质量回归）。 */
@@ -65,10 +68,8 @@ const THINKING_KEYWORDS = /让[我你]想|让我回|心里|想到|脑中|好好�
 
 /**
  * P1-5: 剥离思维链前缀 — 按句段剥离开头含思维关键词的句子，直到第一个非思维句。
- * 纯函数：流式状态机与非流式后处理复用同一逻辑，保证"流式预览 == M5 校准前草稿"。
+ * 保留作降级路径（extractAnswerFromReasoning 找不到过渡标记时的兜底）。
  * DeepSeek V4-flash 的 reasoning_content 格式通常是："思考句1。思考句2……\n\n回答句1。回答句2。"
- * S4 评审修正：原"只剥第一段（双换行/结尾边界）"在"思维链+答案无双换行"时会把答案一起剥掉
- * （流式下答案永不推送）→ 改为逐句剥离，更符合"剥1-3句内心独白"原意。
  */
 export function stripThinkingPrefix(text: string): string {
   if (!text) return '';
@@ -83,11 +84,140 @@ export function stripThinkingPrefix(text: string): string {
   return parts.slice(keepFrom).join('').trimStart();
 }
 
+// ── 🔴 P1-6 思维链结构提取（S3 实测诊断: V4-flash 思维链有固定模板，关键词逐句剥离完全失效）──
+// 实测模板:
+//   ① 角色建立: "好的，现在我是玉瑶了，我是鸿艺的私人秘书兼情感伴侣…"
+//   ② 复述+分析: "鸿艺先生突然问我是不是玉瑶，这问题有点奇怪…"
+//   ③ 自我要求: "不过作为他的秘书，我得先确认自己的身份…"
+//   ④ 过渡标记: "好了，那么现在就像这样对鸿艺先生说吧。"  ← 真正答案从这里开始（几乎每条必现）
+//   ⑤ 计划句(标记后偶有残留): "我会先承认这个习惯确实奇怪，…语气要自然一点…"
+
+/** 答案起点过渡标记 — V4-flash 思维链结尾转场锚点（取其后为真正答案）。
+ * S4-M1 + 生产实测增强: V4-flash 句式漂移多变，枚举精确句式追不上。用非贪婪 + 语义锚点集合
+ * （回应/回答/对/和/说）覆盖全部变体，且非贪婪停在第一个锚不误吃答案：
+ *   "好了，那么现在就像这样对鸿艺先生说吧。" / "好了，那么现在就这样开始和鸿艺先生对话吧。"
+ *   / "好了，我现在就要这样对他说——" / "好了，现在就像这样开始回应他吧。"（实测漂移）
+ * 结尾吃可选语气词/破折号防残留 */
+const ANSWER_MARK_RE = /(?:好了|好)，[^。]{0,18}?(?:回应|回答|对|和|说)[^。]{0,12}?(?:吧|了|——)[。]?/;
+function findAnswerMark(text: string): { index: number; length: number } | null {
+  const m = text.match(ANSWER_MARK_RE);
+  if (m && typeof m.index === 'number') return { index: m.index, length: m[0].length };
+  return null;
+}
+
+/**
+ * S4-生产实测: V4-flash 过渡标记句式漂移枚举不完（说吧/对话吧/叫醒吧/回应他吧…）。
+ * 结构识别答案起点更鲁棒——答案几乎总以三类之一开头：
+ *   ① 动作描写 "（…）" / "(…)"
+ *   ② 称呼 + 第二人称 + 对话动作（疑问/祈使）: "鸿艺先生，你怎么了？"
+ *   ③ 自称 + 具体场景: "梓铭刚洗完澡，正窝在宿舍…"
+ * 思维链（我得/我要/作为/最重要的是…）不含以上形态。逐句判断，返回第一个答案句的文本位置。
+ */
+function isAnswerSentence(s: string): boolean {
+  if (/^[（(]/.test(s)) return true;
+  // 称呼 + 第二人称 + 对话动作（"鸿艺先生，你怎么了？"）。
+  //   S4-生产实测: 词表去"来"——"鸿艺先生又发来乱码了"的"来"是补语，误判思维链为答案
+  if (/(?:鸿艺先生|鸿艺|梓铭|玉瑶)[^。]{0,25}(?:你|您)/.test(s) && /[？?！!]|怎么|别|看|听|摸摸|叫|散会/.test(s)) return true;
+  if (/(?:梓铭|玉瑶)刚/.test(s)) return true;
+  // S4-生产实测: 自称+语气词结尾的答案（"玉瑶当然是玉瑶呀"）。
+  //   注意: 不能只靠"？/！"结尾判定（思维链"那时候我做了什么？"也以？结尾），必须自称+语气词
+  if (/(?:玉瑶|梓铭).{0,20}[呀嘛呢吧啊诶]/.test(s) && !/^(?:我得|我要|我需要|我先|我想|我记得|我可以|我决定|作为|最重要的是|那时候|然后|对，|现在)/.test(s)) return true;
+  return false;
+}
+function findAnswerStart(text: string): number | null {
+  const sentences = text.split(/(?<=[。！？…\n])/);
+  let pos = 0;
+  for (const s of sentences) {
+    if (!s.trim()) { pos += s.length; continue; }
+    if (isAnswerSentence(s.trim())) return pos;
+    pos += s.length;
+  }
+  return null;
+}
+
+/**
+ * 计划句剥离 — 过渡标记后残留的"面向回答的抽象自我指令"。
+ * S4-C2 修正: "我会先/我得/我需要/我要用"可能被真实答案首句使用（"我要用一辈子来爱你"），
+ *   不能直接剥。组合判定: 仅当 "我会先…" 句后紧接 "语气要/回答要" 等其他计划句时才剥（用户实测
+ *   "我会先承认…。语气要自然一点…" 组合）；纯答案句（后无计划句）保留。
+ */
+function stripPlanningPrefix(text: string): string {
+  let t = text;
+  for (let i = 0; i < 5; i++) {
+    // ① 明确指令计划句（语气要/回答要/声音要… — 描述"如何回应"的自我指令，几乎必是计划句，非答案本体）
+    const m = t.match(/^(?:语气要|回答要|声音要|态度要|眼神要|表情要)[^。]{2,}。?/);
+    if (m) { t = t.slice(m[0].length).trimStart(); continue; }
+    // ② "我会先/我得/我需要/我要用/我要保持"开头 + 后续还有计划句 → 整段计划
+    if (/^(?:我会先|我得|我需要|我要用|我要保持|然后我要|接着我要)/.test(t)) {
+      const firstSentence = t.match(/^[^。]+。?/);
+      const rest = firstSentence ? t.slice(firstSentence[0].length).trimStart() : '';
+      if (rest && /^(?:语气要|回答要)/.test(rest)) { t = rest; continue; }
+    }
+    break;
+  }
+  return t;
+}
+
+/**
+ * P1-6: 从 reasoning_content 提取真正答案（结构提取，替代关键词逐句）。
+ * ① 找过渡标记取其后（最可靠锚点）→ ② 剥计划句 → ③ 无标记降级 stripThinkingPrefix → ④ 保底原文。
+ * 非流式最终 reply 的唯一出口；流式状态机共用 findAnswerMark。
+ */
+/** 角色建立段（无过渡标记时的降级防御）: "好的，现在我是{角色}了，我是{描述}…" */
+const ROLE_SETUP_RE = /^好的，现在我是[^。]{1,20}了(?:，[^。]{1,80})?。?/;
+function stripRoleEstablishment(text: string): string {
+  const m = text.match(ROLE_SETUP_RE);
+  if (m) return cleanTail(text.slice(m[0].length));
+  return text;
+}
+
+/** 清理 tail 前导空白/孤立标点（切答案起点后可能残留 "。(" 之类） */
+function cleanTail(s: string): string {
+  return s.replace(/^[\s。！？…,.，、]+/, '');
+}
+
+export function extractAnswerFromReasoning(text: string): string {
+  if (!text) return '';
+  // ① 过渡标记（最精确，命中即切其后）
+  const m = findAnswerMark(text);
+  if (m) {
+    const tail = cleanTail(text.slice(m.index + m.length));
+    const clean = stripPlanningPrefix(tail);
+    // S4-C2: 剥空 → 返回未剥离 tail（防落降级路径泄漏过渡标记）；tail 也空 → 落降级防 Empty
+    if (clean) return clean;
+    if (tail) return tail;
+  }
+  // ② 结构识别答案起点（S4-生产实测: 过渡标记句式漂移枚举不完，动作描写/直接对话更鲁棒）
+  const as = findAnswerStart(text);
+  if (as !== null) {
+    const tail = cleanTail(text.slice(as));
+    const clean = stripPlanningPrefix(tail);
+    if (clean) return clean;
+    if (tail) return tail;
+  }
+  // 降级（无过渡标记/无答案起点）: 剥角色建立段 → 再找答案起点。
+  // S4-生产实测修正: 角色建立段("好的，现在我是XX了")后还有大量思维链(角色描述/复述/计划)，
+  //   剥第一句就返回会泄漏后续思维链——必须继续 findAnswerStart，找不到则返回原文（让外层缓冲等答案起点）。
+  let t = stripRoleEstablishment(text);
+  if (t !== text) {
+    const as2 = findAnswerStart(t);
+    if (as2 !== null) {
+      const tail = cleanTail(t.slice(as2));
+      const clean = stripPlanningPrefix(tail);
+      if (clean) return clean;
+      if (tail) return tail;
+    }
+    // 剥了角色建立段但后面仍无答案起点 → 返回原文（不剥），防思维链当答案
+    return text;
+  }
+  return stripThinkingPrefix(text);
+}
+
 /**
  * P1-5: 流式思维链剥离状态机 — 增量剥离 thinking，只把答案增量交给 onToken。
- * v4-flash 流式可能只有 reasoning_content（content 空）：缓冲 reasoning，首段边界命中
- * THINKING_KEYWORDS 即剥离丢弃；content 非空立即切答案区直推。
- * 保守原则：拿不准是否思维链 → 不推（宁缺毋滥；最终 done 帧 reply 覆盖气泡）。
+ * S3 诊断修正: 关键词逐句剥离对 V4-flash 结构模板（角色建立→复述→过渡标记）失效，
+ *   只认过渡标记切答案区；思维链特征开头(角色建立段)缓冲不推；无标记时降级关键词逻辑。
+ * content 非空立即切答案区直推。保守原则：拿不准 → 不推（done 帧 reply 覆盖气泡）。
  */
 class StreamThinkingStripper {
   private buf = '';
@@ -95,34 +225,49 @@ class StreamThinkingStripper {
   reset(): void { this.buf = ''; this.crossed = false; }
   /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
   push(content: string | undefined, reasoning: string | undefined): string {
-    // 答案区优先：content 非空立即直推
-    if (content && content.length > 0) {
+    const c = content || '';
+    const r = reasoning || '';
+    if (!c && !r) return '';
+    // 已进入答案区 → content 优先（答案在 content），reasoning 兜底
+    if (this.crossed) return c || r;
+    // 合并进 buf（S4-生产实测: 思维链可能出现在 reasoning 或 content 字段，统一累积后结构识别）
+    this.buf += r + c;
+    // ① 过渡标记 → 切答案区，推标记后（剥计划句）
+    const m = findAnswerMark(this.buf);
+    if (m) {
+      this.crossed = true;
+      const tail = stripPlanningPrefix(cleanTail(this.buf.slice(m.index + m.length)));
+      this.buf = '';
+      return tail;
+    }
+    // ② 结构识别答案起点（S4-生产实测: 动作描写/直接对话，比过渡标记更鲁棒）
+    const as = findAnswerStart(this.buf);
+    if (as !== null) {
+      this.crossed = true;
+      const tail = stripPlanningPrefix(cleanTail(this.buf.slice(as)));
+      this.buf = '';
+      return tail;
+    }
+    // ③ 角色建立段开头（"好的，现在我是…"）→ 缓冲等标记。
+    //    S4-C1: 加 200 字上限防"无标记流式吞整条"——超长仍未标记则落④降级
+    if (/^好的，现在/.test(this.buf) && this.buf.length < 200) return '';
+    // ④ 无标记/无答案起点：非流式提取兜底（剥角色建立/关键词/计划句 — S4-M2 与主路径对齐）
+    const extracted = extractAnswerFromReasoning(this.buf);
+    if (extracted && extracted !== this.buf && extracted.trim().length > 0) {
       this.crossed = true;
       this.buf = '';
-      return content;
+      return extracted;
     }
-    const rz = reasoning || '';
-    if (!rz) return '';
-    // 已进入答案区 → reasoning 增量当答案直推
-    if (this.crossed) return rz;
-    // 未进入答案区：累积缓冲，尝试剥离首段
-    this.buf += rz;
-    const stripped = stripThinkingPrefix(this.buf);
-    if (stripped !== this.buf && stripped.trim().length > 0) {
-      // 首段被判为思维链 → 已剥离，跨入答案区，推剩余
-      this.crossed = true;
-      const out = stripped;
-      this.buf = '';
-      return out;
-    }
-    // 首段无思维词且已有句读 + 足够长 → 视为答案开头，推
-    if (stripped === this.buf && this.buf.length >= 6 && /[。！？…\n]/.test(this.buf)) {
-      this.crossed = true;
-      const out = this.buf;
-      this.buf = '';
-      return out;
-    }
-    return ''; // 仍在思维链区（或首段未判），不推
+    // ⑤ 提取=原文（无思维链可剥）→ 不推，等答案起点/标记/flush（宁可用"思考中"换干净输出，done 帧覆盖气泡）
+    return '';
+  }
+  /** 流结束兜底：残留 buf 用非流式提取（S4-C1/m4 防无标记/短答案吞字） */
+  flush(): string {
+    if (this.crossed || !this.buf) return '';
+    const extracted = extractAnswerFromReasoning(this.buf);
+    this.crossed = true;
+    this.buf = '';
+    return extracted;
   }
 }
 
@@ -248,8 +393,9 @@ export class DeepSeekLLMProvider implements LLMProvider {
           text = msg.reasoning_content.trim();
         }
         if (!text) throw new Error('Empty response from DeepSeek');
-        // 后处理：剥离思维链前缀（纯函数，流式状态机共用 — P1-5）
-        text = stripThinkingPrefix(text);
+        // 🔴 P1-6: 从 reasoning_content 结构提取真正答案（过渡标记 + 计划句 + 降级）
+        //   S3 实测诊断: 关键词逐句剥离对 V4-flash 模板失效，整个思考过程被当答案返回
+        text = extractAnswerFromReasoning(text);
 
         return {
           text,
@@ -375,7 +521,10 @@ export class DeepSeekLLMProvider implements LLMProvider {
             }
             if (!delta) continue;
             const content = typeof delta.content === 'string' ? delta.content : '';
-            const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+            // S4-生产实测: 真实 v4-flash 流式思维链在 delta.reasoning 字段（非 reasoning_content）！
+            //   content 承载答案（从答案起点"（"开始非空），reasoning 承载思维链（逐 token）。
+            const reasoning = typeof delta.reasoning === 'string' ? delta.reasoning
+              : (typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '');
             if (!content && !reasoning) continue;
             const push = stripper.push(content, reasoning);
             if (push) {
@@ -404,6 +553,9 @@ export class DeepSeekLLMProvider implements LLMProvider {
           } catch { /* 忽略 */ }
         }
       }
+      // S4-C1/m4: 流结束 flush 残留思维链缓冲（防无标记/短答案整条被吞）
+      const flushed = stripper.flush();
+      if (flushed) { sawToken = true; text += flushed; onToken({ text: flushed }); }
       return { text, usage, sawToken };
     } catch (err: any) {
       if (err?.name === 'AbortError') {
