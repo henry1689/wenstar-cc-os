@@ -110,6 +110,69 @@ export function buildLongTextFragment(content: string, level: DetailLevel): stri
 }
 
 /**
+ * 🔴 S2-R6: 检测消息中的"还原度百分比"意图。
+ * 用户要求还原对话/档案到指定比例（如"30%还原""还原六成""只要一半""100%完整"）。
+ * 返回还原度百分比 0-100；未识别返回 null。
+ * 识别: 数字+%(30%/100%)、成数(六成/三成/十成)、一半/半数、全部/完整(100%)、一点点/大概(低还原)。
+ */
+export function detectDetailPercent(message: string): number | null {
+  const msg = (message || '').trim();
+  if (msg.length < 2) return null;
+
+  // 数字 + %（如 30%、60%、100%）
+  const pctMatch = msg.match(/(\d{1,3})\s*%/);
+  if (pctMatch) {
+    return Math.max(0, Math.min(100, parseInt(pctMatch[1], 10)));
+  }
+  // 成数（六成/三成/十成/八成）
+  const cheng = msg.match(/([一二三四五六七八九十]+)成/);
+  if (cheng) {
+    const cn: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    const s = cheng[1];
+    let n = cn[s] ?? 0;
+    if (s.length === 2) n = (cn[s[0]] ?? 0) * 10 + (cn[s[1]] ?? 0);
+    return Math.max(0, Math.min(100, n * 10));
+  }
+  // 一半/半数/半个/五成 → 50%
+  if (/一半|半数|半个|五成/.test(msg)) return 50;
+  // 全部/完整/从头到尾/一字不漏/全文/整篇 → 100%
+  if (/全部|完整|从头到尾|一字不漏|全文|整篇/.test(msg)) return 100;
+  // 一点点/大概/粗略/梗概/概述/简要 → 30%
+  if (/一点点|大概|粗略|梗概|概述|简要/.test(msg)) return 30;
+  return null;
+}
+
+/**
+ * 🔴 S2-R6: 按还原度百分比截取长文本。
+ * 均匀采样：从头到尾按比例取，保证头/中/尾覆盖，而非只取开头。
+ * 🔴 个人世界隐私法: 内容为个人世界真实记录(共同过去)，不因现实伦常过滤内容——
+ * 只按百分比截取，保留原文真实性。
+ * @param text   全文
+ * @param percent 还原度 0-100
+ * @returns 截取后的文本（含【已按XX%还原】标记）
+ */
+export function sliceByPercent(text: string, percent: number): string {
+  const t = (text || '').trim();
+  if (!t) return '';
+  const p = Math.max(0, Math.min(100, percent));
+  if (p >= 100) return t;
+  if (p <= 0) return '';
+
+  const total = t.length;
+  const target = Math.floor(total * p / 100);
+  // 均匀取点覆盖全文（头/中/尾），避免只取开头丢结尾
+  const pieces: string[] = [];
+  const segCount = Math.max(1, Math.ceil(p / 30));  // 每30%至少1段，保证头中尾
+  const segLen = Math.max(1, Math.floor(target / segCount));
+  for (let i = 0; i < segCount; i++) {
+    const start = Math.floor(i * total / segCount);
+    const piece = t.substring(start, Math.min(total, start + segLen));
+    if (piece) pieces.push((i > 0 ? '\n…（接上）\n' : '') + piece);
+  }
+  return pieces.join('') + `\n（已按 ${p}% 还原度截取，原文共 ${total} 字，内容为个人世界真实记录）`;
+}
+
+/**
  * 🔴 S2-R5: 构造知识库档案注入片段（按级别：full=原文直引 / detail=分段全文 / auto|summary=摘要）。
  * 复用内部 _chunkFull/_summaryOf。MemoryInjector 按前缀【知识库档案】路由独立预算。
  */

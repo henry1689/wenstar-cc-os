@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  detectDetailLevel, buildLongTextFragment, buildKnowledgeArchiveFragment, fetchLongText, LONG_TEXT_THRESHOLD,
+  detectDetailLevel, detectDetailPercent, sliceByPercent, buildLongTextFragment, buildKnowledgeArchiveFragment, fetchLongText, LONG_TEXT_THRESHOLD,
 } from '../long-text-retrieval.js';
 
 describe('detectDetailLevel — 意图检测', () => {
@@ -162,5 +162,56 @@ describe('fetchLongText — 直取全文', () => {
     const fake = { queryAll: (sql: string) => { calledSql = sql; return [{ content: '长文'.repeat(500), belong_entity_uuid: null }]; } };
     expect(fetchLongText(fake, 123)).not.toBeNull();
     expect(calledSql).not.toContain('belong_entity_uuid IN');
+  });
+});
+
+describe('detectDetailPercent — 还原度百分比检测（S2-R6）', () => {
+  it('数字+% → 对应百分比', () => {
+    expect(detectDetailPercent('30%还原这段记忆')).toBe(30);
+    expect(detectDetailPercent('按60%详细写')).toBe(60);
+    expect(detectDetailPercent('100%完整还原')).toBe(100);
+  });
+
+  it('成数 → 对应百分比', () => {
+    expect(detectDetailPercent('还原六成')).toBe(60);
+    expect(detectDetailPercent('三成就行')).toBe(30);
+    expect(detectDetailPercent('十成完整')).toBe(100);
+  });
+
+  it('一半/全部/一点点 → 50/100/30', () => {
+    expect(detectDetailPercent('只要一半')).toBe(50);
+    expect(detectDetailPercent('全部内容')).toBe(100);
+    expect(detectDetailPercent('大概讲讲')).toBe(30);
+  });
+
+  it('无百分比意图 → null', () => {
+    expect(detectDetailPercent('今天天气不错')).toBeNull();
+    expect(detectDetailPercent('')).toBeNull();
+  });
+});
+
+describe('sliceByPercent — 按还原度截取（S2-R6）', () => {
+  const text = '第一段内容。'.repeat(50) + '第二段内容。'.repeat(50) + '第三段内容。'.repeat(50);  // ~600字
+
+  it('100% → 返回全文', () => {
+    expect(sliceByPercent(text, 100)).toBe(text);
+  });
+
+  it('0% → 空', () => {
+    expect(sliceByPercent(text, 0)).toBe('');
+  });
+
+  it('50% → 均匀截取含头中尾，非仅开头', () => {
+    const sliced = sliceByPercent(text, 50);
+    expect(sliced.length).toBeLessThan(text.length);
+    expect(sliced.length).toBeGreaterThan(text.length * 0.3);
+    expect(sliced).toContain('已按 50% 还原度');
+    expect(sliced).toContain('第三段');  // 尾部内容被覆盖
+  });
+
+  it('30% → 更短，但保留结构标记', () => {
+    const sliced = sliceByPercent(text, 30);
+    expect(sliced.length).toBeLessThan(text.length * 0.5);
+    expect(sliced).toContain('已按 30% 还原度');
   });
 });
