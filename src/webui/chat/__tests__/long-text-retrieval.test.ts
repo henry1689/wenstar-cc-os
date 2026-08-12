@@ -43,6 +43,14 @@ describe('detectDetailLevel — 意图检测', () => {
     expect(detectDetailLevel('你再仔细说说')).toBe('detail');
   });
 
+  it('🔴 S2-S1: 自我介绍/你是谁 → full（杜绝自我介绍编造细节）', () => {
+    expect(detectDetailLevel('你介绍一下你自己')).toBe('full');
+    expect(detectDetailLevel('你是谁')).toBe('full');
+    expect(detectDetailLevel('说说你自己')).toBe('full');
+    expect(detectDetailLevel('自我介绍')).toBe('full');
+    expect(detectDetailLevel('你叫什么')).toBe('full');
+  });
+
   it('普通问题 → auto', () => {
     expect(detectDetailLevel('那篇小说')).toBe('auto');
     expect(detectDetailLevel('今天怎么样')).toBe('auto');
@@ -231,6 +239,12 @@ describe('inferDetailPercent — 语义推断还原度（S2-R7）', () => {
     expect(inferDetailPercent('再详细点')).toBe(100);
     expect(inferDetailPercent('一字不漏念一遍')).toBe(100);
     expect(inferDetailPercent('从头到尾')).toBe(100);
+  });
+
+  it('🔴 S2-S1: 自我介绍/你是谁 → 推断 100%（完整档案）', () => {
+    expect(inferDetailPercent('你介绍一下你自己')).toBe(100);
+    expect(inferDetailPercent('你是谁')).toBe(100);
+    expect(inferDetailPercent('说说你自己')).toBe(100);
   });
 
   it('无意图 → null', () => {

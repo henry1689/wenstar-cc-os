@@ -36,6 +36,8 @@ export function detectDetailLevel(message: string): DetailLevel {
   const msg = (message || '').trim();
   if (msg.length < 2) return 'auto';
 
+  // 🔴 S2-S1: 自我介绍/你是谁 → full（100% 完整档案 + 铁律，杜绝自我介绍时编造细节填充）
+  if (/介绍一下|你是谁|自我介绍|你叫什么|说说你自己|讲讲自己|介绍自己|我是个什么样/.test(msg)) return 'full';
   // 🔴 最高还原（100%）：明确要极细/完整
   if (/越细越好|一字不漏|全部|从头到尾|逐字|原原本本|一字不差|念一遍|背一遍|复述|通篇|整篇|原文|再详细|再具体|说全|每个细节|完整/.test(msg)) return 'full';
   // 高还原（60%）：仔细/详细/展开
