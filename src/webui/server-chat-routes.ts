@@ -116,22 +116,29 @@ export function segmentForTTS(text: string, targetSentences = TTS_SEGMENT_TARGET
  * 并发限流 3（edge-tts 负载保护）；某段失败跳过不阻塞整体。
  * S4 P2-6 修复：文件名用 randomUUID 彻底杜绝同毫秒碰撞。
  */
-export async function generateTTSAudio(segments: string[], dataDir: string): Promise<string[]> {
+export async function generateTTSAudio(segments: string[], dataDir: string, onSegment?: (url: string, idx: number) => void): Promise<string[]> {
   const _env = { ...process.env, NO_PROXY: '*', no_proxy: '*', HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' };
-  const genOne = async (txt: string): Promise<string | null> => {
+  const genOne = async (txt: string, idx: number): Promise<string | null> => {
     if (!txt.trim()) return null; // 空段不生成（S4 P2-4）
     const _fn = 'tts_' + Date.now().toString(36) + '_' + randomUUID().slice(0, 8) + '.mp3';
     const _fp = path.join(dataDir, 'audio', _fn);
     try {
       await execFileAsync('edge-tts', ['--text', txt, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
-      return fs.existsSync(_fp) ? '/audio/' + _fn : null;
+      if (fs.existsSync(_fp)) {
+        const url = '/audio/' + _fn;
+        // 🔴 S2-F2: 每段生成完立即回调（边生成边播，不等全量）— 消除长文"文字写完干等几秒"。
+        // idx 保持分段顺序，前端按序播放（缺段等待）。
+        try { onSegment?.(url, idx); } catch (_oc) { /* 回调失败不阻塞 */ }
+        return url;
+      }
+      return null;
     } catch (_e) { console.warn('[TTS] 段生成失败:', (_e as Error)?.message || _e); return null; }
   };
   const CHUNK = 3;
   const files: (string | null)[] = new Array(segments.length);
   for (let i = 0; i < segments.length; i += CHUNK) {
     const batch = segments.slice(i, i + CHUNK);
-    const batchFiles = await Promise.all(batch.map(s => genOne(s)));
+    const batchFiles = await Promise.all(batch.map((s, j) => genOne(s, i + j)));
     batchFiles.forEach((f, j) => { files[i + j] = f; });
   }
   return files.filter((f): f is string => !!f);
@@ -199,6 +206,7 @@ async function buildTTSResult(
   reply: string,
   ttsEnabled: boolean,
   dataDir: string,
+  pushFn?: (event: string, data: any) => void,  // 🔴 S2-F2: 增量段 SSE 推送（仅流式路径传）
 ): Promise<{ audio_url: string | null; audio_urls: string[]; tts_job: string | null }> {
   let audio_url: string | null = null;
   let audio_urls: string[] = [];
@@ -213,7 +221,16 @@ async function buildTTSResult(
     } else {
       tts_job = 'ttsjob_' + randomUUID();
       TTS_JOBS.set(tts_job, { urls: [], done: false, createdAt: Date.now() });
-      void generateTTSAudio(segments, dataDir).then(urls => {
+      // 🔴 S2-F2: onSegment 回调 — 每段生成完立即追加到 job.urls + 推 SSE `chat-tts`，
+      // 前端增量按序播放，不等全量段（消除长文语音"干等几秒"）。
+      void generateTTSAudio(segments, dataDir, (url, idx) => {
+        const job = TTS_JOBS.get(tts_job!);
+        if (!job) return;
+        // 保序追加：job.urls 按 idx 填充，缺位用 null 占位（前端轮询按序等待）
+        while (job.urls.length <= idx) job.urls.push(null as any);
+        job.urls[idx] = url;
+        try { pushFn?.('chat-tts', { job_id: tts_job, index: idx, url }); } catch (_se) { /* SSE 失败不阻塞 */ }
+      }).then(urls => {
         const job = TTS_JOBS.get(tts_job!);
         if (job) { job.urls = urls; job.done = true; }
       }).catch(e => {
@@ -282,7 +299,8 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
           job.result = result;
           job.reply = result.reply || '';
           // TTS 与同步路径共用（buildTTSResult），后台生成不阻塞
-          job.audio = await buildTTSResult(job.reply, body.tts !== false, DATA_DIR);
+          // 🔴 S2-F2: 流式路径传 pushFn（增量段 SSE 推送），同步路径不传（无 SSE）
+          job.audio = await buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null));
           job.status = 'done';
           deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: job.audio.audio_url, audio_urls: job.audio.audio_urls, tts_job: job.audio.tts_job });
           console.log('[ChatStream] done: ' + jobId + ' tokens=' + job.tokens.length + ' len=' + job.reply.length);

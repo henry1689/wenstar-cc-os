@@ -454,8 +454,34 @@ function playAudioQueue(urls){
 // ── TTS 异步 job 轮询（S4 P1-2） ──
 // 长文回复文字先渲染、音频后台生成，此函数轮询 /api/tts/status 直到全量段就绪后播。
 // 复审 P1-1 修复：捕获启动代际，done 后校验代际仍最新才播（过期 job 不抢占当前播放）。
+// 🔴 S2-F2: TTS 增量播放队列 — 边生成边播（每段就绪即播，缺段等待，不重启队列）。
+// 与 playAudioQueue 的差异: playAudioQueue 假定 urls 全量就绪(一段接一段播完)；
+// 此队列按 index 有序消费，index 0 未就绪则等待，就绪后立即播，后续段生成完逐个续播。
+// 消除长文语音"文字写完干等全量段生成"的滞后。
+let _ttsIncr={gen:0,urls:[],cur:0,playing:false};
+function _incrTTSInit(gen){ _ttsIncr={gen,urls:[],cur:0,playing:false}; }
+function _incrTTSAdd(gen,idx,url){
+  if(gen!==_ttsIncr.gen)return;                    // 过期代际丢弃
+  _ttsIncr.urls[idx]=url;
+  _incrTTSTryPlay();
+}
+function _incrTTSTryPlay(){
+  const Q=_ttsIncr;
+  if(Q.playing||Q.gen!==_audioGen)return;          // 播放中或已过期
+  const url=Q.urls[Q.cur];
+  if(!url)return;                                   // 当前段未就绪 → 等待
+  Q.playing=true;
+  const ap=new Audio(url);ap.volume=0.8;
+  const fin=()=>{ if(Q.gen!==_audioGen)return; Q.playing=false; Q.cur++; _incrTTSTryPlay(); };
+  ap.onended=fin; ap.onerror=fin;
+  ap.play().catch(e=>{console.warn('[Audio] 增量播失败:',e);fin();});
+}
+// 全量段就绪但队列未消费完 → 兜底续播（防止 SSE 漏事件）
+function _incrTTSFill(gen,urls){ if(gen!==_ttsIncr.gen)return; for(let i=0;i<urls.length;i++) if(!_ttsIncr.urls[i]) _ttsIncr.urls[i]=urls[i]; _incrTTSTryPlay(); }
+
 function pollTTSJob(jobId){
   const gen=_audioGen;       // 捕获本次发送的代际
+  _incrTTSInit(gen);         // 🔴 S2-F2: 初始化增量队列（边生成边播）
   let tries=0;
   const timer=setInterval(async()=>{
     tries++;
@@ -464,12 +490,15 @@ function pollTTSJob(jobId){
     try{
       const r=await fetch('/api/tts/status?job='+encodeURIComponent(jobId));
       const d=await r.json();
+      // 🔴 S2-F2: 增量填充 — 服务端返回的已生成 urls 填充队列（保序），就绪段立即播，不全等 done。
+      if(d.audio_urls&&d.audio_urls.length){_incrTTSFill(gen,d.audio_urls);}
       if(d.done){
         clearInterval(timer);
-        if(gen===_audioGen&&d.audio_urls&&d.audio_urls.length)playAudioQueue(d.audio_urls);
+        // done 时全量已就绪 → 兜底续播（防 SSE 漏事件导致队列卡住）
+        if(gen===_audioGen&&d.audio_urls&&d.audio_urls.length)_incrTTSFill(gen,d.audio_urls);
       }
     }catch(e){clearInterval(timer);console.warn('[Audio] TTS job 轮询失败:',e);}
-  },500);
+  },300);
 }
 
 // ── Send ──
@@ -581,6 +610,14 @@ async function sendStream(t){
         es.close();if(_streamES===es)_streamES=null;
         if(gen!==_audioGen)return;
         try{const dd=JSON.parse(ev.data);if(dd.job_id===jobId)finalizeStream(dd);}catch(e){}
+      });
+      // 🔴 S2-F2: 增量 TTS 段推送 — 每段生成完立即追加到增量队列并播放（不等全量）
+      es.addEventListener('chat-tts',(ev)=>{
+        if(gen!==_audioGen)return;
+        try{
+          const dd=JSON.parse(ev.data);
+          if(dd.job_id===jobId&&dd.url!==undefined)_incrTTSAdd(gen,dd.index,dd.url);
+        }catch(e){}
       });
       es.addEventListener('chat-error',(ev)=>{
         es.close();if(_streamES===es)_streamES=null;
