@@ -274,6 +274,16 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
           const firstContent = stripFrontmatter(knResults[0].content || '').substring(0, 2000);
           knowledgeBaseText = '【本地回复】' + firstTitle + '：\n' + firstContent
             + (knowledgeBaseText ? '\n\n' + knowledgeBaseText : '');
+        } else if (_kbf && (input.detailLevel === 'detail' || input.detailLevel === 'full')) {
+          // S2-R5 通用化: 非会晤模式用户问详细/一字不漏 → 分级全文注入
+          const _sl2 = input.detailLevel === 'full' ? 1 : _topHits.length;
+          for (const k of _topHits.slice(0, _sl2)) {
+            const _frag = buildKnowledgeArchiveFragment(k.title, stripFrontmatter(k.content || ''), input.detailLevel);
+            if (_frag.length > 4 && !memoryFragments.some((f: string) => f.includes(_frag.substring(0, 30)))) {
+              memoryFragments.push(_frag);
+              console.log('[KB.' + input.detailLevel + '] 通用档案全文注入');
+            }
+          }
         } else if (_kbf) {
           knowledgeBaseText = '【你的知识库·第二大脑】以下是你的知识——你已经学过这些内容。用你自己的理解来回答，不要照搬原文。像老师讲课一样，把复杂的说简单，把零散的串起来。如果你不确定某一点是否准确，就说"我印象中是这样的…"。\n\n' + kbContent + '\n\n（你不是在"查阅资料"——这些知识已经内化为你的认知。用第一人称表达，不要提"知识库""根据资料"等词。你把学到的内容消化后，用自己的话告诉鸿艺。）'
             + (knowledgeBaseText ? '\n\n' + knowledgeBaseText : '');
@@ -615,3 +625,4 @@ export function appendClueRecall(knowledgeBaseText: string, hits: string[]): str
     ? knowledgeBaseText + '\n\n' + _clueMemo
     : _clueMemo;
 }
+
