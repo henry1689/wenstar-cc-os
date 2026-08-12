@@ -1915,11 +1915,13 @@ try {
     assembler.add({ id: 'feeling_guard', type: 'task', priority: 650, source: 'chat.ts', modeScope: ['normal'], content: feelingGuard, conflictPolicy: 'override' });
   }
   // 🟡 identity: 主人大脑镜像（P0-6: 迁移）
+  // 🔴 S2-P1: 会晤模式不注入"关于你"——主人的"关于你"(master_profile)是玉瑶专属视角，
+  // 混入会晤实体会污染实体档案(实测: 熊梓铭会晤注入"徐诗雨是我姐姐"等玉瑶记忆)。
   try {
-    if (ctx.masterProfile) {
+    if (ctx.masterProfile && !_meetingEntityName) {
       const _aboutYou = ctx.masterProfile.retrieveAboutYou(5);
       if (_aboutYou) {
-        assembler.add(identityBlock('master_profile', _aboutYou, ['normal', 'secretary', 'entity_meeting']));
+        assembler.add(identityBlock('master_profile', _aboutYou, ['normal', 'secretary']));
       }
     }
   } catch { /* masterProfile不阻塞 */ }
