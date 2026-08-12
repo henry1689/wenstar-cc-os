@@ -113,12 +113,27 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           "SELECT id, raw_input, calcium_score, effective_strength FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 12",
           [_entityUuid]
         ) || [];
-        for (const _em of (_entityMems || []).slice(0, 5)) {
+        // 🔴 S2-J1b: 过滤编造特征记忆 — LLM 单方面输出的"过去经历"类内容(海边/比基尼/营销总监/来月经等)
+        // 被当真实记忆检索注入 → 巩固谎言。命中特征词的记忆不注入。
+        const FABRICATION_PATTERNS = /海边|比基尼|营销总监|全职太太|来月经|身体开始变|刻骨铭心|从零到一|泳衣|穿拖鞋/;
+        let _fabFiltered = 0;
+        const _cleanMems = (_entityMems || []).filter((_em: any) => {
+          const _body = String(_em.raw_input || '');
+          if (FABRICATION_PATTERNS.test(_body)) { _fabFiltered++; return false; }
+          return true;
+        });
+        if (_fabFiltered > 0) console.log('[EntityMem] 编造特征记忆过滤: ' + _fabFiltered + ' 条');
+        for (const _em of _cleanMems.slice(0, 5)) {
           // 🔴 P0-3 修复: 会晤记忆截断 100 → 250（避免关键记忆细节丢失导致 LLM 编造）
           const _t = (_em.raw_input || '').substring(0, 250);
           if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);
         }
-        if (_entityMems.length > 0) console.log('[EntityMem] 会晤实体自有记忆: ' + _entityMems.length + ' 条');
+        if (_entityMems.length > 0) console.log('[EntityMem] 会晤实体自有记忆: ' + _cleanMems.length + ' 条(原' + _entityMems.length + ')');
+        // 🔴 S2-J1b: 记忆不足时注入反编造强化 — 用户问"过去/经历/几岁"但无真实记忆时，
+        // 明确告知 LLM: 无记录的经历 = 不存在，不得编造。宁说"记不清/档案没写"。
+        if (_cleanMems.length < 3) {
+          memoryFragments.push('【反编造铁律】如果你的档案和以上记忆中都没有用户问到的某个具体经历（如"几岁做了什么""某年某件事"），说明那件事没有记录。**绝不能编造**——诚实地说"这个我没印象了，档案里没写"或"我不记得有这样的事"。编造是系统级错误。');
+        }
         const _goldRows = _sqlite.queryAll(
           "SELECT detail, content_md FROM vault_log WHERE belong_entity_uuid = ? ORDER BY created_at DESC LIMIT 5",
           [_entityUuid]
