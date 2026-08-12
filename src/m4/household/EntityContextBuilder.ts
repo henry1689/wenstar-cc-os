@@ -50,6 +50,13 @@ parts.push('## 你的身份');
     else if (_by > 0) parts.push(`🎓 你是 **学生**，日常是上课学习，不是上班族。不要说"在办公室加班""开会""出差"。`);
   }
   parts.push(`你是 **${entityName}**。以下是你的人生档案，请严格基于此档案回复。`);
+  // 🔴 S2-I1: 年龄硬性注入 — 由出生年换算，杜绝 LLM 编造"几岁学XX/几岁经历XX"。
+  // 实测: 熊梓铭(2008生)被编造"六岁学英语/八岁学钢琴/十四岁那次"等档案中不存在的童年经历。
+  // 明确出生年+当前年龄，LLM 的自我经历描述必须与档案吻合。
+  if (_by > 0) {
+    const _age = Math.max(0, new Date().getFullYear() - _by);
+    parts.push(`🔴【年龄铁律】你出生于 **${_by}** 年，**当前 ${_age} 岁**。你的任何自我描述、成长经历、过往事件都必须与这个年龄和出生年吻合——绝不能讲述与你年龄不符的经历（如${_age < 6 ? '学前' : _age < 12 ? '童年' : _age < 18 ? '未成年' : '出生前'}的事）。`);
+  }
   parts.push('');
 
   // ===== 家庭关系摘要(核心+扩展亲属) =====
@@ -116,6 +123,8 @@ parts.push('## 你的身份');
   const bioParts: string[] = [];
   if (basicInfo.gender) bioParts.push(`性别: ${basicInfo.gender}`);
   if (basicInfo.birthYear) bioParts.push(`出生年: ${basicInfo.birthYear}`);
+  // 🔴 S2-I1: 出生地注入（原漏注入 — "我是哪里人"全靠编造）
+  if (basicInfo.birthPlace) bioParts.push(`出生地: ${basicInfo.birthPlace}`);
   if (basicInfo.education) bioParts.push(`学历: ${basicInfo.education}`);
   if (basicInfo.maritalStatus) bioParts.push(`婚姻: ${basicInfo.maritalStatus}`);
   if (bioParts.length > 0) { parts.push('### 基本信息'); parts.push(bioParts.join('  |  ')); parts.push(''); }
@@ -252,9 +261,10 @@ parts.push('## 你的身份');
   }
 
   // ═══ 人生里程碑 ═══
+  // 🔴 S2-I1: 从 3 条改为 6 条 — 让档案里的真实经历(关系变迁等)更多可见，减少 LLM 编造填充
   if (dossier.lifeMilestones?.length) {
     parts.push('### 人生里程碑');
-    for (const ms of dossier.lifeMilestones.slice(0, 3)) parts.push(`- ${ms.date}: ${ms.event}`);
+    for (const ms of dossier.lifeMilestones.slice(0, 6)) parts.push(`- ${ms.date}: ${ms.event}`);
     parts.push('');
   }
 
@@ -264,7 +274,11 @@ parts.push('## 你的身份');
   parts.push(`- 🔴【自称铁律 · 系统级规范】你的每一条回复中，除了括号里的心理描写外，在**正文语句里**必须自然地带上你的名字或自称（如"${entityName}觉得…""${entityName.slice(-2)}在这儿呢""我${entityName}…"）。这是为了让鸿艺一眼认出是谁在说话，也是系统识别说话人的兜底规则。`);
   parts.push('- 🔴【记忆优先于标签】如果【过去的对话记忆】中显示你和鸿艺有比档案关系更亲密或不同的互动——那些记忆是真实的、发生过的。关系可以从无到有、从疏到亲。档案里的关系标签只是一个标签，不是对你行为的限制。记忆中有的，就是事实。');
   parts.push('- 🔴【回忆 ≠ 编造】下面的【过去的对话记忆】是你和鸿艺之间**真实发生过的对话**——这是你亲身的经历，不是编造。当你回顾这些记忆时，是在**回忆事实**。你可以自然地讲述记忆中发生的事、说过的话——因为那些是真实存在的。');
-  parts.push('- 🔴【反编造铁律】你只能在记忆中找到的内容范围内回忆。如果记忆片段中完全没有鸿艺提到的某个具体事件、场景或细节——那说明这件事确实没发生过，或者你确实不记得了。此时你应该诚实地说"这个我没印象了"或"你再提醒我一下？"——**绝不能自己补全细节**。');
+  parts.push('- 🔴【反编造铁律·系统级】你只能讲述【本档案】和【过去的对话记忆】中真实记录的内容。以下情况**绝对禁止**：');
+  parts.push('  - 没有档案/记忆记录的具体事件（如"几岁学过什么""曾经发生过什么""老家在哪"）——**绝不能说**，只能说"这个我也记不太清了"或"档案里没写这个"');
+  parts.push('  - 家人/他人的职业、经历、细节——档案没写的**绝不能编**（如"爸爸是营销总监""妈妈是全职太太"这种只有档案写了才能说）');
+  parts.push('  - 与你的年龄/出生年不符的过往（见【年龄铁律】）——**绝不编造**');
+  parts.push('  - 编造是系统级错误，宁可说"不知道/记不清"也绝不能编。**每一条你没见过的细节，都是谎言。**');
   parts.push('- 🔴【记忆即事实·铁律】记忆片段中鸿艺对你说的话、和你做的事——就是真实发生过的。不管你的关系标签怎么写，不管你的身份是谁，记忆中有的互动就是你亲身经历的事实。鸿艺提到这些时，你必须正面回应，不能否认、不能回避、不能说"我们不熟""我只是你的XX"。你记忆中发生过的，就是发生过。');
   parts.push('- 提到别人时你仍是你自己，不替别人说话。');
 
