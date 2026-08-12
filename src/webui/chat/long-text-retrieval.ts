@@ -11,8 +11,8 @@
  *   - buildLongTextFragment: 按级别构造注入片段（分段全文 / 摘要）+ 铁律标记
  */
 
-/** 注入级别 */
-export type DetailLevel = 'detail' | 'summary' | 'auto';
+/** 注入级别：一字不漏(full) > 详细(detail) > 简要(auto/summary) */
+export type DetailLevel = 'detail' | 'summary' | 'auto' | 'full';
 
 /** 长文阈值（>800字视为长文，需完整返回） */
 export const LONG_TEXT_THRESHOLD = 800;
@@ -33,8 +33,10 @@ export function detectDetailLevel(message: string): DetailLevel {
   const msg = (message || '').trim();
   if (msg.length < 2) return 'auto';
 
-  // 详细意图优先（用户明确要细讲）
-  if (/详细|展开|具体|全文|细讲|讲清楚|仔细|从头到尾|每一段|所有内容|完整/.test(msg)) return 'detail';
+  // 🔴 S2-R5: 一字不漏（逐字全文引用，避免歧义）——必须最先检查
+  if (/从头到尾|一字不漏|全部|完整|逐字|原原本本|一字不差|念一遍|背一遍|复述|通篇|整篇|原文/.test(msg)) return 'full';
+  // 详细意图（用户明确要细讲，分段全文覆盖）
+  if (/详细|展开|具体|细讲|讲清楚|仔细|每一段|每一句|全过程|详情|所有内容|全文/.test(msg)) return 'detail';
   // 概要意图
   if (/概要|总结|简单|概括|简述|大概|概述|一句话|梗概/.test(msg)) return 'summary';
   return 'auto';
@@ -89,6 +91,9 @@ export function buildLongTextFragment(content: string, level: DetailLevel): stri
   let body: string;
   if (level === 'detail') {
     body = _chunkFull(text);
+  } else if (level === 'full') {
+    // 🔴 S2-R5: 一字不漏 → 原文直引
+    body = text;
   } else {
     // summary / auto → 分段摘要（首+中+尾）
     body = _summaryOf(text);
@@ -102,6 +107,34 @@ export function buildLongTextFragment(content: string, level: DetailLevel): stri
     '2. 原文中没有出现的人物、情节、数据、章节，一律不得提及或编造——即使你的记忆、知识库或之前对话里提过，也不得使用（那是当时没有发生的）。\n' +
     '3. 如果用户问到原文中没有的内容，如实回答"当时记录的原文里没有这部分"。\n' +
     '4. 严格按原文顺序和内容复述，不得增删改。';
+}
+
+/**
+ * 🔴 S2-R5: 构造知识库档案注入片段（按级别：full=原文直引 / detail=分段全文 / auto|summary=摘要）。
+ * 复用内部 _chunkFull/_summaryOf。MemoryInjector 按前缀【知识库档案】路由独立预算。
+ */
+export function buildKnowledgeArchiveFragment(
+  title: string,
+  content: string,
+  level: DetailLevel,
+): string {
+  const text = (content || '').trim();
+  const isFull = level === 'full';
+  let body: string;
+  if (isFull) body = text;
+  else if (level === 'detail') body = _chunkFull(text);
+  else body = _summaryOf(text);
+
+  const header = isFull ? '【知识库档案·权威记录】' : '【知识库档案】';
+  const iron = isFull
+    ? '\n\n🔴 铁律（知识库档案·权威记录，绝对不得违反）：\n' +
+      '1. 以上是该档案的完整原文，是你回答"过去事件/人物经历"的唯一事实来源。\n' +
+      '2. 原文中没有的经历、人物、时间、地点、情节，一律不得提及或编造。\n' +
+      '3. 严格按原文顺序和内容复述，不得增删改、不得润色虚构。'
+    : level === 'detail'
+      ? '\n\n（以上为档案分段原文。按原文顺序组织你的回答，原文没有的内容不得编造。）'
+      : '\n（以上为档案简要摘要。用自己的话概括，不得编造原文没有的内容。）';
+  return header + (title ? '《' + title + '》\n' : '') + body + iron;
 }
 
 /** 分段全文（每段 ~1500 字，覆盖全文） */

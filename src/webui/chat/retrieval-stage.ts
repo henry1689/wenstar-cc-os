@@ -110,7 +110,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       const _sqlite = ctx.storage?.getSQLite?.();
       if (_entityUuid && _sqlite && typeof _sqlite.queryAll === 'function') {
         const _entityMems = _sqlite.queryAll(
-          "SELECT id, raw_input, calcium_score, effective_strength FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 20",
+          "SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 20",
           [_entityUuid]
         ) || [];
         // 🔴 S2-J1b: 过滤编造特征记忆 — LLM 单方面输出的"过去经历"类内容(海边/比基尼/营销总监/来月经等)
@@ -123,8 +123,31 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           return true;
         });
         if (_fabFiltered > 0) console.log('[EntityMem] 编造特征记忆过滤: ' + _fabFiltered + ' 条');
+        // 🔴 S2-R5: 简要模式(auto/summary)按 40D 情感相似度重排 — 用户泛泛问("介绍一下你/说说你")时，
+        // 40D 权重高的记忆优先注入（与当前感知最贴近）。详细/一字不漏保持钙化序（覆盖过程）。
+        // 注意: 会晤隔离墙在 searchV13 前 return(L240-246)，L6.5 40D 重排不执行 → 此处补充。
+        const { detectDetailLevel } = await import('./long-text-retrieval.js');
+        const _detailLevel = detectDetailLevel(message);
+        let _rankedMems = _cleanMems;
+        const _p40q = input.p40;  // 捕获局部变量（TS 闭包收窄）
+        if ((_detailLevel === 'auto' || _detailLevel === 'summary') && _p40q) {
+          try {
+            const { decodePerceptionV40, cosineSimilarity40D } = await import('../../m2/PerceptionVector40DCodec.js');
+            const { isPerception40DEnabled } = await import('../../config/perception-40d-config.js');
+            if (isPerception40DEnabled()) {
+              _rankedMems = _cleanMems
+                .map((_m: any) => {
+                  const _mem40 = decodePerceptionV40(_m.perception_40d ? String(_m.perception_40d) : null);
+                  return { m: _m, sim: _mem40 ? cosineSimilarity40D(_p40q, _mem40) : -1 };
+                })
+                .sort((a: any, b: any) => b.sim - a.sim)
+                .map((x: any) => x.m);
+              console.log('[EntityMem·40D] 简要模式按40D情感相似度重排: ' + _rankedMems.length + ' 条');
+            }
+          } catch (_p40e) { /* 40D 重排失败 → 保持钙化序 */ }
+        }
         // 🔴 S2-O2: 记忆条数 5→8，颗粒度更精细（用户问过去时覆盖更多关键记忆，回复更完整真实）
-        for (const _em of _cleanMems.slice(0, 8)) {
+        for (const _em of _rankedMems.slice(0, 8)) {
           // 🔴 P0-3 修复: 会晤记忆截断 100 → 250（避免关键记忆细节丢失导致 LLM 编造）
           const _t = (_em.raw_input || '').substring(0, 250);
           if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);

@@ -672,8 +672,10 @@ export async function searchV13(
         }
       }
       if (p40Map.size > 0) {
-        const with40 = candidates.filter(c => p40Map.has(String(c.id)));
-        const without40 = candidates.filter(c => !p40Map.has(String(c.id)));
+        // 🔴 S2-R5: P40_FLOOR 地板 — sim40<0.15 的记忆不置顶于无 40D 记忆之上（避免弱相关记忆抢占）
+        const P40_FLOOR = 0.15;
+        const with40 = candidates.filter(c => (p40Map.get(String(c.id)) ?? -1) >= P40_FLOOR);
+        const without40 = candidates.filter(c => !with40.includes(c));
         with40.sort((a, b) => (p40Map.get(String(b.id)) ?? 0) - (p40Map.get(String(a.id)) ?? 0));
         candidates = [...with40, ...without40];
       }

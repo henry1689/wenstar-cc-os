@@ -978,8 +978,12 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     }
 
     // V4.0 Phase 7: 知识库检索管线 → KnowledgeContextBuilder
+    // 🔴 S2-R5: 检测回复详细度（full=一字不漏 / detail=详细 / auto|summary=简要）
+    const { detectDetailLevel } = await import('./chat/long-text-retrieval.js');
+    const _detailLevel = detectDetailLevel(message);
     const _preM4 = await buildPreM4Context({
       message, dna, p, decision,
+      detailLevel: _detailLevel,  // 🔴 S2-R5: 详细度传入知识库检索
       ctx: {
         knowledgeBase: ctx.knowledgeBase, storage: ctx.storage,
         yuyaoMemory: ctx.yuyaoMemory, hybridSearch: ctx.hybridSearch,
@@ -1000,8 +1004,15 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     //   (内存态)，且 isFirstTurn 可能 false → 既不缓存也不注入 → 梓铭简介(14岁真实记录)不进上下文。
     if (_meetingEntityName && _entityContextText) {
       const _cachedKB = _meetingKBCache.get(_meetingEntityName);
+      // 🔴 S2-R5: 缓存值 = 简要KB(≤3000) + 【知识库档案】全文片段（详细/一字不漏走独立预算，不截断）
+      const _archiveFrags = memoryFragments.filter((f: string) => f.startsWith('【知识库档案'));
+      const _buildCacheValue = () => {
+        const _kbPart = (knowledgeBaseText || '').substring(0, 3000);
+        const _arPart = _archiveFrags.length ? '\n\n' + _archiveFrags.join('\n\n') : '';
+        return (_kbPart + _arPart) || '';
+      };
       if (ctx._entityMeeting?.isFirstTurn?.()) {
-        const _kbForCache = knowledgeBaseText?.substring(0, 3000) || '';
+        const _kbForCache = _buildCacheValue();
         if (_kbForCache.length > 20) {
           _meetingKBCache.set(_meetingEntityName, _kbForCache);
           _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + _kbForCache;
@@ -1010,8 +1021,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         _entityContextText += '\n\n【关于你的知识库档案】\n以下是之前查到的你的知识库档案，继续基于这些信息回复：\n' + _cachedKB;
       } else if (knowledgeBaseText && knowledgeBaseText.trim().length > 20 && !_entityContextText.includes('关于你的知识库档案')) {
         // 🔴 S2-R3: 缓存空(重启后会晤恢复) → 直接用当前检索的 knowledgeBaseText 注入 + 回填缓存
-        _meetingKBCache.set(_meetingEntityName, knowledgeBaseText.substring(0, 3000));
-        _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + knowledgeBaseText.substring(0, 3000);
+        const _kbForCache = _buildCacheValue();
+        _meetingKBCache.set(_meetingEntityName, _kbForCache);
+        _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + _kbForCache;
       }
     }
 

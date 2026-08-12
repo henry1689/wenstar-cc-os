@@ -78,6 +78,8 @@ export function injectMemories(opts: InjectOptions): string {
   let workFullText = '';
   // V23 长文: 对话原文（最多 1 条，独立预算，不参与 250 截断）
   let longText = '';
+  // 🔴 S2-R5: 知识库档案全文（【知识库档案】前缀，独立预算，不参与 250 截断）
+  let archiveText = '';
 
   // ── 来源 1: memoryFragments（砂金+黑钻+作品+长文，来自 retrieval-stage） ──
   for (const frag of memoryFragments) {
@@ -100,6 +102,13 @@ export function injectMemories(opts: InjectOptions): string {
         longText = frag;  // 第1条
         console.log(`[MemoryInjector] 长文独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
       }
+      continue;
+    }
+    // 🔴 S2-R5: 【知识库档案】开头的 fragment 走独立预算（知识库档案全文完整返回，不截断）
+    // 覆盖【知识库档案】与【知识库档案·权威记录】两种前缀
+    if (frag.startsWith('【知识库档案')) {
+      archiveText = archiveText ? archiveText + '\n\n' + frag : frag;
+      console.log(`[MemoryInjector] 知识库档案独立注入: ${frag.substring(0, 40)}… (${frag.length}字符)`);
       continue;
     }
     // 🆕 V10.1: 会晤模式下保留结构标签，LLM 可区分档案/记忆/家人
@@ -217,7 +226,8 @@ export function injectMemories(opts: InjectOptions): string {
   // 实测修复: 有长文时压缩记忆/KB预算，给完整纪实让路（否则合并长文被截断 → LLM 编造）
   // 🔴 P0-4 修复: 知识库预算动态让渡——KB 无有效命中时，额度全部给记忆。
   // 🔴 P1 配置化: 预算比例从 yaml 读取
-  const _hasLongText = !!longText;
+  // 🔴 S2-R5: 知识库档案全文也触发"长文本预算"（有档案时压缩记忆/KB，给档案全文让路）
+  const _hasLongText = !!longText || !!archiveText;
   const _hasKbHit = !!(knowledgeBaseText && knowledgeBaseText.trim().length > 20);
   // 🔴 D4 修复: kbBudget 用 kb_ratio_normal（yaml 配置真实生效，而非 maxChars - memBudget）
   let memBudget = _hasLongText ? Math.floor(maxChars * BUD.mem_ratio_longtext) : Math.floor(maxChars * BUD.mem_ratio_normal);
@@ -290,7 +300,14 @@ export function injectMemories(opts: InjectOptions): string {
       ? longText.substring(0, longBudget) + '\n…(对话原文超长已截断)'
       : longText);
   }
-  if (workFullText && !longText) {  // 长文已占用预算时，作品降级为摘要不完整注入
+  // 🔴 S2-R5: 知识库档案全文独立预算（优先级 长文 > 档案 > 作品）
+  if (archiveText) {
+    const archiveBudget = Math.max(BUD.work_max_chars, Math.floor(maxChars * BUD.longtext_max_ratio));
+    _priorityParts.push(archiveText.length > archiveBudget
+      ? archiveText.substring(0, archiveBudget) + '\n…(知识库档案超长已截断)'
+      : archiveText);
+  }
+  if (workFullText && !longText && !archiveText) {  // 长文/档案已占用预算时，作品降级为摘要不完整注入
     // 🔴 P1 配置化: 作品预算从 yaml
     const workBudget = Math.min(BUD.work_max_chars, Math.floor(maxChars * 0.4));
     _priorityParts.push(workFullText.length > workBudget

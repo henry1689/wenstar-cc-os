@@ -10,6 +10,7 @@
 
 import type { DNA } from '../../m1/types/dna.js';
 import { ConfigService } from '../../config/ConfigService.js';
+import { buildKnowledgeArchiveFragment } from '../../webui/chat/long-text-retrieval.js';
 
 /** 🆕 V4.0: 去除 markdown frontmatter（LLM 不需要看到 id/tags 等元数据） */
 function stripFrontmatter(content: string): string {
@@ -79,6 +80,8 @@ export interface PreM4Input {
   memoryFragments: string[];
   emotionalMemories: any[];
   _bionicPromise: Promise<any>;
+  /** 🔴 S2-R5: 回复详细度（chat.ts 检测传入）— full=原文直引 / detail=分段全文 / auto|summary=摘要 */
+  detailLevel?: 'detail' | 'summary' | 'auto' | 'full';
 }
 
 export interface PreM4Output {
@@ -171,6 +174,19 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
           ];
           const _kept = _sorted.filter((k: any) => k.matchScore >= 0.3).slice(0, 3);
           if (_kept.length > 0) {
+          // 🔴 S2-R5: 按详细度分流 — 详细/一字不漏走 memoryFragments 独立预算通道(【知识库档案】前缀)，
+          // 摘要(auto/summary)走 knowledgeBaseText 现有路径。避免"简要摘要+全文"双份占用。
+          const _detailLevel = input.detailLevel ?? 'auto';
+          if (_detailLevel === 'detail' || _detailLevel === 'full') {
+            const _sl = _detailLevel === 'full' ? 1 : _kept.length;  // 全文只给主档案；详细给全部命中
+            for (const k of _kept.slice(0, _sl)) {
+              const _frag = buildKnowledgeArchiveFragment(k.title, stripFrontmatter(k.content || ''), _detailLevel);
+              if (_frag.length > 4 && !memoryFragments.some((f: string) => f.includes(_frag.substring(0, 30)))) {
+                memoryFragments.push(_frag);
+                console.log('[KB·Entity] ' + _detailLevel + '级档案注入: ' + (k.title || '').substring(0, 20) + ' (' + _frag.length + '字)');
+              }
+            }
+          } else {
           const _entityContent = _kept.map((k: any) =>
             `📄 ${k.title}\n${stripFrontmatter(k.content || '').substring(0, _kbBudget.maxSnippetChars)}`
           ).join('\n\n');
@@ -179,6 +195,7 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
             knowledgeBaseText = (_existingKB ? _existingKB + '\n\n' : '') +
               '【关于' + _meetingEntity + '的知识】\n' + _entityContent;
             console.log('[KB·Entity] 会晤实体检索: ' + _meetingEntity + ' → ' + _kept.length + '条知识(自有优先)');
+          }
           }
           }
         }
