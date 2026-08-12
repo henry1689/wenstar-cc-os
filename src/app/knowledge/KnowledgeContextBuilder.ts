@@ -153,20 +153,33 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       try {
         const _entityResults = await ctx.knowledgeBase.weightedSearch(
           _entitySearchMsg, dna.scene_tags || [],
-          { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, 3,
+          { pleasure: p.pleasure, arousal: p.arousal, intimacy: p.intimacy }, 8,
           // 🔴 户籍管理法（第九条 搜索闸门）: 按当前会晤实体过滤知识库。
           // 徐诗雨只能搜到 belong_entity_uuid=徐诗雨 的知识，杜绝梓铭自传（belong=梓铭）泄漏。
           _meetingEntityUuid || undefined,
         );
         if (_entityResults && _entityResults.length > 0) {
-          const _entityContent = _entityResults.map((k: any) =>
+          // 🔴 S2-F1: 实体自有档案优先 + 过滤低分噪音
+          // 实测: 查询"熊梓铭"，matchScore 相同(0.745)时按 updated_at 稳定排序，系统架构文档(公共)
+          //   挤掉熊梓铭自己的档案("梓铭简介" belong=TXS-000000003)；"秦可卿"(0.245)等无关条目也混入。
+          //   排序: belong==会晤实体 优先，同组内按 matchScore 降序；过滤 matchScore<0.3 的噪音。
+          const _own = _entityResults.filter((k: any) => _meetingEntityUuid && k.belong_entity_uuid === _meetingEntityUuid);
+          const _other = _entityResults.filter((k: any) => !(_meetingEntityUuid && k.belong_entity_uuid === _meetingEntityUuid));
+          const _sorted = [
+            ..._own.sort((a: any, b: any) => b.matchScore - a.matchScore),
+            ..._other.sort((a: any, b: any) => b.matchScore - a.matchScore),
+          ];
+          const _kept = _sorted.filter((k: any) => k.matchScore >= 0.3).slice(0, 3);
+          if (_kept.length > 0) {
+          const _entityContent = _kept.map((k: any) =>
             `📄 ${k.title}\n${stripFrontmatter(k.content || '').substring(0, _kbBudget.maxSnippetChars)}`
           ).join('\n\n');
           const _existingKB = knowledgeBaseText || '';
           if (!_existingKB.includes(_entityContent.substring(0, 50))) {
             knowledgeBaseText = (_existingKB ? _existingKB + '\n\n' : '') +
               '【关于' + _meetingEntity + '的知识】\n' + _entityContent;
-            console.log('[KB·Entity] 会晤实体检索: ' + _meetingEntity + ' → ' + _entityResults.length + '条知识');
+            console.log('[KB·Entity] 会晤实体检索: ' + _meetingEntity + ' → ' + _kept.length + '条知识(自有优先)');
+          }
           }
         }
       } catch (_ekErr) { /* 实体知识检索失败不阻塞 */ }
@@ -207,7 +220,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
 
       // 🆕 Phase 2: 分级注入 — Level 3/4 只注入高置信度命中
       const _topScore = knResults[0]?.matchScore ?? 0;
-      const _minScore = _searchLevel <= 1 ? 0.05 : (_searchLevel === 2 ? 0.10 : 0.20);
+      // 🔴 S2-F1: 会晤模式阈值提高 0.10→0.30 — 实测"熊梓铭"查询返回"秦可卿"(0.245)/"吴波"(0.245)
+      //   等无关噪音，0.10 阈值全放行。会晤实体检索只需实体自有档案 + 高相关公共知识。
+      const _minScore = _searchLevel <= 1 ? 0.05 : (_searchLevel === 2 ? (_meetingEntityUuid ? 0.30 : 0.10) : 0.20);
       let _topHits = knResults.filter((k: any) => k.matchScore >= _minScore);
 
       // V5.3: 会晤模式下按 entity UUID 过滤 KB 结果
@@ -216,6 +231,11 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
             var ku = k.belong_entity_uuid || null;
             return !ku || ku === _meetingEntityUuid;
           });
+          // 🔴 S2-F1: 会晤模式实体自有档案优先 — 实测 matchScore 相同时按 updated_at 稳定排序，
+          //   系统架构文档(公共)挤掉实体自己的档案("梓铭简介" belong=TXS-000000003)。自有档案前移。
+          const _ownF1 = _topHits.filter((k: any) => k.belong_entity_uuid === _meetingEntityUuid);
+          const _otherF1 = _topHits.filter((k: any) => k.belong_entity_uuid !== _meetingEntityUuid);
+          _topHits = [..._ownF1, ..._otherF1];
         }
         if (_topHits.length > 0) {
         const kbContent = _topHits.map((k: any) => {
