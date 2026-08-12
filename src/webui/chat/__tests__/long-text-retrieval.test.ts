@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  detectDetailLevel, detectDetailPercent, sliceByPercent, buildLongTextFragment, buildKnowledgeArchiveFragment, fetchLongText, LONG_TEXT_THRESHOLD,
+  detectDetailLevel, detectDetailPercent, inferDetailPercent, sliceByPercent, buildLongTextFragment, buildKnowledgeArchiveFragment, fetchLongText, LONG_TEXT_THRESHOLD,
 } from '../long-text-retrieval.js';
 
 describe('detectDetailLevel — 意图检测', () => {
@@ -24,6 +24,23 @@ describe('detectDetailLevel — 意图检测', () => {
     expect(detectDetailLevel('简单总结一下')).toBe('summary');
     expect(detectDetailLevel('那章大概讲了什么')).toBe('summary');
     expect(detectDetailLevel('概括一下那段')).toBe('summary');
+  });
+
+  it('🔴 S2-R7: 自然口语 → 映射级别（日常不说"详细/一字不漏"）', () => {
+    // 口语最高还原
+    expect(detectDetailLevel('你越细越好')).toBe('full');
+    expect(detectDetailLevel('再详细点')).toBe('full');
+    expect(detectDetailLevel('把每个细节都说出来')).toBe('full');
+    // 口语高还原
+    expect(detectDetailLevel('你仔细说说')).toBe('detail');
+    expect(detectDetailLevel('好好讲讲')).toBe('detail');
+    expect(detectDetailLevel('说细点')).toBe('detail');
+    // 口语中还原
+    expect(detectDetailLevel('你说说')).toBe('summary');
+    expect(detectDetailLevel('讲讲')).toBe('summary');
+    expect(detectDetailLevel('简单说说')).toBe('summary');
+    // 反复追问 → 高还原
+    expect(detectDetailLevel('你再仔细说说')).toBe('detail');
   });
 
   it('普通问题 → auto', () => {
@@ -187,6 +204,38 @@ describe('detectDetailPercent — 还原度百分比检测（S2-R6）', () => {
   it('无百分比意图 → null', () => {
     expect(detectDetailPercent('今天天气不错')).toBeNull();
     expect(detectDetailPercent('')).toBeNull();
+  });
+});
+
+describe('inferDetailPercent — 语义推断还原度（S2-R7）', () => {
+  it('显式百分比 → 尊重用户数字', () => {
+    expect(inferDetailPercent('按30%还原')).toBe(30);
+    expect(inferDetailPercent('100%完整')).toBe(100);
+    expect(inferDetailPercent('还原六成')).toBe(60);
+  });
+
+  it('口语"你说说/讲讲" → 推断 30%', () => {
+    expect(inferDetailPercent('你说说')).toBe(30);
+    expect(inferDetailPercent('讲讲')).toBe(30);
+    expect(inferDetailPercent('简单说说')).toBe(30);
+  });
+
+  it('口语"仔细说说/好好讲讲" → 推断 60%', () => {
+    expect(inferDetailPercent('你仔细说说')).toBe(60);
+    expect(inferDetailPercent('好好讲讲')).toBe(60);
+    expect(inferDetailPercent('说细点')).toBe(60);
+  });
+
+  it('口语"越细越好/再详细点/一字不漏" → 推断 100%', () => {
+    expect(inferDetailPercent('越细越好')).toBe(100);
+    expect(inferDetailPercent('再详细点')).toBe(100);
+    expect(inferDetailPercent('一字不漏念一遍')).toBe(100);
+    expect(inferDetailPercent('从头到尾')).toBe(100);
+  });
+
+  it('无意图 → null', () => {
+    expect(inferDetailPercent('今天天气不错')).toBeNull();
+    expect(inferDetailPercent('')).toBeNull();
   });
 });
 

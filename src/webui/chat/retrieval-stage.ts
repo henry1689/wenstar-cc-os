@@ -239,11 +239,11 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         //   改 ORDER BY timestamp ASC 按时间正序，且按主题收束（含纪实/研究/记录等创作特征），
         //   排除纯亲密闲聊（抱抱/贴贴/想你等）。
         try {
-          // 🔴 S2-R6: 接入百分比还原度 — 用户写长文/小说要求按 30%/60%/100% 还原记忆
-          const { detectDetailLevel: _mDetail, detectDetailPercent: _mPct, buildLongTextFragment: _mFrag, sliceByPercent: _mSlice } = await import('./long-text-retrieval.js');
+          // 🔴 S2-R7: 接入语义推断还原度 — 系统体会"你说说/仔细说说/再详细点"等口语推断还原度
+          const { detectDetailLevel: _mDetail, inferDetailPercent: _mPct, buildLongTextFragment: _mFrag, sliceByPercent: _mSlice } = await import('./long-text-retrieval.js');
           const _mLevel = _mDetail(message);
           const _mPercent = _mPct(message);
-          // 明确概要/详细意图 或 有百分比还原度 才直取
+          // 明确概要/详细意图 或 有推断还原度 才直取
           if (_mLevel !== 'auto' || _mPercent !== null) {
             const _longRows = _sqlite.queryAll(
               "SELECT id, content, timestamp FROM conversations WHERE belong_entity_uuid = ? AND role = 'assistant' AND LENGTH(content) > 800 AND (content LIKE '%纪实%' OR content LIKE '%实验%' OR content LIKE '%研究%' OR content LIKE '%记录%' OR content LIKE '%第一章%' OR content LIKE '%第二章%' OR content LIKE '%第三章%') ORDER BY timestamp ASC LIMIT 5",
@@ -591,8 +591,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         //     直取会静默失效或 id 碰撞误取他人对话 → 一律跳过。
         //   - fetchLongText 带 belong 白名单校验（会晤场景传活跃实体，户主空 = 最高权限）。
         try {
-          // 🔴 S2-R6: 普通模式长文直取接入百分比还原度
-          const { detectDetailLevel: _detectLevel, detectDetailPercent: _detectPct, fetchLongText: _fetchLong, buildLongTextFragment: _buildFrag, sliceByPercent: _slicePct } =
+          // 🔴 S2-R7: 普通模式长文直取接入语义推断还原度
+          const { detectDetailLevel: _detectLevel, inferDetailPercent: _detectPct, fetchLongText: _fetchLong, buildLongTextFragment: _buildFrag, sliceByPercent: _slicePct } =
             await import('./long-text-retrieval.js');
           const _detailLevel = _detectLevel(message);
           const _detailPct = _detectPct(message);

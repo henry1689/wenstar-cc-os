@@ -24,22 +24,56 @@ export const LONG_TEXT_CHUNK = 1500;
 const SUMMARY_WINDOW = 200;
 
 /**
- * 检测消息的"概要/详细"意图。
- * - detail:  含 详细/展开/具体/全文/细讲/讲清楚/仔细 → 返回详情
- * - summary: 含 概要/总结/简单/概括/简述/大概 → 返回摘要
- * - auto:    普通问题 → 命中长文给分段摘要，命中普通给正常
+ * 🔴 S2-R7: 检测消息的"详细程度"意图 — 从自然口语映射到还原度级别。
+ * 用户日常不说"简要/详细/一字不漏/30%"，而是说"你说说/你仔细说说/再详细一点"等口语。
+ * 系统根据提问语义推断还原度:
+ * - full(100%):   越细越好/一字不漏/全部/从头到尾/再详细点/说全/每个细节
+ * - detail(60%):  仔细说说/详细说说/展开/具体点/说细点/好好讲讲
+ * - summary(30%): 说说/讲讲/简单说说/大概/概述/提一下
+ * - auto:         普通问题，不确定意图
  */
 export function detectDetailLevel(message: string): DetailLevel {
   const msg = (message || '').trim();
   if (msg.length < 2) return 'auto';
 
-  // 🔴 S2-R5: 一字不漏（逐字全文引用，避免歧义）——必须最先检查
-  if (/从头到尾|一字不漏|全部|完整|逐字|原原本本|一字不差|念一遍|背一遍|复述|通篇|整篇|原文/.test(msg)) return 'full';
-  // 详细意图（用户明确要细讲，分段全文覆盖）
-  if (/详细|展开|具体|细讲|讲清楚|仔细|每一段|每一句|全过程|详情|所有内容|全文/.test(msg)) return 'detail';
-  // 概要意图
-  if (/概要|总结|简单|概括|简述|大概|概述|一句话|梗概/.test(msg)) return 'summary';
+  // 🔴 最高还原（100%）：明确要极细/完整
+  if (/越细越好|一字不漏|全部|从头到尾|逐字|原原本本|一字不差|念一遍|背一遍|复述|通篇|整篇|原文|再详细|再具体|说全|每个细节|完整/.test(msg)) return 'full';
+  // 高还原（60%）：仔细/详细/展开
+  if (/仔细|详细|展开|具体|细讲|讲清楚|好好说说|好好讲讲|每一段|每一句|全过程|详情|说细点/.test(msg)) return 'detail';
+  // 中还原（30%）：说说/讲讲/简单/大概
+  if (/概要|总结|简单|概括|简述|大概|概述|一句话|梗概|说说|讲讲|提一下|简单说/.test(msg)) return 'summary';
   return 'auto';
+}
+
+/**
+ * 🔴 S2-R7: 从消息语义推断还原度百分比（0-100），供 sliceByPercent 使用。
+ * 系统体会用户提问意图 → 推断还原度，而非用户直接说百分比。
+ * 若消息明确说"30%/六成/一半"等，尊重显式数字；否则从口语程度推断。
+ * @returns 还原度 0-100；无意图返回 null
+ */
+export function inferDetailPercent(message: string): number | null {
+  const msg = (message || '').trim();
+  if (msg.length < 2) return null;
+
+  // 显式数字 + %（如 30%、60%、100%）— 用户明确指定
+  const pctMatch = msg.match(/(\d{1,3})\s*%/);
+  if (pctMatch) return Math.max(0, Math.min(100, parseInt(pctMatch[1], 10)));
+  // 成数（六成/三成/十成）
+  const cheng = msg.match(/([一二三四五六七八九十]+)成/);
+  if (cheng) {
+    const cn: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    const s = cheng[1];
+    let n = cn[s] ?? 0;
+    if (s.length === 2) n = (cn[s[0]] ?? 0) * 10 + (cn[s[1]] ?? 0);
+    return Math.max(0, Math.min(100, n * 10));
+  }
+
+  // 从口语程度推断
+  const level = detectDetailLevel(msg);
+  if (level === 'full') return 100;
+  if (level === 'detail') return 60;
+  if (level === 'summary') return 30;
+  return null;
 }
 
 /**
