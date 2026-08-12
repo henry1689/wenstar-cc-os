@@ -996,6 +996,8 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     biosGatedMemories = _preM4.biosGatedMemories;
 
     // 🔧 V5.3: KB 缓存注入——在 buildPreM4Context 填充 knowledgeBaseText 后执行
+    // 🔴 S2-R3: 修复重启后缓存空导致知识库档案丢失。会晤恢复(S2-G1)后 _meetingKBCache 是空 Map
+    //   (内存态)，且 isFirstTurn 可能 false → 既不缓存也不注入 → 梓铭简介(14岁真实记录)不进上下文。
     if (_meetingEntityName && _entityContextText) {
       const _cachedKB = _meetingKBCache.get(_meetingEntityName);
       if (ctx._entityMeeting?.isFirstTurn?.()) {
@@ -1006,6 +1008,10 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         }
       } else if (_cachedKB) {
         _entityContextText += '\n\n【关于你的知识库档案】\n以下是之前查到的你的知识库档案，继续基于这些信息回复：\n' + _cachedKB;
+      } else if (knowledgeBaseText && knowledgeBaseText.trim().length > 20 && !_entityContextText.includes('关于你的知识库档案')) {
+        // 🔴 S2-R3: 缓存空(重启后会晤恢复) → 直接用当前检索的 knowledgeBaseText 注入 + 回填缓存
+        _meetingKBCache.set(_meetingEntityName, knowledgeBaseText.substring(0, 3000));
+        _entityContextText += '\n\n【关于你的知识库档案】\n以下是你的知识库档案内容，你需要了解这些：\n' + knowledgeBaseText.substring(0, 3000);
       }
     }
 
