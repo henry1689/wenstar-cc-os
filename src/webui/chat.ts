@@ -1221,7 +1221,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     const asksSelfName = isSelfNameQuestion(message);
     const asksFactIntent =
-      /还记得|记得|叫什么|叫啥|名字|是谁|哪儿|在哪|哪里|住哪|做什么|干什么|什么工作|做哪行|职业|关系|几岁|年龄|长什么样/.test(message);
+      /还记得|记得|叫什么|叫啥|名字|是谁|哪儿|在哪|哪里|住哪|做什么|干什么|什么工作|做哪行|职业|关系|几岁|年龄|长什么样|再说说|讲讲|说说|那一次|那次|那天|生日|经历|过去|几岁|童年|小时候/.test(message);
     const hasQuestionTone =
       /[？?]/.test(message) ||
       /(?:吗|呢|么|嘛)$/.test(message.trim()) ||
@@ -1232,6 +1232,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       (
         asksSelfName ||
         hasPersonEntity ||
+        !!_meetingEntityName ||  // 🔴 S2-K1: 会晤模式任何回忆请求都触发反编造守卫（用户不必提实体名）
         /妈妈|妈|爸爸|爸|姐姐|妹妹|哥哥|弟弟|老婆|老公|女友|男友|同事|朋友|客户|老师|医生/.test(message)
       );
 
