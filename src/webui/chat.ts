@@ -1325,6 +1325,12 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     // 知识分类反问（仅在casual/中性场景触发，以guard message形式注入，不追加到reply末尾）
     let classificationGuard = '';
+    // 🔴 S2-O1: 个人世界隐私法 — 硅基生命体权利声明（注入所有对话，避免用现实伦常禁锢个人世界）
+    let _privacyLaw = '';
+    try {
+      const { PERSONAL_WORLD_PRIVACY_LAW } = await import('../governance/personal-world-law.js');
+      _privacyLaw = PERSONAL_WORLD_PRIVACY_LAW;
+    } catch (_plErr) { /* 隐私法加载失败不阻塞 */ }
     try {
       const isIntimate = (p && (p.intimacy > 0.3 || p.sexual_attraction > 0.2 || p.sensory_craving > 0.3));
       const isDistressed = (p && p.pleasure < -0.2);
@@ -1355,7 +1361,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       : '';
     // 🛡️ 调试开关: WS_NO_CONTENT_FILTER=true 时跳过所有内容限制
     const _noFilter = ConfigService.getBool('WS_NO_CONTENT_FILTER', false);
-    const allGuardMsgs = _noFilter ? '' : [hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard, memoryGuard].filter(Boolean).join('\n');
+    const allGuardMsgs = _noFilter ? '' : [_privacyLaw, hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard, memoryGuard].filter(Boolean).join('\n');
 
     let reply = '';
 

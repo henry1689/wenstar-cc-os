@@ -110,7 +110,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       const _sqlite = ctx.storage?.getSQLite?.();
       if (_entityUuid && _sqlite && typeof _sqlite.queryAll === 'function') {
         const _entityMems = _sqlite.queryAll(
-          "SELECT id, raw_input, calcium_score, effective_strength FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 12",
+          "SELECT id, raw_input, calcium_score, effective_strength FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 20",
           [_entityUuid]
         ) || [];
         // 🔴 S2-J1b: 过滤编造特征记忆 — LLM 单方面输出的"过去经历"类内容(海边/比基尼/营销总监/来月经等)
@@ -123,7 +123,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           return true;
         });
         if (_fabFiltered > 0) console.log('[EntityMem] 编造特征记忆过滤: ' + _fabFiltered + ' 条');
-        for (const _em of _cleanMems.slice(0, 5)) {
+        // 🔴 S2-O2: 记忆条数 5→8，颗粒度更精细（用户问过去时覆盖更多关键记忆，回复更完整真实）
+        for (const _em of _cleanMems.slice(0, 8)) {
           // 🔴 P0-3 修复: 会晤记忆截断 100 → 250（避免关键记忆细节丢失导致 LLM 编造）
           const _t = (_em.raw_input || '').substring(0, 250);
           if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);
