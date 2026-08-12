@@ -13,9 +13,8 @@
  */
 
 import { AdapterRegistry } from './adapter.js';
-import { KnowledgeAdapter, type KnowledgeSource } from './adapters/KnowledgeAdapter.js';
+import type { KnowledgeSource } from './adapters/KnowledgeAdapter.js';
 import { BlackDiamondAdapter } from './adapters/BlackDiamondAdapter.js';
-import { WorkAdapter } from './adapters/WorkAdapter.js';
 import { VaultAdapter } from './adapters/VaultAdapter.js';
 import { NoteAdapter } from './adapters/NoteAdapter.js';
 import { ConversationAdapter } from './adapters/ConversationAdapter.js';
@@ -46,12 +45,14 @@ export interface FoundationDeps {
 export function createDefaultRegistry(deps: FoundationDeps): AdapterRegistry {
   const reg = new AdapterRegistry();
 
-  if (deps.knowledgeBase) {
-    reg.register(new KnowledgeAdapter({ knowledgeBase: deps.knowledgeBase }));
-  }
+  // 🔴 S2-E1 收编: 去掉 knowledge/work 适配器 — 两域已由其他主链覆盖:
+  //   - knowledge: KnowledgeContextBuilder.weightedSearch（户主/会晤主源，Level 1-3 分级）
+  //   - work: V13 retrieveMultiRank work 路（works 表 LIKE 召回）
+  //   保留 black_diamond: V13 六路(emotion/keyword/spine/locus/entity/work) 均不查 black_diamond 表，
+  //   Foundation BlackDiamondAdapter 是户主模式黑钻(💎珍藏记忆)的唯一直接源，必须保留。
+  //   vault/note: 旧金库块已随 WS_FOUNDATION_ROUTES 关闭，Foundation 是唯一源。
   if (deps.sqlite) {
     reg.register(new BlackDiamondAdapter(deps.sqlite));
-    reg.register(new WorkAdapter(deps.sqlite));
     reg.register(new VaultAdapter(deps.sqlite));
     reg.register(new NoteAdapter(deps.sqlite));
   }

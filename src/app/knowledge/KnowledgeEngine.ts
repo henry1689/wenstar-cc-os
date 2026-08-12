@@ -356,6 +356,20 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
       console.warn(`[KnowledgeEngine] 索引失败 ${id}:`, err),
     );
 
+    // 🔴 S2-C2: 增量 n-gram 索引 — 写 search_index（V13 主链检索源）。
+    // 原 add 只写 knowledge_chunks(向量分块)，search_index 全靠启动全量回填 →
+    // 启动后新增的知识(徐诗涵/徐诗韵档案等)在 V13 n-gram 检索里 term 数=0，永远搜不到。
+    try {
+      const { indexDocument } = await import('../../m4/SearchIndexBuilder.js');
+      const _idxDb = (sqlite as any).rawDb;
+      if (_idxDb && typeof _idxDb.run === 'function') {
+        indexDocument(_idxDb, 'knowledge_base', id, fixedTitle + ' ' + fixedContent, params.belongEntityUuid ?? undefined);
+      }
+    } catch (_ie) { /* 增量索引失败不阻塞 */ }
+
+    // 🔴 S4-Y3: 同步 FtsSearch 内存索引 — 原 _ftsSearch 仅启动 init() 全量加载，
+    // 运行期新增文档 BM25 路径永远看不到（仅 FTS 空时降级 LIKE）。滑窗模式下 term 更丰富。
+    try { _ftsSearch.add(id, fixedTitle, fixedContent, classification); } catch (_fe) { /* 不阻塞 */ }
 
     // 🔥 AutoClassifier: 自动分类新知识
     if (!params.classification) {
@@ -421,6 +435,18 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     // 内容变了就重新索引
     if (params.content && params.content !== existing.content) {
       indexContent(sqlite, id, params.content).catch(() => {});
+      // 🔴 S2-C2: 同步重建 search_index n-gram 索引（先删旧 term，再写新）—
+      // 原 update 只重建 knowledge_chunks，search_index 旧 term 残留且新 term 缺失。
+      try {
+        const { indexDocument } = await import('../../m4/SearchIndexBuilder.js');
+        const _idxDb = (sqlite as any).rawDb;
+        if (_idxDb && typeof _idxDb.run === 'function') {
+          _idxDb.run("DELETE FROM search_index WHERE source_type = 'knowledge_base' AND source_id = ?", [id]);
+          indexDocument(_idxDb, 'knowledge_base', id, (newTitle || '') + ' ' + newContent, existing.belong_entity_uuid ?? undefined);
+        }
+      } catch (_ue) { /* 更新索引失败不阻塞 */ }
+      // 🔴 S4-Y3: 同步重建 FtsSearch 内存索引（先 remove 旧 doc，再 add 新）
+      try { _ftsSearch.remove(id); _ftsSearch.add(id, newTitle || '', newContent, existing.classification ?? null); } catch (_ufe) { /* 不阻塞 */ }
     }
     return true;
   }
@@ -433,6 +459,15 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     syncToMd(existing, true);
     sqlite.writeRaw(`DELETE FROM knowledge_base WHERE id=?`, id);
     sqlite.writeRaw(`DELETE FROM knowledge_chunks WHERE kn_id=?`, id);
+    // 🔴 S2-C2: 同步清理 search_index n-gram 索引（防孤儿 term 污染检索）
+    try {
+      const _idxDb = (sqlite as any).rawDb;
+      if (_idxDb && typeof _idxDb.run === 'function') {
+        _idxDb.run("DELETE FROM search_index WHERE source_type = 'knowledge_base' AND source_id = ?", [id]);
+      }
+    } catch (_de) { /* 清理索引失败不阻塞 */ }
+    // 🔴 S4-Y3: 同步移除 FtsSearch 内存索引
+    try { _ftsSearch.remove(id); } catch (_rfe) { /* 不阻塞 */ }
     const zvs = await ensureZvecReady();
     zvs.removeByPrefix(id).catch(() => {});
     return true;

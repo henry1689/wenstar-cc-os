@@ -26,6 +26,35 @@ function stripFrontmatter(content: string): string {
 }
 
 // ═══════════════════════════════════════════════════════
+//  S2-A1/A2: 知识查询意图检测 + 查询词构造 — 导出纯函数（可单测）
+// ═══════════════════════════════════════════════════════
+
+/** S2-A1: 是否明确知识查询意图（Level 1 深度搜索）。
+ *  原正则漏"简介/档案/是谁/是什么"，"熊梓铭的个人简介是什么"被归 Level 3 日常 →
+ *  整句 ngram 稀释 textScore≈0.26 刚过阈值、知识库命中边缘化。补词后升 Level 1。
+ *  🔴 S4-Y4 收紧: 去掉宽泛词"有没有/曾经"（"有没有去旅游""我曾经也这样"误判 Level 1），
+ *  "听说过/认识/见过"收紧为带"吗"组合（"我认识你吗"仍算查询，但"见过"独词不算），
+ *  "人物"收紧为"人物(档案|简介|背景|介绍)"（"这个人物塑造得不错"不误判）。 */
+export function isExplicitKBQuery(message: string): boolean {
+  return /知识库|看过.*吗|听说过.*吗|认识.*吗|见过.*吗|知道.*吗|是否|查一下|搜一下|帮我查|告诉我.*关于|简介|档案|是谁|是什么|介绍(一下|下|一个)?|了解一下|说说.*关于|资料|详情|人物的?(档案|简介|背景|介绍)/.test(message);
+}
+
+/** S2-A2: 构造知识库查询词。
+ *  消息含 person 实体名时，直接用实体名搜（整句 ngram 被"个人简介是什么"等非实体词稀释，
+ *  复现：19 ngram 只 5 个命中 textScore=0.26 边缘；实体名滑窗 ngram 全命中 → textScore≈1.0）。
+ *  仅当消息实际提到实体名才替换（"今天天气真不错"不受影响）。 */
+export function buildKBQuery(message: string, dna: any, isKbf: boolean): string {
+  const _personNamesInMsg = (dna?.entity_genes || [])
+    .filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2)
+    .map((g: any) => g.name)
+    .filter((n: string) => message.includes(n));
+  if (_personNamesInMsg.length > 0) return _personNamesInMsg.slice(0, 2).join(' ');
+  return isKbf
+    ? message.replace(/你|在|知识库|看过|知道|吗|有没有|是否|曾经/g, '').replace(/[？?！!。，、：；]/g, '').trim()
+    : message;
+}
+
+// ═══════════════════════════════════════════════════════
 //  入参类型
 // ═══════════════════════════════════════════════════════
 
@@ -96,7 +125,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   const _meetingEntityUuid = (input as any).ctx?._meetingEntityUuid || null;
   const _isEntityMeeting = !!_meetingEntity;
   const _entitySearchMsg = _meetingEntity ? _meetingEntity : '';
-  const _explicitQuery = /知识库|看过|知道.*吗|有没有|是否|曾经|查一下|搜一下|帮我查|告诉我.*关于/.test(message);
+  // 🔴 S2-A1: 补知识查询意图词 — 原正则漏"简介/档案/是谁/是什么"，"熊梓铭的个人简介是什么"被归 Level 3 日常
+  //   → 整句 ngram 稀释 textScore≈0.26 刚过阈值、知识库命中边缘化。补词后升 Level 1 深度查询。
+  const _explicitQuery = isExplicitKBQuery(message);
   const _hasPersonName = (dna.entity_genes || []).some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1);
   const _searchLevel = _explicitQuery ? 1 : (_meetingEntity ? 2 : (_hasPersonName ? 3 : 3));
   const _kbf = _searchLevel <= 2;
@@ -110,9 +141,11 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
   const _kbBudget = _kbBudgetByLevel[_searchLevel] || _kbBudgetByLevel[3];
 
   try {
-    const searchMsg = _kbf
-      ? message.replace(/你|在|知识库|看过|知道|吗|有没有|是否|曾经/g, '').replace(/[？?！!。，、：；]/g, '').trim()
-      : message;
+    // 🔴 S2-A2: 查询词改实体名优先 — 消息含 person 实体名时，直接用实体名搜。
+    // 整句 ngram 被"个人简介是什么"等非实体词稀释（复现：19 ngram 里只有 5 个命中，
+    // textScore=0.26 边缘）。实体名滑窗 ngram 全命中 → textScore≈1.0 → 知识库必注入。
+    // 仅当消息实际提到实体名才替换（"今天天气真不错"不受影响）。
+    const searchMsg = buildKBQuery(message, dna, _kbf);
 
     // 🛡️ V10.0: 会晤模式下绝对不注入通用知识库——实体上下文由 EntityContextBuilder 提供
     // 之前的代码用实体名全库搜索会导致熊梓铭文档泄漏给徐诗雨等人物

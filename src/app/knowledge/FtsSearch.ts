@@ -218,16 +218,31 @@ export class FtsSearch {
 
   // ─── 私有方法 ───
 
-  /** 中文分词：按字符切割 + 2-gram + 停用词过滤 */
+  /** 中文分词：滑动窗口 2-3 gram（对齐 SearchIndexBuilder.buildNgrams）+ 停用词过滤 */
   private _tokenize(text: string): string[] {
     const terms: string[] = [];
     const cleaned = text.toLowerCase();
 
-    // 提取中文 (2-4 字)
-    const chineseWords = cleaned.match(/[一-龥]{2,4}/g);
-    if (chineseWords) {
-      for (const w of chineseWords) {
-        if (!FtsSearch.STOP_WORDS.has(w)) terms.push(w);
+    // 🔴 S2-B1: 原贪婪 2-4 字分组（/[一-龥]{2,4}/g）在查询"熊梓铭的/个人简介/是什么"处
+    //   边界错位 — 查询 term 与索引 term（"熊梓铭"）永远不匹配 → BM25 0 命中 → 降级
+    //   LIKE %熊梓铭的% 也失配（content 是"熊梓铭，"）。滑动窗口保证任意 2/3 字子串
+    //   都是 term，"熊梓铭"必然被索引且被查询命中。
+    const chineseChars: string[] = [];
+    for (const ch of cleaned) {
+      if (/[一-龥]/.test(ch)) chineseChars.push(ch);
+    }
+    // 🔴 S4-Y1: 不去重 — 让同一 term 多次出现 tf>1，BM25 词频饱和生效。
+    // 原 `seen` 去重使所有 term tf 恒为 1 + doc.length=唯一 gram 数 → 高频词 doc
+    // 反而不如低频 doc（实测 docA 含"熊梓铭"×5 得 0.517 < docB ×1 得 0.581，排序反转）。
+    // 索引膨胀可接受（知识库仅 67 文档）；与旧贪婪实现（重复词也 push）行为一致。
+    for (let i = 0; i < chineseChars.length; i++) {
+      if (i + 1 < chineseChars.length) {
+        const g2 = chineseChars[i] + chineseChars[i + 1];
+        if (!FtsSearch.STOP_WORDS.has(g2)) terms.push(g2);
+      }
+      if (i + 2 < chineseChars.length) {
+        const g3 = chineseChars[i] + chineseChars[i + 1] + chineseChars[i + 2];
+        if (!FtsSearch.STOP_WORDS.has(g3)) terms.push(g3);
       }
     }
 

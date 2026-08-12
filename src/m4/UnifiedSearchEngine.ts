@@ -97,27 +97,38 @@ export function search(
   const candidates: MemoryCandidate[] = [];
   const seenIds = new Set<string>();
 
-  // 对每个n-gram查 search_index，取候选文档ID的交运行
+  // 对每个n-gram查 search_index，取候选文档ID（按 source_type 分组取 top，防高频源淹没低频高价值源）
+  // 🔴 S2-C1: 原单查询 `LIMIT 100` 无分组 — term='熊梓铭' 命中 784 条，conversation 占 711(91%)，
+  //   100 条截断把 knowledge_base(19条)/black_diamond(21条) 全淹没 → 知识库档案搜不到。
+  //   逐源查询各取 top，知识库/黑钻必然进入候选（总量仍由 L2 加载 LIMIT 控制）。
+  // 🔴 作用域澄清（S4-R1）: 本函数是 V11 单函数（默认 WS_SEARCH_V13=true 时仅 V13 失败降级用）。
+  //   用户场景（"熊梓铭简介"）的真正知识库注入源是 KnowledgeContextBuilder.buildPreM4Context，
+  //   V13 主链走 retrieveMultiRank 六路 + searchV13，不查询 search_index。此处分组修复是 V11 兜底路径的增强。
+  // 🔴 S4-Y6: 不含 'work' — 本函数 enrich 段只加载 conversation/memory/black_diamond/knowledge_base，
+  //   work 候选收集后会静默丢弃（work 域由 V13 retrieveMultiRank work 路覆盖）。
+  const SOURCE_TYPES = ['conversation', 'memory', 'black_diamond', 'knowledge_base'];
   for (const gram of ngrams.slice(0, 12)) { // 最多用12个n-gram（控制查询复杂度）
-    try {
-      const rows = db.exec(
-        "SELECT source_type, source_id FROM search_index WHERE term = ? LIMIT 100",
-        [gram],
-      );
-      if (!rows.length || !rows[0].values) continue;
+    for (const _src of SOURCE_TYPES) {
+      try {
+        const rows = db.exec(
+          "SELECT source_type, source_id FROM search_index WHERE term = ? AND source_type = ? LIMIT 60",
+          [gram, _src],
+        );
+        if (!rows.length || !rows[0].values) continue;
 
-      for (const [sourceType, sourceId] of rows[0].values) {
-        const key = `${sourceType}:${sourceId}`;
-        if (seenIds.has(key)) continue;
-        seenIds.add(key);
-        candidates.push({
-          id: String(sourceId),
-          text: '', // 后面从源表加载
-          source: sourceType as MemoryCandidate['source'],
-        });
+        for (const [sourceType, sourceId] of rows[0].values) {
+          const key = `${sourceType}:${sourceId}`;
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+          candidates.push({
+            id: String(sourceId),
+            text: '', // 后面从源表加载
+            source: sourceType as MemoryCandidate['source'],
+          });
+        }
+      } catch {
+        // 个别term查询失败不阻塞
       }
-    } catch {
-      // 个别term查询失败不阻塞
     }
   }
 

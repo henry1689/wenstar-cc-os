@@ -126,7 +126,7 @@ describe('MemoryAdapter', () => {
 });
 
 describe('createExtendedRegistry', () => {
-  it('8 域注册（默认 5 + S6 3）', async () => {
+  it('6 域注册（默认 3 + S6 3）— S2-E1 收编后 knowledge/work 由主链覆盖', async () => {
     const SQL = await initSqlJs();
     const db = new SQL.Database();
     db.exec(`CREATE TABLE black_diamond (id TEXT PRIMARY KEY); CREATE TABLE works (work_id TEXT PRIMARY KEY); CREATE TABLE vault_log (id TEXT PRIMARY KEY); CREATE TABLE memories (id TEXT PRIMARY KEY); CREATE TABLE conversations (id INTEGER PRIMARY KEY);`);
@@ -137,9 +137,17 @@ describe('createExtendedRegistry', () => {
       familyGraph: { searchPersonWithMemories: () => ({ profile: null, relations: [] }) },
       memoryRetriever: { retrieveMultiRank: async () => ({ lists: [] }) },
     });
-    expect(reg.all()).toHaveLength(8);
-    // 默认注册表不含 S6 三域
+    // 🔴 S2-E1: createDefaultRegistry 去掉 knowledge/work 适配器（由 KnowledgeContextBuilder / V13 work 路覆盖）
+    //   默认 3 域（black_diamond/vault/note）+ S6 3 域（conversation/family_graph/memory）= 6
+    expect(reg.all()).toHaveLength(6);
+    // 默认注册表不含 S6 三域，且不含 knowledge/work（收编后）
     const def = createDefaultRegistry({ sqlite, knowledgeBase: { search: async () => [] } });
-    expect(def.all()).toHaveLength(5);
+    expect(def.all()).toHaveLength(3);
+    const domains = def.all().map(a => a.domain);
+    expect(domains).not.toContain('knowledge');
+    expect(domains).not.toContain('work');
+    expect(domains).toContain('black_diamond');
+    expect(domains).toContain('vault');
+    expect(domains).toContain('note');
   });
 });
