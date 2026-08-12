@@ -212,7 +212,10 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
       }
     } catch (_hErr: any) { /* 降级 */ }
 
-    if (knResults.length > 0) {
+    // 🔴 S2-Q1: 会晤模式跳过 active 感知块 — 实体自有档案已由 KB·Entity 块注入(【关于XX的知识】)，
+    // 此块会混入通用"第二大脑"(角色扮演架构文档等公共噪音)并挤占 token，污染实体视角。
+    if (_meetingEntityUuid) { /* 会晤模式跳过此块 */ }
+    else if (knResults.length > 0) {
       const sqlite = ctx.storage.getSQLite();
       for (const k of knResults) {
         try { sqlite.writeRaw('INSERT OR IGNORE INTO knowledge_memories (knowledge_id, memory_id, relevance) VALUES (?, ?, ?)', [k.id, dna.branch_id, 0.8]); } catch { /* 写入失败不阻塞 */ }
@@ -307,9 +310,9 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
         }
         if (_fbKeywords.length > 0) {
           // V12.7(批3): 会晤模式补 belong 门（allow-common：自己的 + 公共）— 此前兜底 search 全库泄漏
-          // 🔴 参数错位修复: _meetingEntityUuid 原落 interactionType(第4参)→ SQL 拼 AND interaction_type='<uuid>' 恒空。
-          // 移到第5参 belongEntityUuid（对照 L121/146 weightedSearch 的第5参正确写法）。
-          const _fallback = await ctx.knowledgeBase.search(_fbKeywords.slice(0, 3).join(' '), 3, undefined, undefined, ctx._meetingEntityUuid ?? undefined);
+          // 🔴 S2-R1: 参数错位修复 — KnowledgeBase.search 第4参才是 belongEntityUuid（兼容层只有4参），
+          // 原传第5位被 JS 静默忽略 → 会晤模式全库扫描拉入玉瑶等他人 KB。移第4位。
+          const _fallback = await ctx.knowledgeBase.search(_fbKeywords.slice(0, 3).join(' '), 3, undefined, ctx._meetingEntityUuid ?? undefined);
           if (_fallback.length > 0) {
             const fbC = _fallback.map((k: any) => '\u{1f4c4} ' + k.title + '\n' + (k.content || '').substring(0, 500)).join('\n\n');
             knowledgeBaseText = knowledgeBaseText ? knowledgeBaseText + '\n\n【知识库补充】\n' + fbC : fbC;
@@ -382,8 +385,8 @@ export async function buildPreM4Context(input: PreM4Input): Promise<PreM4Output>
     if (_isIntimateMode && ctx.knowledgeBase) {
       const _intimateKeywords = ['性爱技巧', '两性知识', '前戏', '高潮', '做爱', '亲密', '性体验', '身体感受'];
       // V12.7(批3): 会晤模式补 belong 门（allow-common：两性知识多为公共，但需排除他人私密）
-      // 🔴 参数错位修复: _meetingEntityUuid 原落 interactionType(第4参)→ 恒空。移到第5参 belongEntityUuid。
-      const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4, undefined, undefined, ctx._meetingEntityUuid ?? undefined);
+      // 🔴 S2-R1: 参数错位修复 — 第4参才是 belongEntityUuid，原第5位被忽略 → 会晤全库拉入他人私密 KB。
+      const _intimateKb = await ctx.knowledgeBase.search(_intimateKeywords.join(' '), 4, undefined, ctx._meetingEntityUuid ?? undefined);
       if (_intimateKb.length > 0) {
         const _intimateContent = _intimateKb.map((k: any) => {
           const _cleanTitle = k.title || '';
