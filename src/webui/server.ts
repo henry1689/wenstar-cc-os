@@ -745,7 +745,13 @@ async function initPipeline(): Promise<void> {
     if (gatekeeper) entityMeeting.setGatekeeper(gatekeeper);
     const minutesStore = new MeetingMinutesStore(familyGraph);
     entityMeeting.setMinutesStore(minutesStore);
-    console.log('  实体会晤管理器 (EntityMeeting) 就绪 ✓ (含会议纪要)');
+    // 🔴 S2-G1: 注入存储（会晤状态持久化 + 重启恢复）
+    try {
+      entityMeeting.setStorage(storage);
+      const _restored = entityMeeting.restoreLastMeeting();
+      if (_restored) console.log('  [S2-G1] 重启自动恢复会晤实体 ✓');
+    } catch (_re) { console.warn('  [S2-G1] 会晤恢复失败:', (_re as Error)?.message); }
+    console.log('  实体会晤管理器 (EntityMeeting) 就绪 ✓ (含会议纪要 + 会晤持久化)');
     markModuleAlive('EntityMeeting·会晤');
   } catch (e) {
     console.warn('  实体会晤初始化失败:', (e as Error).message);

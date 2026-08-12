@@ -43,6 +43,11 @@ export class EntityMeeting {
   private familyGraph: FamilyGraph;
   private gatekeeper: UUIDGatekeeper | null = null;
   private minutesStore: MeetingMinutesStore | null = null;
+  /** 🔴 S2-G1: 持久化存储（engine_store 键值），用于会晤状态跨重启恢复 */
+  private _storage: { getSQLite?: () => { queryAll(sql: string, params?: any[]): any[]; writeRaw?(sql: string, ...params: any[]): void; } } | null = null;
+
+  /** 🔴 S2-G1: 会晤状态持久化 key（engine_store） */
+  private static LAST_MEETING_KEY = 'entity_meeting_last_entity';
 
   /** 当前会晤状态。null = 在玉瑶视角（秘书模式） */
   private _meeting: MeetingState | null = null;
@@ -71,6 +76,61 @@ export class EntityMeeting {
   /** 注入纪存储引擎 */
   setMinutesStore(store: MeetingMinutesStore): void {
     this.minutesStore = store;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🔴 S2-G1: 会晤状态持久化 — 跨重启自动恢复上次会晤实体
+  // ═══════════════════════════════════════════════════════════════
+
+  /** 注入存储（engine_store 键值）— 由 server.ts 传入 */
+  setStorage(storage: any): void {
+    this._storage = storage;
+  }
+
+  /** 记录当前会晤实体到持久化存储（enter/switchTo 时调用） */
+  saveLastMeeting(): void {
+    if (!this._meeting || !this._storage?.getSQLite) return;
+    try {
+      const sqlite = this._storage.getSQLite();
+      if (sqlite && typeof sqlite.writeRaw === 'function') {
+        sqlite.writeRaw(
+          'INSERT OR REPLACE INTO engine_store (key, value, updated_at) VALUES (?, ?, ?)',
+          EntityMeeting.LAST_MEETING_KEY,
+          JSON.stringify({ entityName: this._meeting.entityName, entityUUID: this._meeting.entityUUID, savedAt: new Date().toISOString() }),
+          new Date().toISOString(),
+        );
+        console.log('[EntityMeeting] 会晤状态已持久化: ' + this._meeting.entityName);
+      }
+    } catch (e) { console.warn('[EntityMeeting] 持久化失败:', (e as Error)?.message || e); }
+  }
+
+  /** 读取上次会晤实体（重启恢复用）。返回 null = 无持久化记录 */
+  getLastMeeting(): { entityName: string; entityUUID: string } | null {
+    if (!this._storage?.getSQLite) return null;
+    try {
+      const sqlite = this._storage.getSQLite();
+      const rows = sqlite.queryAll('SELECT value FROM engine_store WHERE key = ?', [EntityMeeting.LAST_MEETING_KEY]);
+      if (rows && rows.length > 0) {
+        const parsed = JSON.parse(String((rows[0] as any).value || '{}'));
+        if (parsed?.entityName && parsed?.entityUUID) {
+          return { entityName: parsed.entityName, entityUUID: parsed.entityUUID };
+        }
+      }
+    } catch { /* 读取失败返回 null */ }
+    return null;
+  }
+
+  /** 重启后自动恢复上次会晤实体（若在玉瑶视角且无活跃会晤） */
+  restoreLastMeeting(): boolean {
+    if (this._meeting?.active || !this._storage) return false;
+    const last = this.getLastMeeting();
+    if (!last) return false;
+    const entered = this.enter(last.entityName);
+    if (entered) {
+      console.log('[EntityMeeting] 🔄 重启自动恢复会晤: ' + last.entityName);
+      return true;
+    }
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -122,6 +182,8 @@ export class EntityMeeting {
     }
 
     this._isFirstTurn = true;
+    // 🔴 S2-G1: 持久化当前会晤实体（重启后自动恢复）
+    this.saveLastMeeting();
     return this._meeting;
   }
 

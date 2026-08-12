@@ -807,6 +807,10 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     // ── V3.0 实体会晤意图检测 + 激活（含间接呼唤/自然口语） ──
     if (ctx._entityMeeting && !ctx._entityMeeting.isActive()) {
+      // 🔴 S2-G1: 重启后自动恢复上次会晤实体（用户上次在会晤中，重启后继续以该实体身份回应）
+      // 仅当用户消息没有明确"切回玉瑶/退出会晤"意图时才恢复——否则尊重用户当前意图。
+      const _explicitExit = /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
+        || /^(?:切回|回到|换回|变回|退出|散会|结束).*(?:玉瑶|瑶瑶|瑶儿)?\s*$/.test(message.trim());
       const fg = ctx.m4?.getFamilyGraph?.();
       const allNames: string[] = fg?.getAllPersonNames?.() || [];
       const intentNames = EntityMeeting.detectUserIntent(message, allNames);
@@ -818,6 +822,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
           ctx._entityMeeting.enter(intentNames[0]);
           console.log('[EntityMeeting] 单人会晤启动: ' + intentNames[0]);
         }
+      } else if (!_explicitExit && ctx._entityMeeting.restoreLastMeeting?.()) {
+        // 无明确意图 + 有持久化会晤 → 自动恢复上次实体
+        console.log('[EntityMeeting] 消息无会晤意图，自动恢复上次会晤: ' + ctx._entityMeeting.getEntityName());
       }
     }
 
