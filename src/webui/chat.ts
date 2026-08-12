@@ -1310,7 +1310,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     const timeGuard = `[当前时间] ${beijingTime}（北京时间）${lunarDate ? ' 农历' + lunarDate : ''}——回答时间、日期、节气、节日问题必须以此为准，不能编造。`;
 
     // 通用幻觉防护：禁止编造过去事件、日期、用户生活细节
-    const memoryGuard = '注意：你没有记忆的过去事件、日期、穿着、对话内容绝对不能编造。不确定就说不记得了。宁可少说，不能说错。';
+    // 🔴 S2-L1: 升级为系统级铁律 — 对所有实体/所有模式生效（不止熊梓铭）。
+    // 讲过去的事只能用数据库/知识库/记忆中真实存在的事实，没有的只能说不知道，绝不能编造。
+    const memoryGuard = '🔴【系统铁律·讲过去必须真实】无论谁问起任何过去的事（经历/生日/事件/日期/家庭细节/身份/身份相关），你只能讲【本档案】【知识库】【记忆】中真实存在的内容。没有记录的过去 = 你不知道 = 只能诚实说"这个我没有记录/不记得/档案里没写"。**绝对禁止编造**任何过去的事件、细节、经历、家庭信息、职业、对话——编造是系统级错误，比回答不上来严重得多。宁可说"不知道/记不清"，绝不能编一个假的。';
 
     // 知识分类反问（仅在casual/中性场景触发，以guard message形式注入，不追加到reply末尾）
     let classificationGuard = '';
@@ -1344,7 +1346,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       : '';
     // 🛡️ 调试开关: WS_NO_CONTENT_FILTER=true 时跳过所有内容限制
     const _noFilter = ConfigService.getBool('WS_NO_CONTENT_FILTER', false);
-    const allGuardMsgs = _noFilter ? '' : [hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard].filter(Boolean).join('\n');
+    const allGuardMsgs = _noFilter ? '' : [hallucinationGuard, repeatHint, factualRecallGuard, feelingGuard, dailyGuard, timeGuard, classificationGuard, intimacyFilter, _appearanceGuard, memoryGuard].filter(Boolean).join('\n');
 
     let reply = '';
 
