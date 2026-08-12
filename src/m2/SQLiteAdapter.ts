@@ -1924,7 +1924,10 @@ export class SQLiteAdapter {
   private _rebuildMemoryAnchors(): number {
     if (!this.db) return 0;
     const now = new Date().toISOString();
-    const RP_RE = /爸爸|爷爷|女儿|儿子|哥哥|叔叔|妈妈|妹妹|姐姐|爹爹|主人|老公|老婆/;
+    // 🔴 S2-H1: 移除角色扮演误判 — 系统已只有会晤模式。
+    // 原 RP_RE 把含家庭称谓(爸爸/妈妈/哥哥/妹妹)的对话误判为 roleplay → 会晤记忆被正常检索排除
+    // (实测: 熊梓铭会晤对话"梓铭。是你吗/介绍一下你自己/说说你的经历"全被标 roleplay)。
+    // 系统只有会晤模式后，对话组锚点统一为 normal 记忆。const RP_RE 已删除。
 
     // V18: 重建前存量空 UUID 锚点统计 — DELETE 之前检测，暴露运行时 flush 写入的空 UUID 锚点
     //     （重建产物恒带 UUID，只有重建前残留的空 UUID 锚点能反映运行时对话闭组未归实体）
@@ -1995,8 +1998,8 @@ export class SQLiteAdapter {
       }
       const raw = pts.join('\n').substring(0, 4000);
 
-      const allC = tvs.map(([, c]: any) => String(c || '')).join(' ');
-      const kind = RP_RE.test(allC) ? 'roleplay' : 'normal';
+      // 🔴 S2-H1: 统一为 normal 记忆（角色扮演误判已移除）
+      const kind = 'normal';
 
       const ca = Math.min(9.99, parseFloat(((Number(maxCa) || Number(avgCa) || 0.5)).toFixed(3)));
       const cl = ca >= 2 ? 3 : ca >= 1 ? 2 : ca >= 0.5 ? 1 : 0;
