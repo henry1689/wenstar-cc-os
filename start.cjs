@@ -30,8 +30,10 @@ if (fs.existsSync(envPath)) {
 // 🔴 V15: rebuild-memories → SQLiteAdapter._rebuildMemoryAnchors()
 // 🔴 V16: backfill-uuid → repairDataIntegrity, fix-xsy-kb → _fixKnowledgeBase,
 //         fix-all-entities-final → _fixEntityRelations + _fixKnowledgeBase
+// 🔴 v2.9: 移除 fix-kb-gates boot 改写（改 src 的 HIGH_RISK 文件 = 绕过治理）。
+//   KB 会晤闸门修复改走 harness_run_flow 落 src 并 commit——已提交 src 是唯一权威。
+//   仅允许 DB/数据修复脚本（写库不写 src/dist），禁止 src/dist 改写。
 const prestartScripts = [
-  { label: 'KB闸门', cmd: `node "${path.join(__dirname, 'scripts', 'fix-kb-gates.cjs')}"` },
   { label: 'Edge清理', cmd: `node "${path.join(__dirname, 'scripts', 'clean-all-person-edges.cjs')}"` },
   { label: '时空回填', cmd: `node "${path.join(__dirname, 'scripts', 'backfill-temporals.cjs')}"` },
 ];
