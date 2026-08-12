@@ -1953,8 +1953,12 @@ try {
   // 避免单块场景丢内容。非 strict 模式保持 ≥2 块旧行为。
   const _minBlocks = PROMPT_ASSEMBLER_STRICT ? 1 : 2;
   if (_assembled.text.length > 0 && _assembled.blocks.length >= _minBlocks) {
-    // PFC + entityContext 从旧管线注入，新块从 assembler
-    finalKnowledgeText = _assembled.text + '\n\n' + (finalKnowledgeText || '');
+    // 🔴 S2-R2: 会晤模式下实体档案(finalKnowledgeText)在前，记忆(_assembled.text)在后。
+    // 实测: 原顺序 _assembled.text(记忆) 在前 → LLM 注意力被记忆带偏(编造白粥/丰田)，
+    //   实体档案(梓铭简介含14岁真实记录)在后被忽略。
+    finalKnowledgeText = _isMeeting
+      ? (finalKnowledgeText ? finalKnowledgeText + '\n\n' : '') + _assembled.text
+      : _assembled.text + '\n\n' + (finalKnowledgeText || '');
     console.log('[PromptAssembler] ' + _assembled.blocks.length + ' blocks, ' + _assembled.charCount + ' chars' + (_assembled.dropped.length > 0 ? ', ' + _assembled.dropped.length + ' dropped' : ''));
   }
 } catch { /* 降级到旧拼接链 */ }
