@@ -271,7 +271,7 @@ function findAnswerStart(text: string): number | null {
             openIdx.push(k);
         else if (text[k] === '）') {
             if (openIdx.length > 0) {
-                const start = openIdx.pop();
+                const start = openIdx.pop()!;
                 candidates.push({ start, end: k });
             }
         }
@@ -361,7 +361,7 @@ function stripRoleEstablishment(text: string): string {
 function cleanTail(s: string): string {
     return s.replace(/^[\s。！？…,.，、]+/, '');
 }
-export function extractAnswerFromReasoning(text) {
+export function extractAnswerFromReasoning(text: string): string {
     if (!text)
         return '';
     // ① 复盘型思维链（引用系统指令标记）→ 专用剥离。'' = 宁空不泄漏后台话
