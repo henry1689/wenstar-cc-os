@@ -68,7 +68,7 @@ const THINKING_KEYWORDS = /让[我你]想|让我回|心里|想到|脑中|好好�
  * 保留作降级路径（extractAnswerFromReasoning 找不到过渡标记时的兜底）。
  * DeepSeek V4-flash 的 reasoning_content 格式通常是："思考句1。思考句2……\n\n回答句1。回答句2。"
  */
-export function stripThinkingPrefix(text) {
+export function stripThinkingPrefix(text: string): string {
     if (!text)
         return '';
     // 按句末标点/换行切段（保留分隔符），逐句判断：含思维关键词的句子剥离，直到第一个非思维句
@@ -118,7 +118,7 @@ const REFLECTIVE_VERB_RE = /权衡|草稿|折中|打磨|语气要|如何回应|�
 const REFLECTIVE_GO_RE = /开始[。！？]|开始吧/g;
 /** 分析句特征 — 复盘思维链中的复述他人话语/自我权衡/系统引用/自我要求计划。
  * V2 修复: findAnswerStartRobust 用此区分分析句与真实答案句（防止"（他在接我刚才的话…"被当答案起点）。 */
-function isAnalysisSentence(s) {
+function isAnalysisSentence(s: string): boolean {
     if (/(?:他说|他回|他接|他这句|他说过|他在|鸿艺先生?说|用户说|你这句话)/.test(s))
         return true;
     if (/(?:我该|我可以|我不必|我应|这让我|我心里|我那时候|我回想|我琢磨|我犯难|我在想)/.test(s))
@@ -138,7 +138,7 @@ function isAnalysisSentence(s) {
     return false;
 }
 /** 鲁棒答案起点 — 跳过分析句，取第一个真答案句（V2 修复）。 */
-function findAnswerStartRobust(text) {
+function findAnswerStartRobust(text: string): number | null {
     const sentences = text.split(/(?<=[。！？…\n])/);
     let pos = 0;
     for (const s of sentences) {
@@ -171,7 +171,7 @@ function findAnswerStartRobust(text) {
  * 复盘型思维链剥离 — 识别系统指令标记后，取最后转场锚点"开始。"之后的最终稿。
  * 返回 string（成功剥离最终稿）/ ''（是复盘型但无可靠转场 = 宁空不泄漏）/ null（非复盘型，走 legacy）。
  */
-function extractFromReflectiveChain(text) {
+function extractFromReflectiveChain(text: string): string | null {
     // 识别信号：引用系统指令（【】标记 或 文字描述"系统提醒过/事实回忆/不能编造"）——正常角色回答不引用系统指令
     if (!REFLECTIVE_SIGNAL_RE.test(text))
         return null;
@@ -204,11 +204,11 @@ function extractFromReflectiveChain(text) {
     return '';
 }
 /** 兜底清理：残留的系统指令标记【…】整段删除（防 legacy 分支泄漏） */
-function removeSystemMarks(text) {
+function removeSystemMarks(text: string): string {
     return text.replace(SYSTEM_MARK_G_RE, '').trim();
 }
 const ANSWER_MARK_RE = /(?:好了|好)，[^。]{0,18}?(?:回应|回答|对|和|说)[^。]{0,12}?(?:吧|了|——)[。]?/;
-function findAnswerMark(text) {
+function findAnswerMark(text: string): { index: number; length: number } | null {
     const m = text.match(ANSWER_MARK_RE);
     if (m && typeof m.index === 'number')
         return { index: m.index, length: m[0].length };
@@ -222,7 +222,7 @@ function findAnswerMark(text) {
  *   ③ 自称 + 具体场景: "梓铭刚洗完澡，正窝在宿舍…"
  * 思维链（我得/我要/作为/最重要的是…）不含以上形态。逐句判断，返回第一个答案句的文本位置。
  */
-function isAnswerSentence(s) {
+function isAnswerSentence(s: string): boolean {
     // V3 修复: 括号开头不一定是答案。三档判断——
     //   ① 短自我标注（内容≤8字，"（语气放缓了些）"）→ 非答案（思维链元信息）
     //   ② 分析句括号（"（他在接我刚才的话…""（我该接住…"）→ 非答案（内容以"他/我"开头+心理动词）
@@ -259,13 +259,13 @@ function isAnswerSentence(s) {
         return true;
     return false;
 }
-function findAnswerStart(text) {
+function findAnswerStart(text: string): number | null {
     // V9 根治: 全局括号段扫描——括号思维链段跨句子（"（…开心吗'。这是一个温柔的问句。…我要接住…）"），
     //   句子切分+单句内匹配"）"都失效。用栈扫描整个 text 找所有完整"（…）"括号段（跨句子），
     //   每个括号段作为候选：isAnalysisSentence(段)=true 跳过（思维链），isAnswerSentence(段)=true 返回段起点（动作描写答案）。
     //   非括号句子仍按原逻辑。
     const openIdx = [];
-    const candidates = [];
+    const candidates: Array<{ start: number; end: number }> = [];
     for (let k = 0; k < text.length; k++) {
         if (text[k] === '（')
             openIdx.push(k);
@@ -322,7 +322,7 @@ function findAnswerStart(text) {
  *   不能直接剥。组合判定: 仅当 "我会先…" 句后紧接 "语气要/回答要" 等其他计划句时才剥（用户实测
  *   "我会先承认…。语气要自然一点…" 组合）；纯答案句（后无计划句）保留。
  */
-function stripPlanningPrefix(text) {
+function stripPlanningPrefix(text: string): string {
     let t = text;
     for (let i = 0; i < 5; i++) {
         // ① 明确指令计划句（语气要/回答要/声音要… — 描述"如何回应"的自我指令，几乎必是计划句，非答案本体）
@@ -351,14 +351,14 @@ function stripPlanningPrefix(text) {
  */
 /** 角色建立段（无过渡标记时的降级防御）: "好的，现在我是{角色}了，我是{描述}…" */
 const ROLE_SETUP_RE = /^好的，现在我是[^。]{1,20}了(?:，[^。]{1,80})?。?/;
-function stripRoleEstablishment(text) {
+function stripRoleEstablishment(text: string): string {
     const m = text.match(ROLE_SETUP_RE);
     if (m)
         return cleanTail(text.slice(m[0].length));
     return text;
 }
 /** 清理 tail 前导空白/孤立标点（切答案起点后可能残留 "。(" 之类） */
-function cleanTail(s) {
+function cleanTail(s: string): string {
     return s.replace(/^[\s。！？…,.，、]+/, '');
 }
 export function extractAnswerFromReasoning(text) {
@@ -372,7 +372,7 @@ export function extractAnswerFromReasoning(text) {
     return removeSystemMarks(extractAnswerFromReasoningLegacy(text));
 }
 /** 原剥离逻辑（过渡标记 → 结构识别 → 角色建立段 → 关键词） */
-function extractAnswerFromReasoningLegacy(text) {
+function extractAnswerFromReasoningLegacy(text: string): string {
     if (!text)
         return '';
     // ① 过渡标记（最精确，命中即切其后）
@@ -426,7 +426,7 @@ class StreamThinkingStripper {
     crossed = false; // 已进入答案区
     reset() { this.buf = ''; this.crossed = false; }
     /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
-    push(content, reasoning) {
+    push(content: string | undefined, reasoning: string | undefined): string {
         const c = content || '';
         const r = reasoning || '';
         if (!c && !r)
