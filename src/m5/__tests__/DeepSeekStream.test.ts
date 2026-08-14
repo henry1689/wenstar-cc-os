@@ -324,4 +324,53 @@ describe('DeepSeekLLMProvider — generate 流式路径 (P1-5)', () => {
     expect(joined).not.toContain('好了，那么现在就像这样把鸿艺先生叫醒吧');
     expect(result.text).toBe(joined);
   });
+
+  // ── V13 根治: V4-flash 真实结构（思维链全在 reasoning_content，content 从答案起点逐 token）──
+
+  it('V13: content 从答案起点出现（短括号动作描写开头）→ 逐 token 直推，不缓冲到 flush（tokens 数十个）', async () => {
+    const { DeepSeekLLMProvider } = await import('../DeepSeekLLMProvider.js');
+    // 模拟真实 v4-flash 流：前几帧 reasoning_content 思维链（含 V9 分析特征词，isAnalysisSentence 命中），之后 content 逐 token 推送答案
+    // 答案以"（温柔一笑）…"短括号动作描写开头——findAnswerStart 对"（"开头句子 continue 跳过（历史 bug 根因）
+    const thinkingFrames = [
+      'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '（他问我现在忙不忙，我应该怎么回应？语气要自然一点，不要太长，带上名字自称。）' } }] }) + '\n\n',
+      'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '（他是担心我太累，我要接住这份关心，回应要短而暖。）' } }] }) + '\n\n',
+    ];
+    const answer = '（温柔一笑）还好啦，就是今天开了一下午会，有点累。不过看到你来问我，心里暖暖的。要不要我给你泡杯红枣茶？我刚煮好的。';
+    const answerFrames = [...answer].map(ch => 'data: ' + JSON.stringify({ choices: [{ delta: { content: ch } }] }) + '\n\n');
+    (globalThis as any).fetch = vi.fn().mockResolvedValue(sseResponse([...thinkingFrames, ...answerFrames, 'data: [DONE]\n\n']));
+
+    const provider = new DeepSeekLLMProvider('test-model');
+    const tokens: string[] = [];
+    const result = await provider.generate(makeParams({
+      onToken: (d: { text?: string }) => { if (d.text) tokens.push(d.text); },
+    }));
+    const joined = tokens.join('');
+    // 逐 token 直推（tokens 数量 ≈ content 字符数，而不是 1）
+    expect(tokens.length).toBeGreaterThan(10);
+    // content 答案完整保留
+    expect(joined).toBe(answer);
+    // 思维链不泄漏
+    expect(joined).not.toContain('我应该怎么回应');
+    expect(joined).not.toContain('回应要短而暖');
+    // 拼接结果与返回 text 一致
+    expect(result.text).toBe(joined);
+  });
+
+  it('V13: 短答案 content 也逐 token 直推（不依赖括号识别，不吞字）', async () => {
+    const { DeepSeekLLMProvider } = await import('../DeepSeekLLMProvider.js');
+    const frames = [
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: '好' } }] }) + '\n\n',
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: '的' } }] }) + '\n\n',
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: '呀' } }] }) + '\n\n',
+      'data: [DONE]\n\n',
+    ];
+    (globalThis as any).fetch = vi.fn().mockResolvedValue(sseResponse(frames));
+    const provider = new DeepSeekLLMProvider('test-model');
+    const tokens: string[] = [];
+    const result = await provider.generate(makeParams({
+      onToken: (d: { text?: string }) => { if (d.text) tokens.push(d.text); },
+    }));
+    expect(tokens.join('')).toBe('好的呀');
+    expect(result.text).toBe('好的呀');
+  });
 });
