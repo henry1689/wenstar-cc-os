@@ -252,7 +252,7 @@ function isAnswerSentence(s: string): boolean {
         if (/^(?:因为|由于|关于|反映|准备|注意|我的|让我|我先|开场|身份|自称|这是|嗯|反应|比如|例如|像|好像|比喻|假设|如果|场景|模拟)/.test(_inner))
             return false;
         // ⑤ V12根治: 动作描写——含角色名（梓铭/她/玉瑶/诗雨）OR 含身体动作词 → 答案；否则（分析/场景/补充括号）→ 非答案
-        if (/(?:梓铭|她|玉瑶|诗雨|徐诗雨|熊梓铭)/.test(_inner) || ACTION_VERBS.test(_inner))
+        if (ACTION_VERBS.test(_inner))
             return true;
         return false;
     }
