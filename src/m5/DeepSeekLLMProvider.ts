@@ -248,8 +248,12 @@ function isAnswerSentence(s: string): boolean {
         // ④b V12修复: 分析引导词括号（"（因为是首次正式会面）"）→ 非答案
         if (/^(?:因为|由于|关于|反映|准备|注意|我的|让我|我先|开场|身份|自称|这是|嗯|反应|比如|例如|像|好像|属于|但先|只是|不过|整理|录入|快到午饭|拟定|规划)/.test(_inner))
             return false;
-        // ⑤ 其余 = 动作描写答案（"（愣了一下）""（梓铭听到…）""（伸手轻轻抚上…）"）→ 答案
-        return true;
+        // ⑤ V12根治: 含角色AND动作词 → 动作描写答案；否则（分析/场景/补充括号）→ 非答案
+        if (ROLE_RE.test(_inner) && ACTION_VERBS.test(_inner))
+            return true;
+        if (ACTION_VERBS.test(_inner))
+            return true;
+        return false;
     }
     // V12修复: 称呼+逗号+对话——句子以"鸿艺先生，"等开头且含"你/您/我" → 强答案信号
     if (/^(?:鸿艺先生|鸿艺|梓铭|玉瑶|诗雨|徐诗雨)[，,][\s\S]{0,60}(?:你|您|我)/.test(s))
