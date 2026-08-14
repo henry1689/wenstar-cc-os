@@ -298,12 +298,15 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
           });
           job.result = result;
           job.reply = result.reply || '';
-          // TTS 与同步路径共用（buildTTSResult），后台生成不阻塞
-          // 🔴 S2-F2: 流式路径传 pushFn（增量段 SSE 推送），同步路径不传（无 SSE）
-          job.audio = await buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null));
+          // 🔴 发送卡死修复: TTS 不阻塞 done——reply 就绪立即完成（文本可展示），TTS 后台异步生成后更新 audio。
           job.status = 'done';
-          deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: job.audio.audio_url, audio_urls: job.audio.audio_urls, tts_job: job.audio.tts_job });
+          deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: null, audio_urls: [], tts_job: null });
           console.log('[ChatStream] done: ' + jobId + ' tokens=' + job.tokens.length + ' len=' + job.reply.length);
+          // TTS 异步后台生成（不阻塞 done；失败仅记日志）
+          void buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null)).then((audio) => {
+            job.audio = audio;
+            deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
+          }).catch((e) => { console.warn('[ChatStream] TTS 后台生成失败:', (e as Error)?.message || e); });
         } catch (e) {
           job.status = 'error';
           job.error = (e as Error)?.message || String(e);
