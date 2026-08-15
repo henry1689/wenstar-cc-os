@@ -396,10 +396,15 @@ export function extractAnswerFromReasoning(text: string): string {
         return '';
     // ① 复盘型思维链（引用系统指令标记）→ 专用剥离。'' = 宁空不泄漏后台话
     const reflective = extractFromReflectiveChain(text);
-    if (reflective !== null)
-        return reflective;
-    // ②~⑤ legacy 逻辑（复盘型已被①拦截；残留系统标记由 removeSystemMarks 兜底清理）
-    return removeSystemMarks(extractAnswerFromReasoningLegacy(text));
+    let out: string;
+    if (reflective !== null) {
+        out = reflective;
+    } else {
+        // ②~⑤ legacy 逻辑（复盘型已被①拦截；残留系统标记由 removeSystemMarks 兜底清理）
+        out = removeSystemMarks(extractAnswerFromReasoningLegacy(text));
+    }
+    // V14c: 重复输出去重（同一回复两遍）——放在剥离后兜底
+    return dedupeRepeatedBlock(out);
 }
 /** 原剥离逻辑（过渡标记 → 结构识别 → 角色建立段 → 关键词） */
 function extractAnswerFromReasoningLegacy(text: string): string {
