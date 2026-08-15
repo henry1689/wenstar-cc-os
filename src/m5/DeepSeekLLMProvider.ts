@@ -391,6 +391,46 @@ function stripRoleEstablishment(text: string): string {
 function cleanTail(s: string): string {
     return s.replace(/^[\s。！？…,.，、]+/, '');
 }
+/**
+ * V14c: 草稿迭代型去重——检测"同一回复输出两遍"（生产实测: 同一内容≥3句重复）。
+ * 按段（句末标点/换行切）取前 3 段指纹，若指纹在后续再次完整出现 → 截断保留第一遍。
+ */
+function dedupeRepeatedBlock(text: string): string {
+    const t = text || '';
+    if (t.length < 30) return t;
+    const parts = t.split(/(?<=[。！？…\n])/);
+    if (parts.length < 6) return t;
+    // 取前 3 段指纹（≥4字/段）
+    const fingerprint: string[] = [];
+    for (const p of parts) {
+        const c = p.trim();
+        if (c.length >= 4) {
+            fingerprint.push(c);
+            if (fingerprint.length >= 3) break;
+        }
+    }
+    if (fingerprint.length < 2) return t;
+    const joinedFp = fingerprint.join('');
+    // 找指纹首次出现结束位置
+    let firstEnd = -1;
+    for (let i = 0; i < parts.length; i++) {
+        if (parts[i].trim().length >= 4 && parts[i].trim() === fingerprint[0]) {
+            firstEnd = i;
+            break;
+        }
+    }
+    if (firstEnd < 0) return t;
+    // 从 firstEnd 起累积，找指纹完整重复（在第一次之后）
+    let acc = '';
+    for (let i = firstEnd; i < parts.length; i++) {
+        acc += parts[i];
+        if (acc.includes(joinedFp) && acc.length > joinedFp.length) {
+            const repIdx = acc.indexOf(joinedFp);
+            return t.slice(0, t.indexOf(acc) + repIdx);
+        }
+    }
+    return t;
+}
 export function extractAnswerFromReasoning(text: string): string {
     if (!text)
         return '';
