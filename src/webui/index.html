@@ -559,7 +559,9 @@ async function sendStream(t){
       renderM1(dd.result.m1);renderM3(dd.result.m3);renderM4(dd.result.m4);renderM5(dd.result.m5);loadM68();
       last=dd.result;
     }
-    if(dd.audio_urls&&dd.audio_urls.length){playAudioQueue(dd.audio_urls);}
+    // V15: done 帧增量段已由 chat-tts 推送，这里只兜底缺失段（防漏事件），不重启播放
+    if(_ttsIncr.gen===gen){_incrTTSFill(gen,dd.audio_urls||[]);}
+    else if(dd.audio_urls&&dd.audio_urls.length){playAudioQueue(dd.audio_urls);}
     else if(dd.audio_url){const ap=new Audio(dd.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
     else if(dd.tts_job){pollTTSJob(dd.tts_job);}   // S4 P1-2: 长文音频异步生成，文字已渲染，轮询补齐后续播
     clearBusy();
@@ -583,6 +585,7 @@ async function sendStream(t){
       throw new Error('no job_id');
     }
     const jobId=d0.job_id;
+    _incrTTSInit(gen);   // V15: 提前初始化增量队列——流式期间 chat-tts 段不被代际守卫丢弃（原 L484 只在 pollTTSJob）
     // 轮询补齐（SSE 断开/不推送时兜底；间隔取服务端 poll_hint_ms 或 150ms）
     timer=setInterval(async()=>{
       if(gen!==_audioGen||done){clearInterval(timer);return;}
