@@ -248,7 +248,8 @@ function isAnswerSentence(s: string): boolean {
             return false;
         // ③ V6/S4-C2修复: 内容≤8字的短括号——身体动作（"（愣了一下）"）→ 答案；补充信息/自我标注（"（2008年生）"）→ 非答案
         if (_inner.length <= 8) {
-            if (/^(?:愣|笑|顿|停|缩|颤|叹|咽|抬|低|咬|吸|摇|点|垂|背|眯|皱|咬|抿)/.test(_inner))
+            // V14: 加"温/柔/抱/拍/抚/拉/握/揽/靠/贴/吻/亲"等动作描写词——"（温柔一笑）""（轻轻抱了抱）"也是答案
+            if (/^(?:愣|笑|顿|停|缩|颤|叹|咽|抬|低|咬|吸|摇|点|垂|背|眯|皱|抿|温|柔|抱|拍|抚|拉|握|揽|靠|贴|吻|亲)/.test(_inner))
                 return true;
             return false;
         }
@@ -500,7 +501,7 @@ class StreamThinkingStripper {
             return tail;
         }
         // ②b V14: 缓冲上限保护——buf 超长仍未识别答案起点（content 全思维链），用 extractAnswerFromReasoning 剥离
-        if (this.buf.length > 400) {
+        if (this.buf.length > 200) {
             const extracted = extractAnswerFromReasoning(this.buf);
             if (extracted && extracted.trim().length > 0 && extracted.length < this.buf.length - 10) {
                 this.crossed = true;
