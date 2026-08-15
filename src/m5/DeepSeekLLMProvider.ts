@@ -434,6 +434,11 @@ function dedupeRepeatedBlock(text: string): string {
 export function extractAnswerFromReasoning(text: string): string {
     if (!text)
         return '';
+    // 🔴 V19 规划型思维链（最高优先级）: [规划段: 列表/编号/元认知主语] + [转场指令] + [答案]。
+    //   骨架稳定（markdown列表 -/编号 1./元认知"我想表达/我的角色是/关于长度"），角色对话绝不含。
+    const afterPlan = findAfterPlanChain(text);
+    if (afterPlan)
+        return afterPlan;
     // 🔴 V18 结构性剥离: 草稿迭代型思维链 = [第一稿] + [评估段: 检查清单+✓] + [最终稿]。
     //   评估措辞每次漂移（V14c"让我定稿"/V17"最终确认"/V18"这个基本可以/最终写出来"），枚举词追不上。
     //   但"检查清单结构"稳定: 对勾 ✓ / "最终写出来"——正常角色回答绝不含这些。
@@ -454,6 +459,33 @@ export function extractAnswerFromReasoning(text: string): string {
 }
 /** V18 评估段强信号 —— 检查清单的对勾符号 / 明确转场词（正常角色回答绝不含，不依赖漂移措辞） */
 const EVAL_STRUCT_RE = /[✓✔]|最终写出来|最终写出|检查是否有问题|检查：/;
+/** V19 规划型思维链骨架 —— 角色对话绝不含的元认知结构（列表/编号/自述计划主语） */
+const PLAN_SKELETON_RE = /(?:^|\n)\s*[-•] |(?:^|\n)\s*\d+[.、] |(?:我的角色是|我的性格是|我想表达|我要怎么|我会用较|关于长度|关于语气|必须用|必须保持|不能太直白|避免过度)/;
+/** V19 转场指令 —— 规划段结束、进入最终答案的明确信号（动词骨架，不依赖漂移措辞） */
+const PLAN_GO_RE = /让我(?:把它|现在)?写出来|让我来写|现在开始写|最终写出|写出来[，,]?用/;
+/** V19: 取规划段之后的答案 —— 识别骨架后，取最后一个转场指令之后的答案起点。 */
+function findAfterPlanChain(text: string): string | null {
+    if (!PLAN_SKELETON_RE.test(text))
+        return null;
+    const re = new RegExp(PLAN_GO_RE.source, 'g');
+    let lastIdx = -1;
+    for (;;) {
+        const m = re.exec(text);
+        if (!m)
+            break;
+        lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < 0)
+        return null;
+    const tail = text.slice(lastIdx);
+    const as = findAnswerStart(tail);
+    if (as !== null) {
+        const clean = stripPlanningPrefix(cleanTail(tail.slice(as)));
+        if (clean && clean.length >= 10)
+            return clean;
+    }
+    return null;
+}
 /** V18: 取评估段之后的最后答案稿 —— 找最后一个评估信号，向后扫描到第一个动作描写/称呼答案起点。 */
 function findAfterLastEval(text: string): string | null {
     if (!EVAL_STRUCT_RE.test(text))
