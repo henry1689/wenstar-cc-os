@@ -467,7 +467,8 @@ class StreamThinkingStripper {
                 //   （"这个长度很合适，语气也贴合。确认一下：正文里有'诗雨'吗？有——"），
                 //   累积 tailBuf 检测评估特征词，命中即停止推送（丢弃后续评估）。
                 this.tailBuf += c;
-                const evalIdx = StreamThinkingStripper.tailEvalRe.search(this.tailBuf);
+                // 注意: search 是 String 方法，不是 RegExp 方法（V14 bug: tailEvalRe.search 抛异常吞后续 content）
+                const evalIdx = this.tailBuf.search(StreamThinkingStripper.tailEvalRe);
                 if (evalIdx >= 0) {
                     const out = this.tailBuf.slice(0, evalIdx);
                     this.tailBuf = '';
