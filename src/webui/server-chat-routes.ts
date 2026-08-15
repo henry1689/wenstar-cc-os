@@ -122,17 +122,28 @@ export async function generateTTSAudio(segments: string[], dataDir: string, onSe
     if (!txt.trim()) return null; // 空段不生成（S4 P2-4）
     const _fn = 'tts_' + Date.now().toString(36) + '_' + randomUUID().slice(0, 8) + '.mp3';
     const _fp = path.join(dataDir, 'audio', _fn);
-    try {
-      await execFileAsync('edge-tts', ['--text', txt, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
-      if (fs.existsSync(_fp)) {
-        const url = '/audio/' + _fn;
-        // 🔴 S2-F2: 每段生成完立即回调（边生成边播，不等全量）— 消除长文"文字写完干等几秒"。
-        // idx 保持分段顺序，前端按序播放（缺段等待）。
-        try { onSegment?.(url, idx); } catch (_oc) { /* 回调失败不阻塞 */ }
-        return url;
+    // V14: edge-tts 服务端临时故障重试（NoAudioReceived 生成 0 字节文件）——重试 2 次，间隔 1.5s/3s
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (attempt > 1) await new Promise(r => setTimeout(r, 1500 * attempt)); // 1.5s/3s 退避
+        await execFileAsync('edge-tts', ['--text', txt, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
+        if (fs.existsSync(_fp) && fs.statSync(_fp).size > 0) {
+          const url = '/audio/' + _fn;
+          // 🔴 S2-F2: 每段生成完立即回调（边生成边播，不等全量）— 消除长文"文字写完干等几秒"。
+          // idx 保持分段顺序，前端按序播放（缺段等待）。
+          try { onSegment?.(url, idx); } catch (_oc) { /* 回调失败不阻塞 */ }
+          return url;
+        }
+        // 0 字节文件（NoAudioReceived）→ 删除重试
+        try { fs.unlinkSync(_fp); } catch (_de) { /* 忽略 */ }
+        if (attempt < maxAttempts) { console.warn('[TTS] 第 ' + attempt + ' 次生成空文件，重试...'); continue; }
+      } catch (_e) {
+        if (attempt < maxAttempts) { console.warn('[TTS] 第 ' + attempt + ' 次失败，重试:', (_e as Error)?.message || _e); continue; }
+        console.warn('[TTS] 段生成失败(重试' + maxAttempts + '次后):', (_e as Error)?.message || _e);
       }
-      return null;
-    } catch (_e) { console.warn('[TTS] 段生成失败:', (_e as Error)?.message || _e); return null; }
+    }
+    return null;
   };
   const CHUNK = 3;
   const files: (string | null)[] = new Array(segments.length);
