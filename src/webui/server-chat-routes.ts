@@ -223,7 +223,7 @@ export function sweepChatJobs(): number {
  * 累积 >=TTS_INCR_MAX_CHARS 且对齐句子边界触发一次生成；_dispatch 用 promise 串行链一次一段。
  * finalize() 在 done 后用 segmentForTTS 全量重算对齐最终 reply（增量段可能被 M5 校准覆盖）。
  */
-class IncrementalTTS {
+export class IncrementalTTS {
     private _buf = '';
     private _pending: Array<{ text: string; idx: number }> = [];
     private _inFlight = 0;
