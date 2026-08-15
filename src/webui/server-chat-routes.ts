@@ -30,8 +30,8 @@ export const TTS_MAX_TEXT = 400;
 export const TTS_SEGMENT_TARGET_SENTENCES = 3;
 /** 语音播报单段硬上限（句数达标但字数溢出时的强制截断） */
 export const TTS_SEGMENT_MAX_CHARS = 250;
-/** V15 边写边播: 增量 TTS 触发字量门槛（累积约 2-3 句触发一次生成） */
-export const TTS_INCR_MAX_CHARS = 80;
+/** V15 边写边播: 增量 TTS 触发字量门槛（V17 降至 40 字，首段语音更快，减少"文字写完才出声"滞后） */
+export const TTS_INCR_MAX_CHARS = 40;
 /** V15 边写边播: 增量段在途上限（串行队列防 edge-tts 并发打满） */
 export const TTS_MAX_INFLIGHT = 3;
 

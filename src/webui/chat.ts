@@ -63,7 +63,7 @@ import { researchTopic } from '../app/knowledge/WebResearchService.js';
 import { decideMode, buildGuard, type MemoryGateOutput } from '../app/conversation/MemoryGate.js';
 
 import { generateCandidates, type CandidateSet } from '../m5/CandidateSelector.js';
-import { getTopicRepeatCount, isValidPersonName, isSelfNameQuestion, collectFactSnapshot, buildDirectFactReply, buildFactStatementAck, collectFactLookupTerms, isNonEmptyString, isDirectedEmotion, FALLBACK_REPLIES, LEVEL_NAMES, PERC_LABELS } from './chat-utils.js';
+import { getTopicRepeatCount, isValidPersonName, isSelfNameQuestion, isIntimateContext, collectFactSnapshot, buildDirectFactReply, buildFactStatementAck, collectFactLookupTerms, isNonEmptyString, isDirectedEmotion, FALLBACK_REPLIES, LEVEL_NAMES, PERC_LABELS } from './chat-utils.js';
 import type { FactSnapshot } from './chat-utils.js';
 
 // 仿生智脑适配器（可选依赖 — 不可用时降级）
@@ -1241,6 +1241,8 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     // 感受分享检测
 
+    // 🔴 隐私法优先：亲密/调情语境不得进入事实回忆模式（否则"奶子美在哪里"被当事实查询 → 禁亲密 + 秘书口吻）
+    const _isIntimateContext = isIntimateContext(message);
     const asksSelfName = isSelfNameQuestion(message);
     const asksFactIntent =
       /还记得|记得|叫什么|叫啥|名字|是谁|哪儿|在哪|哪里|住哪|做什么|干什么|什么工作|做哪行|职业|关系|几岁|年龄|长什么样|再说说|讲讲|说说|那一次|那次|那天|生日|经历|过去|几岁|童年|小时候/.test(message);
@@ -1249,7 +1251,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       /(?:吗|呢|么|嘛)$/.test(message.trim()) ||
       asksSelfName ||
       asksFactIntent;
+    // 🔴 隐私法豁免：亲密/调情语境绝不进入事实回忆模式（"奶子美在哪里 玉瑶"是调情非事实查询）
     const isFactualRecallQuery =
+      !_isIntimateContext &&
       hasQuestionTone &&
       (
         asksSelfName ||
@@ -1278,7 +1282,8 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       _currentRole = 'secretary';
     }
 
-    if (/工作|项目|客户|会议|方案|报告|公司|合同|预算|数据|分析|策略|设计|电机|采购|成本|温升|版本|产品|技术|报价|订单|生产|测试|样品|图纸|规格|性能|参数|方案|工程|研发|工艺|质量|供应商/.test(message)) {
+    // 🔴 隐私法豁免：亲密语境下不得因历史含工作词误激活"禁止亲密语气"（调情话题保留亲密）
+    if (!_isIntimateContext && /工作|项目|客户|会议|方案|报告|公司|合同|预算|数据|分析|策略|设计|电机|采购|成本|温升|版本|产品|技术|报价|订单|生产|测试|样品|图纸|规格|性能|参数|方案|工程|研发|工艺|质量|供应商/.test(message)) {
       const recentHistory = ctx.conversationHistory.filter(t => t.role === 'user').slice(-3).map(t => t.content).join('');
       const isWorkContext = /工作|项目|客户|会议|方案|报告|公司/.test(recentHistory + message);
       if (isWorkContext) {

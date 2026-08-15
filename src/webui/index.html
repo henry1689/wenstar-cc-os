@@ -458,8 +458,8 @@ function playAudioQueue(urls){
 // 与 playAudioQueue 的差异: playAudioQueue 假定 urls 全量就绪(一段接一段播完)；
 // 此队列按 index 有序消费，index 0 未就绪则等待，就绪后立即播，后续段生成完逐个续播。
 // 消除长文语音"文字写完干等全量段生成"的滞后。
-let _ttsIncr={gen:0,urls:[],cur:0,playing:false};
-function _incrTTSInit(gen){ _ttsIncr={gen,urls:[],cur:0,playing:false}; }
+let _ttsIncr={gen:0,urls:[],cur:0,playing:false,finalized:false};
+function _incrTTSInit(gen){ _ttsIncr={gen,urls:[],cur:0,playing:false,finalized:false}; }
 function _incrTTSAdd(gen,idx,url){
   if(gen!==_ttsIncr.gen)return;                    // 过期代际丢弃
   _ttsIncr.urls[idx]=url;
@@ -468,8 +468,16 @@ function _incrTTSAdd(gen,idx,url){
 function _incrTTSTryPlay(){
   const Q=_ttsIncr;
   if(Q.playing||Q.gen!==_audioGen)return;          // 播放中或已过期
-  const url=Q.urls[Q.cur];
-  if(!url)return;                                   // 当前段未就绪 → 等待
+  // 🔴 V17 缺失段跳过: 某段 edge-tts 生成失败(超短句 NoAudioReceived)会在 urls 留空位，
+  //   若 cur 停在空位 return 会卡死整条队列。但空位有两种来源：
+  //   ① 增量串行链失败（真失败）② 异步 job 并发生成中（null 占位=还在生成，非失败）。
+  //   只有全量定稿(finalized)后空位才是真失败，才允许跳过；定稿前空位=未就绪，等待。
+  let url=Q.urls[Q.cur];
+  if(!url){
+    if(!Q.finalized)return;                        // 生成中空位=未就绪，等待（防跳过并发段）
+    for(let k=Q.cur+1;k<Q.urls.length;k++){ if(Q.urls[k]){ Q.cur=k; url=Q.urls[k]; break; } }
+    if(!url)return;                                // 后方也无就绪段 → 等待
+  }
   Q.playing=true;
   const ap=new Audio(url);ap.volume=0.8;
   const fin=()=>{ if(Q.gen!==_audioGen)return; Q.playing=false; Q.cur++; _incrTTSTryPlay(); };
@@ -477,7 +485,7 @@ function _incrTTSTryPlay(){
   ap.play().catch(e=>{console.warn('[Audio] 增量播失败:',e);fin();});
 }
 // 全量段就绪但队列未消费完 → 兜底续播（防止 SSE 漏事件）
-function _incrTTSFill(gen,urls){ if(gen!==_ttsIncr.gen)return; for(let i=0;i<urls.length;i++) if(!_ttsIncr.urls[i]) _ttsIncr.urls[i]=urls[i]; _incrTTSTryPlay(); }
+function _incrTTSFill(gen,urls,finalized){ if(gen!==_ttsIncr.gen)return; for(let i=0;i<urls.length;i++) if(!_ttsIncr.urls[i]) _ttsIncr.urls[i]=urls[i]; if(finalized)_ttsIncr.finalized=true; _incrTTSTryPlay(); }
 
 function pollTTSJob(jobId){
   const gen=_audioGen;       // 捕获本次发送的代际
@@ -494,8 +502,8 @@ function pollTTSJob(jobId){
       if(d.audio_urls&&d.audio_urls.length){_incrTTSFill(gen,d.audio_urls);}
       if(d.done){
         clearInterval(timer);
-        // done 时全量已就绪 → 兜底续播（防 SSE 漏事件导致队列卡住）
-        if(gen===_audioGen&&d.audio_urls&&d.audio_urls.length)_incrTTSFill(gen,d.audio_urls);
+        // done 时全量已就绪 → 兜底续播（防 SSE 漏事件导致队列卡住）；finalized=true 允许跳过真失败段
+        if(gen===_audioGen&&d.audio_urls&&d.audio_urls.length)_incrTTSFill(gen,d.audio_urls,true);
       }
     }catch(e){clearInterval(timer);console.warn('[Audio] TTS job 轮询失败:',e);}
   },300);
@@ -546,25 +554,32 @@ async function sendStream(t){
   let lastTxt='';let timer=null;let done=0;
   const clearBusy=()=>{if(gen===_audioGen){busy=false;snd.disabled=false;st.textContent='在线';}};
   // 最终补齐：校准后 reply 覆盖气泡 + TTS + M1/M3/M4/M5 面板 + 轮次
+  // 🔴 V16 修复语音无声: done 守卫只挡「文字重复渲染」，不再挡「音频填充」。
+  // 此前第一次 done 帧(audio_urls:[])置 done=1 后，第二次 done 帧(带 audio_urls)
+  // 被丢弃 + SSE 已 close + 轮询 done 后退出 → 音频永远到不了前端（短消息 100% 无声）。
   const finalizeStream=async(dd)=>{
-    if(gen!==_audioGen||done)return;   // S4-M6: done 守卫防"轮询+SSE"双路径双播
-    done=1;if(timer)clearInterval(timer);
-    const finalTxt=dd.reply||lastTxt||'';
-    b.textContent=finalTxt;scrollChat();
-    if(dd.result){
-      tc.textContent=dd.result.turn_count+' 轮';
-      var _es=dd.result.emotionMatchScore||dd.result.sceneFitScore?'情'+dd.result.emotionMatchScore+'场'+dd.result.sceneFitScore:'';
-      var _rf=dd.result.riskFlag?'⚠️'+dd.result.riskFlag:'';
-      if(_es||_rf){st.textContent=(_es+_rf).substring(0,22);setTimeout(function(){st.textContent='在线'},3000);}
-      renderM1(dd.result.m1);renderM3(dd.result.m3);renderM4(dd.result.m4);renderM5(dd.result.m5);loadM68();
-      last=dd.result;
+    if(gen!==_audioGen)return;
+    const isFirst=!done;
+    if(isFirst){
+      // 🔴 V16-P0 修复: 不在此 kill timer——TTS 未完成时第一次 done(audio_urls:[]) 若清掉轮询，
+      // finalize 全量段(audio_urls)就永远到不了前端。轮询自行掌控终止(hasAudio||超时)。
+      done=1;
+      const finalTxt=dd.reply||lastTxt||'';
+      b.textContent=finalTxt;scrollChat();
+      if(dd.result){
+        tc.textContent=dd.result.turn_count+' 轮';
+        var _es=dd.result.emotionMatchScore||dd.result.sceneFitScore?'情'+dd.result.emotionMatchScore+'场'+dd.result.sceneFitScore:'';
+        var _rf=dd.result.riskFlag?'⚠️'+dd.result.riskFlag:'';
+        if(_es||_rf){st.textContent=(_es+_rf).substring(0,22);setTimeout(function(){st.textContent='在线'},3000);}
+        renderM1(dd.result.m1);renderM3(dd.result.m3);renderM4(dd.result.m4);renderM5(dd.result.m5);loadM68();
+        last=dd.result;
+      }
     }
-    // V15: done 帧增量段已由 chat-tts 推送，这里只兜底缺失段（防漏事件），不重启播放
-    if(_ttsIncr.gen===gen){_incrTTSFill(gen,dd.audio_urls||[]);}
-    else if(dd.audio_urls&&dd.audio_urls.length){playAudioQueue(dd.audio_urls);}
+    // 音频兜底：无论 first/second 都执行（二次 done 帧/轮询补发的 audio_urls 不再被丢）
+    if(dd.audio_urls&&dd.audio_urls.length){ if(_ttsIncr.gen===gen){_incrTTSFill(gen,dd.audio_urls,true);} else {playAudioQueue(dd.audio_urls);} }
     else if(dd.audio_url){const ap=new Audio(dd.audio_url);ap.volume=0.8;ap.play().catch(e=>console.warn('[Audio] 播放失败:',e));}
     else if(dd.tts_job){pollTTSJob(dd.tts_job);}   // S4 P1-2: 长文音频异步生成，文字已渲染，轮询补齐后续播
-    clearBusy();
+    if(isFirst)clearBusy();
   };
   try{
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,stream:true})});
@@ -587,15 +602,24 @@ async function sendStream(t){
     const jobId=d0.job_id;
     _incrTTSInit(gen);   // V15: 提前初始化增量队列——流式期间 chat-tts 段不被代际守卫丢弃（原 L484 只在 pollTTSJob）
     // 轮询补齐（SSE 断开/不推送时兜底；间隔取服务端 poll_hint_ms 或 150ms）
+    // 🔴 V16 修复语音无声: done 后不立即退出——继续轮询直到 audio 就绪(12s 超时兜底)，
+    // 保证 finalize 全量段(audio_urls)经轮询补发到达前端（此前 done 即退 → audio 永远不到）。
+    let _audioWaits=0;
     timer=setInterval(async()=>{
-      if(gen!==_audioGen||done){clearInterval(timer);return;}
+      if(gen!==_audioGen){clearInterval(timer);return;}
       try{
         const rr=await fetch('/api/chat/job/status?job='+encodeURIComponent(jobId));
         const dd=await rr.json();
-        if(gen!==_audioGen||done){clearInterval(timer);return;}
-        if(dd.ok&&dd.status==='done'){clearInterval(timer);await finalizeStream(dd);return;}
+        if(gen!==_audioGen){clearInterval(timer);return;}
+        if(dd.ok&&dd.status==='error'){clearInterval(timer);return;}   // error 立即退出，不空转 12s
+        if(dd.ok&&dd.status==='done'){
+          // 文字/面板只在首次 done 处理（内部 done 守卫防双播）；audio 就绪则收尾退出
+          const hasAudio=!!(dd.audio_urls&&dd.audio_urls.length)||!!dd.audio_url||!!dd.tts_job;
+          await finalizeStream(dd);
+          if(hasAudio||++_audioWaits>80){clearInterval(timer);return;}
+        }
         // S4-m11: running 时用服务端累积 tokens 补齐（SSE 掉线时中途有字）
-        if(dd.ok&&dd.tokens&&dd.tokens.length){
+        if(dd.ok&&!done&&dd.tokens&&dd.tokens.length){
           const t=dd.tokens.join('');
           if(t.length>lastTxt.length){lastTxt=t;b.textContent=t;scrollChat();}
         }

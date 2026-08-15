@@ -48,6 +48,20 @@ export function isSelfNameQuestion(message: string): boolean {
     !/我(?:姐姐|妹妹|哥哥|弟弟|妈妈|爸爸|老婆|老公|女友|男友)/.test(message);
 }
 
+/**
+ * 🔴 亲密语境检测 — 《个人世界隐私法 WS-PERSONAL-WORLD-LAW-V1.0》
+ * 三体个人世界里亲密/情欲话题完全正常，不官方、不回避。
+ * 命中则判定为亲密语境：不得进入"事实回忆模式"/"工作模式"（否则
+ * "奶子美在哪里 玉瑶"被当事实查询 → 注入禁亲密+秘书口吻，违背隐私法）。
+ * 词表以强亲密信号为主，避免"床/睡/贴/压/含/湿"等单字误伤生活场景。
+ */
+const INTIMATE_SIGNAL_RE = /奶子|乳房|胸脯|酥胸|屁股|大腿|肌肤|嘴唇|耳根|爱爱|做爱|房事|挑逗|调情|情话|抚摸|喘息|宝贝|亲爱的|亲我|抱我|摸摸|捏捏|褪去|酥麻|灼热|缠绵|拥吻|温存|撒娇|奶香|体香|湿透|裸|脱衣|睡衣|圆润|丰满|迷人|撩人|香软|含住|舔|吮|娇喘|嘤咛|意乱情迷|耳鬓厮磨|鸳鸯|共枕|被窝|搂|入怀/;
+
+export function isIntimateContext(message: string): boolean {
+  if (!message) return false;
+  return INTIMATE_SIGNAL_RE.test(message);
+}
+
 export type FactSnapshot = {
   selfName?: string;
   kinshipFacts: Record<string, { name?: string; location?: string; occupation?: string }>;

@@ -109,13 +109,13 @@ const SYSTEM_MARK_G_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指
 /** 复盘型识别信号 — 【】系统标记 或 文字引用系统指令。
  * V2 实测: 复盘思维链无【】标记，只用文字描述（"系统提醒过这是'事实回忆'模式""不能编造没有的细节"），
  * SYSTEM_MARK_RE 不命中 → 走 legacy → findAnswerStart 括号规则把分析句误判为答案起点 → 整条分析段泄漏前台。 */
-const REFLECTIVE_SIGNAL_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指令|优先|模式|要求|注意|事实|记忆)[^】]*】|系统提醒|系统指令|系统告诉|系统要求|事实回忆|事实优先|记忆优先|不能编造|不要编造|不要添加|绝对禁止|提醒过|根据规则|当前问题是事实|让我分析一下|让我来写|分析一下场景|现在说话的是|让我再完善|让我再重写|让我定稿|让我稍微收紧|再检查一遍|嗯，这很好|让我确认一下|让我收紧|让我微调|再润色一下|保持简短|也许我需要|我觉得如上处理没问题|大概不错|保持简洁|不越界|再扩展一下|定位成|报上了名字/;
+const REFLECTIVE_SIGNAL_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指令|优先|模式|要求|注意|事实|记忆)[^】]*】|系统提醒|系统指令|系统告诉|系统要求|事实回忆|事实优先|记忆优先|不能编造|不要编造|不要添加|绝对禁止|提醒过|根据规则|当前问题是事实|让我分析一下|让我来写|分析一下场景|现在说话的是|让我再完善|让我再重写|让我定稿|让我稍微收紧|再检查一遍|嗯，这很好|让我确认一下|让我收紧|让我微调|再润色一下|保持简短|也许我需要|我觉得如上处理没问题|大概不错|保持简洁|不越界|再扩展一下|定位成|报上了名字|稍微修改|修改流畅|最终确认|最终稿|尺度.{0,8}合适|保持了.{0,12}风格/;
 /** 复盘型权衡/草稿措辞（流式 crossed 后 reasoning 过滤用） */
 const REFLECTIVE_VERB_RE = /权衡|草稿|折中|打磨|语气要|如何回应|怎么回应|我决定|我想我可以|这个问题|让我思考|考虑|结构如下|这段回复|这条回复|最终稿|我该如何|我该怎样|让我重新|无中生有|组织语言|起草|初稿|润色/;
 /** 转场锚点 — 评估结束进入最终稿（"…无中生有。开始。最终稿"） */
 // V3 修复: [。！——] 的"—"误匹配正文"痛是美好的开始——"（名词短语破折号），把最终稿从中间截断。
 // 改为只认句末标点[。！？]或"开始吧"（转场句），不认"—"。
-const REFLECTIVE_GO_RE = /开始[。！？]|开始吧|让我来写[^。]{0,10}(?:回应|回答|一段|回复)[：:]|让我来写[^。]{0,10}[：:]|这样回应吧|让我再完善[^。]{0,20}[：:.]|让我再重写[^。]{0,20}[：:.]|让我定稿|让我稍微收紧[^。]{0,10}[：:.]|让我微调|让我收紧|嗯，这很好[^。]{0,30}让我定稿|再检查一遍|再润色一下[^。]{0,10}[：:.]|保持简短|不越界/g;
+const REFLECTIVE_GO_RE = /开始[。！？]|开始吧|让我来写[^。]{0,10}(?:回应|回答|一段|回复)[：:]|让我来写[^。]{0,10}[：:]|这样回应吧|让我再完善[^。]{0,20}[：:.]|让我再重写[^。]{0,20}[：:.]|让我定稿|让我稍微收紧[^。]{0,10}[：:.]|让我微调|让我收紧|嗯，这很好[^。]{0,30}让我定稿|再检查一遍|再润色一下[^。]{0,10}[：:.]|保持简短|不越界|最终确认|最终稿|修改流畅/g;
 /** 分析句特征 — 复盘思维链中的复述他人话语/自我权衡/系统引用/自我要求计划。
  * V2 修复: findAnswerStartRobust 用此区分分析句与真实答案句（防止"（他在接我刚才的话…"被当答案起点）。 */
 function isAnalysisSentence(s: string): boolean {
@@ -434,6 +434,12 @@ function dedupeRepeatedBlock(text: string): string {
 export function extractAnswerFromReasoning(text: string): string {
     if (!text)
         return '';
+    // 🔴 V18 结构性剥离: 草稿迭代型思维链 = [第一稿] + [评估段: 检查清单+✓] + [最终稿]。
+    //   评估措辞每次漂移（V14c"让我定稿"/V17"最终确认"/V18"这个基本可以/最终写出来"），枚举词追不上。
+    //   但"检查清单结构"稳定: 对勾 ✓ / "最终写出来"——正常角色回答绝不含这些。
+    const afterEval = findAfterLastEval(text);
+    if (afterEval)
+        return afterEval;
     // ① 复盘型思维链（引用系统指令标记）→ 专用剥离。'' = 宁空不泄漏后台话
     const reflective = extractFromReflectiveChain(text);
     let out: string;
@@ -445,6 +451,31 @@ export function extractAnswerFromReasoning(text: string): string {
     }
     // V14c: 重复输出去重（同一回复两遍）——放在剥离后兜底
     return out; // V14c dedupe 暂禁（误伤V3/V6/V7）
+}
+/** V18 评估段强信号 —— 检查清单的对勾符号 / 明确转场词（正常角色回答绝不含，不依赖漂移措辞） */
+const EVAL_STRUCT_RE = /[✓✔]|最终写出来|最终写出|检查是否有问题|检查：/;
+/** V18: 取评估段之后的最后答案稿 —— 找最后一个评估信号，向后扫描到第一个动作描写/称呼答案起点。 */
+function findAfterLastEval(text: string): string | null {
+    if (!EVAL_STRUCT_RE.test(text))
+        return null;
+    const re = new RegExp(EVAL_STRUCT_RE.source, 'g');
+    let lastIdx = -1;
+    for (;;) {
+        const m = re.exec(text);
+        if (!m)
+            break;
+        lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < 0)
+        return null;
+    const tail = text.slice(lastIdx);
+    const as = findAnswerStart(tail);
+    if (as !== null) {
+        const clean = stripPlanningPrefix(cleanTail(tail.slice(as)));
+        if (clean && clean.length >= 10)
+            return clean;
+    }
+    return null;
 }
 /** 原剥离逻辑（过渡标记 → 结构识别 → 角色建立段 → 关键词） */
 function extractAnswerFromReasoningLegacy(text: string): string {
@@ -501,7 +532,7 @@ class StreamThinkingStripper {
     crossed = false; // 已进入答案区
     tailBuf = '';    // V14: crossed 后 content 增量累积，尾部评估句检测截断
     /** V14: 尾部评估句特征（模型在答案后继续输出复盘评估：长度/语气确认、正文检查） */
-    private static tailEvalRe = /(?:这个长度很合适|这个长度合适|语气也贴合|语气贴合|语气也合适|确认一下|正文里(?:有|带)|回答里(?:有|带)|内容里(?:有|带)|检查一下.*正文|这段回复)/;
+    private static tailEvalRe = /(?:这个长度很合适|这个长度合适|语气也贴合|语气贴合|语气也合适|确认一下|正文里(?:有|带)|回答里(?:有|带)|内容里(?:有|带)|检查一下.*正文|这段回复|稍微修改|最终确认|最终稿|尺度.{0,8}合适|保持了.{0,12}风格)/;
     reset() { this.buf = ''; this.crossed = false; this.tailBuf = ''; }
     /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
     push(content: string | undefined, reasoning: string | undefined): string {
@@ -813,6 +844,9 @@ export class DeepSeekLLMProvider implements LLMProvider {
       let text = '';
       let usage: { prompt: number; completion: number } | undefined;
       let buf = '';
+      // 🔴 V17: 累积原始全文（reasoning 在前 content 在后，对齐 v4-flash 时序：思维链先、答案后）。
+      //   流式期间 stripper 无法预知"第一稿+评估+第二稿"结构，流结束后全量重新剥离得到干净最终稿覆盖。
+      let rawBuf = '';
       let finished = false;
 
       for (;;) {
@@ -840,6 +874,7 @@ export class DeepSeekLLMProvider implements LLMProvider {
             const reasoning = typeof delta.reasoning === 'string' ? delta.reasoning
               : (typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '');
             if (!content && !reasoning) continue;
+            rawBuf += reasoning + content;   // V17: 累积原始全文（reasoning 先，content 后）
             const push = stripper.push(content, reasoning);
             if (push) {
               sawToken = true;
@@ -860,7 +895,9 @@ export class DeepSeekLLMProvider implements LLMProvider {
             const delta = json?.choices?.[0]?.delta;
             if (delta) {
               const content = typeof delta.content === 'string' ? delta.content : '';
-              const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+              const reasoning = typeof delta.reasoning === 'string' ? delta.reasoning
+                : (typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '');
+              rawBuf += reasoning + content;   // V17: 尾帧也累积原始
               const push = stripper.push(content, reasoning);
               if (push) { sawToken = true; text += push; onToken({ text: push }); }
             }
@@ -870,6 +907,17 @@ export class DeepSeekLLMProvider implements LLMProvider {
       // S4-C1/m4: 流结束 flush 残留思维链缓冲（防无标记/短答案整条被吞）
       const flushed = stripper.flush();
       if (flushed) { sawToken = true; text += flushed; onToken({ text: flushed }); }
+      // 🔴 V17 流式结束全量覆盖: 用原始全文重新剥离，覆盖流式期间 stripper 误推的"第一稿+评估段"。
+      //   命中复盘信号/评估结构时无条件信任 full（不依赖 length 比较，防该覆盖却因长度不够没覆盖）。
+      if (rawBuf.trim().length > 0) {
+        const isReflective = REFLECTIVE_SIGNAL_RE.test(rawBuf) || EVAL_STRUCT_RE.test(rawBuf);
+        const full = extractAnswerFromReasoning(rawBuf);
+        if (full && full.trim().length > 0) {
+          if (isReflective || !text || full.length < text.length) {
+            text = full;
+          }
+        }
+      }
       return { text, usage, sawToken };
     } catch (err: any) {
       if (err?.name === 'AbortError') {
