@@ -243,9 +243,9 @@ export class IncrementalTTS {
             this._buf = this._buf.slice(m[0].length);
             if (s && /[一-龥]/.test(s)) this._pending.push({ text: s, idx: this._gen++ });
         }
-        // ② 触发门槛: >=80字且>=1完整句，或>=2完整句
+        // ② 触发门槛: >=80字且>=1完整句，或>=2完整句，或 _buf 超 80 字（长句无标点也触发）
         const cc = this._pending.reduce((n, p) => n + p.text.length, 0);
-        if (cc + this._buf.length >= TTS_INCR_MAX_CHARS && this._pending.length >= 1) this._dispatch();
+        if (cc + this._buf.length >= TTS_INCR_MAX_CHARS && (this._pending.length >= 1 || this._buf.length >= TTS_INCR_MAX_CHARS)) this._dispatch();
         else if (this._pending.length >= 2) this._dispatch();
     }
 
