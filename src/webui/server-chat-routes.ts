@@ -30,6 +30,10 @@ export const TTS_MAX_TEXT = 400;
 export const TTS_SEGMENT_TARGET_SENTENCES = 3;
 /** 语音播报单段硬上限（句数达标但字数溢出时的强制截断） */
 export const TTS_SEGMENT_MAX_CHARS = 250;
+/** V15 边写边播: 增量 TTS 触发字量门槛（累积约 2-3 句触发一次生成） */
+export const TTS_INCR_MAX_CHARS = 80;
+/** V15 边写边播: 增量段在途上限（串行队列防 edge-tts 并发打满） */
+export const TTS_MAX_INFLIGHT = 3;
 
 /**
  * _truncateForTTS — 语音播报文本断句截断。
@@ -213,6 +217,76 @@ export function sweepChatJobs(): number {
  * 🔴 P1-5: TTS 结果构建（同步路径与流式 job 路径共用）。
  * 长文分段滚动播报（V12.5）：≤2 段同步生成无感；>2 段异步 job 轮询补齐。
  */
+/**
+ * V15 边写边播: 流式增量 TTS——文字生成过程中逐句生成音频并推送，根治语音滞后脱节。
+ * feed() 收到 onToken 碎片（可能半字/半标点/多句），字符级累积按句末标点切段；
+ * 累积 >=TTS_INCR_MAX_CHARS 且对齐句子边界触发一次生成；_dispatch 用 promise 串行链一次一段。
+ * finalize() 在 done 后用 segmentForTTS 全量重算对齐最终 reply（增量段可能被 M5 校准覆盖）。
+ */
+class IncrementalTTS {
+    private _buf = '';
+    private _pending: Array<{ text: string; idx: number }> = [];
+    private _inFlight = 0;
+    private _aborted = false;
+    private _gen = 0;
+    private _chain: Promise<unknown> = Promise.resolve();
+    constructor(private _dataDir: string, private _onSegment: (idx: number, url: string) => void) {}
+
+    feed(tok: string): void {
+        if (this._aborted || !tok) return;
+        this._buf += tok;
+        // ① 按句末标点切完整句入 _pending
+        for (;;) {
+            const m = this._buf.match(/^.*?[。！？…\n]/s);
+            if (!m) break;
+            const s = m[0].trim();
+            this._buf = this._buf.slice(m[0].length);
+            if (s) this._pending.push({ text: s, idx: this._gen++ });
+        }
+        // ② 触发门槛: >=80字且>=1完整句，或>=2完整句
+        const cc = this._pending.reduce((n, p) => n + p.text.length, 0);
+        if (cc + this._buf.length >= TTS_INCR_MAX_CHARS && this._pending.length >= 1) this._dispatch();
+        else if (this._pending.length >= 2) this._dispatch();
+    }
+
+    /** 文字 done 前调用: 提交残留部分句 */
+    flush(): void {
+        if (this._aborted) return;
+        const t = this._buf.trim();
+        this._buf = '';
+        if (t) this._pending.push({ text: t, idx: this._gen++ });
+        if (this._pending.length) this._dispatch();
+    }
+
+    /** 串行队列: 一次只跑一段，在途<=TTS_MAX_INFLIGHT，生成完 onSegment 推 chat-tts */
+    private _dispatch(): void {
+        if (this._aborted || this._inFlight >= TTS_MAX_INFLIGHT) return;
+        const seg = this._pending.shift();
+        if (!seg) return;
+        this._inFlight++;
+        this._chain = this._chain
+            .then(() => generateTTSAudio([seg.text], this._dataDir, (url) => {
+                if (!this._aborted) this._onSegment(seg.idx, url);
+            }))
+            .catch((e) => console.warn('[TTS] 增量段失败:', (e as Error)?.message || e))
+            .finally(() => { this._inFlight--; this._dispatch(); });
+    }
+
+    /** done 后: 等链清空 → 全量重算对齐最终 reply（增量段已播，此兜底补缺失/尾部） */
+    finalize(fullReply: string): Promise<{ audio_url: string | null; audio_urls: string[]; tts_job: string | null }> {
+        this.flush();
+        return this._chain.then(async () => {
+            if (this._aborted || !fullReply || fullReply.length <= 1)
+                return { audio_url: null, audio_urls: [], tts_job: null };
+            const segs = segmentForTTS(fullReply);
+            const urls = await generateTTSAudio(segs, this._dataDir);
+            return { audio_url: urls[0] || null, audio_urls: urls, tts_job: null };
+        });
+    }
+
+    abort(): void { this._aborted = true; }
+}
+
 async function buildTTSResult(
   reply: string,
   ttsEnabled: boolean,
@@ -299,12 +373,19 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
       const jobId = 'chatjob_' + randomUUID();
       const job: ChatJob = { status: 'running', tokens: [], reply: '', result: null, audio: { audio_url: null, audio_urls: [], tts_job: null }, createdAt: Date.now() };
       CHAT_JOBS.set(jobId, job);
+      // V15 边写边播: 增量 TTS（tts:false 时为 null，纯文字不变）
+      const incrTTS = (body.tts !== false && getRetrievalFusionConfig()?.p1_speed?.streaming?.enabled !== false)
+        ? new IncrementalTTS(DATA_DIR, (idx, url) => {
+            deps.pushToSSEClients?.('chat-tts', { job_id: jobId, index: idx, url });
+          })
+        : null;
       void (async () => {
         try {
           const result = await processChat(body.message.trim(), body.client_msg_id, body.test_mode === true, (delta) => {
             if (delta?.text) {
               job.tokens.push(delta.text);
               deps.pushToSSEClients?.('chat-token', { job_id: jobId, token: delta.text });
+              incrTTS?.feed(delta.text);   // V15: 喂给增量 TTS（文字生成中即触发语音）
             }
           });
           job.result = result;
@@ -313,12 +394,20 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
           job.status = 'done';
           deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: null, audio_urls: [], tts_job: null });
           console.log('[ChatStream] done: ' + jobId + ' tokens=' + job.tokens.length + ' len=' + job.reply.length);
-          // TTS 异步后台生成（不阻塞 done；失败仅记日志）
-          void buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null)).then((audio) => {
-            job.audio = audio;
-            deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
-          }).catch((e) => { console.warn('[ChatStream] TTS 后台生成失败:', (e as Error)?.message || e); });
+          // V15: 增量 TTS 尾补（不阻塞 done；增量段已在流式期间推送）
+          if (incrTTS) {
+            incrTTS.finalize(job.reply).then((audio) => {
+              job.audio = audio;
+              deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
+            }).catch((e) => { console.warn('[ChatStream] 增量 TTS 尾补失败:', (e as Error)?.message || e); });
+          } else {
+            void buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null)).then((audio) => {
+              job.audio = audio;
+              deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
+            }).catch((e) => { console.warn('[ChatStream] TTS 后台生成失败:', (e as Error)?.message || e); });
+          }
         } catch (e) {
+          incrTTS?.abort();
           job.status = 'error';
           job.error = (e as Error)?.message || String(e);
           deps.pushToSSEClients?.('chat-error', { job_id: jobId, error: job.error });
