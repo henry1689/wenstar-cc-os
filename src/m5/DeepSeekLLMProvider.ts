@@ -444,7 +444,7 @@ export function extractAnswerFromReasoning(text: string): string {
         out = removeSystemMarks(extractAnswerFromReasoningLegacy(text));
     }
     // V14c: 重复输出去重（同一回复两遍）——放在剥离后兜底
-    return dedupeRepeatedBlock(out);
+    return out; // V14c dedupe 暂禁（误伤V3/V6/V7）
 }
 /** 原剥离逻辑（过渡标记 → 结构识别 → 角色建立段 → 关键词） */
 function extractAnswerFromReasoningLegacy(text: string): string {
