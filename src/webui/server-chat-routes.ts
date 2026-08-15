@@ -241,7 +241,7 @@ export class IncrementalTTS {
             if (!m) break;
             const s = m[0].trim();
             this._buf = this._buf.slice(m[0].length);
-            if (s) this._pending.push({ text: s, idx: this._gen++ });
+            if (s && /[一-龥]/.test(s)) this._pending.push({ text: s, idx: this._gen++ });
         }
         // ② 触发门槛: >=80字且>=1完整句，或>=2完整句
         const cc = this._pending.reduce((n, p) => n + p.text.length, 0);
@@ -254,7 +254,7 @@ export class IncrementalTTS {
         if (this._aborted) return;
         const t = this._buf.trim();
         this._buf = '';
-        if (t) this._pending.push({ text: t, idx: this._gen++ });
+        if (t && /[一-龥]/.test(t)) this._pending.push({ text: t, idx: this._gen++ });
         if (this._pending.length) this._dispatch();
     }
 
@@ -278,7 +278,7 @@ export class IncrementalTTS {
         return this._chain.then(async () => {
             if (this._aborted || !fullReply || fullReply.length <= 1)
                 return { audio_url: null, audio_urls: [], tts_job: null };
-            const segs = segmentForTTS(fullReply);
+            const segs = segmentForTTS(fullReply).filter(s => /[一-龥]/.test(s));
             const urls = await generateTTSAudio(segs, this._dataDir);
             return { audio_url: urls[0] || null, audio_urls: urls, tts_job: null };
         });
