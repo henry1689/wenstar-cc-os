@@ -447,33 +447,42 @@ function extractAnswerFromReasoningLegacy(text: string): string {
 class StreamThinkingStripper {
     buf = '';
     crossed = false; // 已进入答案区
-    reset() { this.buf = ''; this.crossed = false; }
+    tailBuf = '';    // V14: crossed 后 content 增量累积，尾部评估句检测截断
+    /** V14: 尾部评估句特征（模型在答案后继续输出复盘评估：长度/语气确认、正文检查） */
+    private static tailEvalRe = /(?:这个长度很合适|这个长度合适|语气也贴合|语气贴合|语气也合适|确认一下|正文里(?:有|带)|回答里(?:有|带)|内容里(?:有|带)|检查一下.*正文|这段回复)/;
+    reset() { this.buf = ''; this.crossed = false; this.tailBuf = ''; }
     /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
     push(content: string | undefined, reasoning: string | undefined): string {
         const c = content || '';
         const r = reasoning || '';
         if (!c && !r)
             return '';
-        // V13根治: content 非空即答案（V4-flash 结构：思维链全在 reasoning_content，content 从答案起点开始逐 token）
-        //   答案常以短括号动作描写开头（"（温柔一笑）…"），findAnswerStart 对"（"开头句子整体跳过（L319 continue）
-        //   → crossed 永不触发 → 全部缓冲到 flush 一次性剥离 → tokens=1 → 前端 20-35s 无打字动画（表现"卡死/段链"）。
-        //   content 字段语义 = 模型最终答案（先思考后输出，严格分离），一出现即切答案区逐 token 直推，恢复实时打字。
-        if (c) {
-            this.crossed = true;
-            this.buf = '';
-            return c;
-        }
         // 已进入答案区 → content 优先（答案在 content），reasoning 兜底
         // S4-M4: 已过答案起点后 content 优先；reasoning 兜底若带系统指令标记/复盘特征 → 丢弃（防尾部思维链泄漏）
         if (this.crossed) {
-            if (c)
-                return c;
+            if (c) {
+                // V14: 尾部评估句截断——模型在答案后可能继续输出复盘评估
+                //   （"这个长度很合适，语气也贴合。确认一下：正文里有'诗雨'吗？有——"），
+                //   累积 tailBuf 检测评估特征词，命中即停止推送（丢弃后续评估）。
+                this.tailBuf += c;
+                const evalIdx = StreamThinkingStripper.tailEvalRe.search(this.tailBuf);
+                if (evalIdx >= 0) {
+                    const out = this.tailBuf.slice(0, evalIdx);
+                    this.tailBuf = '';
+                    this.crossed = false; // 进入尾部评估 → 停止推送
+                    return out;
+                }
+                const out = this.tailBuf;
+                this.tailBuf = '';
+                return out;
+            }
             if (r && !SYSTEM_MARK_RE.test(r) && !REFLECTIVE_VERB_RE.test(r))
                 return r;
             return '';
         }
-        // 合并进 buf（S4-生产实测: 思维链可能出现在 reasoning 或 content 字段，统一累积后结构识别）
-        this.buf += r + c;
+        // 合并进 buf（V14: content 也可能含思维链——V4-flash 部分模式把思维链输出到 content 字段，
+        //   V13 ②b 直接 crossed 直推导致思维链泄漏前台。统一累积 + findAnswerStart 识别答案起点才 crossed）
+        this.buf += c + r;
         // ① 过渡标记 → 切答案区，推标记后（剥计划句）
         const m = findAnswerMark(this.buf);
         if (m) {
@@ -482,7 +491,7 @@ class StreamThinkingStripper {
             this.buf = '';
             return tail;
         }
-        // ② 结构识别答案起点（S4-生产实测: 动作描写/直接对话，比过渡标记更鲁棒）
+        // ② 结构识别答案起点（V9 括号段扫描识别"（她正准备关火…"动作描写答案；思维链句被 isAnalysisSentence 跳过）
         const as = findAnswerStart(this.buf);
         if (as !== null) {
             this.crossed = true;
@@ -490,22 +499,26 @@ class StreamThinkingStripper {
             this.buf = '';
             return tail;
         }
+        // ②b V14: 缓冲上限保护——buf 超长仍未识别答案起点（content 全思维链），用 extractAnswerFromReasoning 剥离
+        if (this.buf.length > 400) {
+            const extracted = extractAnswerFromReasoning(this.buf);
+            if (extracted && extracted.trim().length > 0 && extracted.length < this.buf.length - 10) {
+                this.crossed = true;
+                this.buf = '';
+                return extracted;
+            }
+        }
         // ③ 角色建立段开头（"好的，现在我是…"）→ 缓冲等标记。
-        //    S4-C1: 加 200 字上限防"无标记流式吞整条"——超长仍未标记则落④降级
         if (/^好的，现在/.test(this.buf) && this.buf.length < 200)
             return '';
-        // ④ 无标记/无答案起点：非流式提取兜底（剥角色建立/关键词/计划句 — S4-M2 与主路径对齐）
-        // 🔴 S4-M7 (V4 泄漏根因): 判定收紧——必须剥掉至少 10 字符才算真剥离。
-        //   buf 为复盘型思维链前缀（无【】标记/无最终稿）时，extractAnswerFromReasoning 走 legacy 的
-        //   stripThinkingPrefix 返回 buf 原文（仅差 1 个尾换行 \n 被 trim），旧判定 extracted !== this.buf
-        //   因 1 字符差异误判"剥离成功"→ 提前 crossed → 后续思维链全泄漏前台。
+        // ④ 无标记/无答案起点：非流式提取兜底（剥角色建立/关键词/计划句）
         const extracted = extractAnswerFromReasoning(this.buf);
         if (extracted && extracted.trim().length > 0 && extracted.length < this.buf.length - 10) {
             this.crossed = true;
             this.buf = '';
             return extracted;
         }
-        // ⑤ 提取=原文（无思维链可剥）→ 不推，等答案起点/标记/flush（宁可用"思考中"换干净输出，done 帧覆盖气泡）
+        // ⑤ 提取=原文（无思维链可剥）→ 不推，等答案起点/标记/flush（done 帧覆盖气泡）
         return '';
     }
     /** 流结束兜底：残留 buf 用非流式提取（S4-C1/m4 防无标记/短答案吞字） */
