@@ -419,7 +419,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
               if (_body) _updates.body_features = _body;
               if (_desc) _updates.description = _desc;
               if (Object.keys(_updates).length > 0) {
-                // 📜 写操作用真实FG（绕过角色扮演分支），读操作用_fgX保留角色视角
+                // 📜 当前无角色扮演分支，getFamilyGraph() 即主 FG
                 const _realFg = ctx.m4?.getFamilyGraph?.() || _fgX;
                 _realFg.updatePersonProfile(_n, _updates as any, { countMention: false });
                 console.log('[PersonProfile] 已更新 ' + _n + ' 的档案');
@@ -453,7 +453,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
                             "INSERT OR IGNORE INTO entity_relations (entity_a_id, entity_b_id, relation, strength, updated_at) VALUES (?, ?, 'has_feature', 0.5, ?)",
                             [_personEntity[0].id, _featId, new Date().toISOString()]
                           );
-                          // (FG-迁移) 同步写入 FamilyGraph 特征边（角色扮演时跳过）
+                          // (FG-迁移) 同步写入 FamilyGraph 特征边
                           try { ctx.m4?.getFamilyGraph()?.addFeatureEdge(_n, _featName, 'appearance').catch((e: any) => console.warn('[FG] addFeatureEdge失败:', e?.message)); } catch (e) { console.warn('[FG] addFeatureEdge调用异常:', (e as any)?.message); }
                         }
                       }
@@ -1037,7 +1037,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     // 堵 M4 记忆检索绕过会晤隔离墙（retrieveMemories.findByLocus 曾跨实体扫描）。
     const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories, _meetingEntityUuid ? [_meetingEntityUuid] : undefined);
 
-    // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体（角色扮演时跳过，避免污染主FG）
+    // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体
     if (true) { // V4.0: 非角色扮演守卫已移除
       try {
         const _pg = dna.entity_genes.filter((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1 && isValidPersonName(g.name));
@@ -1753,7 +1753,7 @@ if (isFactualRecallQuery && !PROMPT_ASSEMBLER_STRICT) {
           }
         }
 
-        // ① M6 自我模型注入 — 让玉瑶的说话风格 + 已形成的偏好 + 自传叙事随人格演化而"活"起来（角色扮演时跳过）
+        // ① M6 自我模型注入 — 让玉瑶的说话风格 + 已形成的偏好 + 自传叙事随人格演化而"活"起来
         //   C1: 此前只注入大五人格的3个阈值；她演化出的偏好与自传叙事(M7梦境内化的成长)从未进入生成提示词，
         //        导致"她在长大但说话不变"。此处把 M6 的演化自我完整接回生成链路。
         try {
@@ -2251,7 +2251,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         //    但 extractRelations 提取的大部分关系 rawRelation=''（如"和张中山开会"），
         //    导致所有人都没进人际关系图谱，只进了 knowledge_base 的人物条目。
 
-        // 🎭 角色扮演时跳过社交图谱同步（数据交由分支FG处理，不污染主FG）
+        // 🎭 社交图谱同步（角色扮演守卫已移除，直接同步主 FG）
         if (true) { // V4.0: 非角色扮演守卫已移除
         try {
 

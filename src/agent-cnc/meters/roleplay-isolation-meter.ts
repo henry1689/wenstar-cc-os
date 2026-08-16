@@ -31,7 +31,6 @@ export async function runRoleplayIsolationMeter(
   const keyFiles = [
     'src/webui/chat.ts',
     'src/m4/household/FamilyGraph.ts',
-    'src/m4/household/FamilyGraphRoleBranch.ts',
   ];
 
   let totalFindings = 0;
@@ -62,7 +61,6 @@ export async function runRoleplayIsolationMeter(
     (f) =>
       f.includes('/role/') ||
       f.includes('/persona/') ||
-      f.includes('FamilyGraphRoleBranch') ||
       f.includes('RoleplayPromptBuilder') ||
       f.includes('PromptAssembler'),
   );

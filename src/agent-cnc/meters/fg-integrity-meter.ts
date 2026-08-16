@@ -20,13 +20,6 @@ export async function runFgIntegrityMeter(
     'household',
     'FamilyGraph.ts',
   );
-  const roleBranchPath = path.join(
-    context.rootDir,
-    'src',
-    'm4',
-    'household',
-    'FamilyGraphRoleBranch.ts',
-  );
 
   if (!fileExists(fgPath)) {
     result.status = 'skipped';
@@ -63,11 +56,6 @@ export async function runFgIntegrityMeter(
     if (count > 0) {
       result.evidence.push(`FG 分叉: "${kw}" 出现 ${count} 次`);
     }
-  }
-
-  if (fileExists(roleBranchPath)) {
-    const branchCount = countOccurrences(roleBranchPath, '_realFg');
-    result.evidence.push(`FamilyGraphRoleBranch.ts: "_realFg" 出现 ${branchCount} 次`);
   }
 
   // 评分

@@ -8,7 +8,6 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ChatPolicy, meetingMode, normalMode, roleplayMode, secretaryMode } from '../app/chat/ChatPolicy.js';
-import { RoleplayIsolationGuard, buildIsolationContext } from '../app/role/RoleplayIsolationGuard.js';
 
 describe('ChatPolicy — 模式切换身份正确性', () => {
   it('正常模式 → 所有权限开放', () => {
@@ -56,40 +55,6 @@ describe('ChatPolicy — 模式切换身份正确性', () => {
     expect(new ChatPolicy(normalMode()).getModeLabel()).toBe('正常');
     expect(new ChatPolicy(meetingMode('','熊梓铭')).getModeLabel()).toBe('会晤:熊梓铭');
     expect(new ChatPolicy(roleplayMode('','','胡冰')).getModeLabel()).toBe('扮演:胡冰');
-  });
-});
-
-describe('RoleplayIsolationGuard — 多模式切换不残留', () => {
-  it('从角色扮演退出 → 新 guard 实例无违规', () => {
-    const ctx = buildIsolationContext({ isRoleplay: false });
-    const guard = new RoleplayIsolationGuard(ctx);
-    guard.assertCleanup({ fgOverride: false, branchMemory: false, rpCache: false });
-    expect(guard.hasViolations()).toBe(false);
-  });
-
-  it('正常模式 guard → 不检查 memory_tag', () => {
-    const guard = new RoleplayIsolationGuard(buildIsolationContext({ isRoleplay: false }));
-    guard.assertMemoryTag(undefined);
-    expect(guard.hasViolations()).toBe(false);
-  });
-
-  it('真实人名检测 — 提取常见名', () => {
-    const realNames = ['熊梓铭', '王全芬', '徐诗韵', '徐诗雨', '徐诗涵'];
-    const guard = new RoleplayIsolationGuard(
-      buildIsolationContext({ isRoleplay: true, roleName: '徐诗韵' })
-    );
-    guard.assertRealPersonNotRoleplayed(realNames);
-    expect(guard.hasViolations()).toBe(true);
-  });
-
-  it('角色退出后 guard 清空 → 可重用', () => {
-    const guard = new RoleplayIsolationGuard(
-      buildIsolationContext({ isRoleplay: true, roleName: '徐诗雨', fgWriteTarget: 'main' })
-    );
-    guard.assertNoMainFGWrite();
-    expect(guard.hasViolations()).toBe(true);
-    guard.clear();
-    expect(guard.hasViolations()).toBe(false);
   });
 });
 
