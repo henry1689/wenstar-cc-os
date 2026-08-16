@@ -232,6 +232,8 @@ export class IncrementalTTS {
     private _gen = 0;
     private _chain: Promise<unknown> = Promise.resolve();
     private _done: Array<{ idx: number; url: string }> = []; // V22: 记录已生成段，finalize 保序返回
+    private _segGen = 0; // V23: 段计数器（连续 0,1,2,3..），段 idx 必须连续否则前端 urls 稀疏卡空位
+    private _forceTail = false; // V23: flush 后强制消费尾部残句（即使 <2 句）
     constructor(private _dataDir: string, private _onSegment: (idx: number, url: string) => void) {}
 
     feed(tok: string): void {
@@ -257,6 +259,7 @@ export class IncrementalTTS {
         const t = this._buf.trim();
         this._buf = '';
         if (t && /[一-龥]/.test(t)) this._pending.push({ text: t, idx: this._gen++ });
+        this._forceTail = true; // V23: flush 后即使剩 1 句也强制消费，防尾部残句丢失
         if (this._pending.length) this._dispatch();
     }
 
@@ -265,19 +268,18 @@ export class IncrementalTTS {
      * 导致"时有时无 + 只播一句"。段粒度对齐 edge-tts 稳定区间（80~120 字）。 */
     private _dispatch(): void {
         if (this._aborted || this._inFlight >= TTS_MAX_INFLIGHT) return;
+        if (!this._pending.length) return; // V23: 空 pending 守卫（防 finally 递归时崩溃）
         // 合并前 N 句到 ~120 字（至少 2 句，最多 3 句），杜绝短单句段；
-        // 单句但本身 >=120 字（超长单句）也单独生成——已够长，edge-tts 稳定。
-        if (this._pending.length < 2 && this._pending[0]!.text.length < TTS_INCR_MAX_CHARS) return;
+        // flush 后(_forceTail) 或 单句本身 >=120 字 → 单句也单独生成。
+        if (!this._forceTail && this._pending.length < 2 && this._pending[0]!.text.length < TTS_INCR_MAX_CHARS) return;
         let text = '';
-        let idx = -1;
         let n = 0;
         while (this._pending.length && n < 3 && text.length < TTS_INCR_MAX_CHARS) {
-            const p = this._pending.shift()!;
-            if (idx < 0) idx = p.idx;
-            text += p.text;
+            text += this._pending.shift()!.text;
             n++;
         }
         if (!text) return;
+        const idx = this._segGen++; // V23: 段 idx 连续（0,1,2,3..），不再用首句 idx（稀疏导致前端 urls 卡空位）
         this._inFlight++;
         this._chain = this._chain
             .then(() => generateTTSAudio([text], this._dataDir, (url) => {
