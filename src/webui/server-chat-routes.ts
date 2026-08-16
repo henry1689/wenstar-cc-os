@@ -33,6 +33,8 @@ export const TTS_SEGMENT_MAX_CHARS = 250;
 /** V15 边写边播: 增量 TTS 触发字量门槛（V22 升至 120 字，对齐段粒度 2~3 句，
  *   消除 V17 降 40 字导致的超短单句段 → edge-tts 高频 NoAudioReceived 无声） */
 export const TTS_INCR_MAX_CHARS = 120;
+/** V24 边写边播: 首段快速触发字数（首段 1~2 句即播，消除"文字写完等几秒"的滞后） */
+export const TTS_FIRST_SEG_CHARS = 60;
 /** V15 边写边播: 增量段在途上限（串行队列防 edge-tts 并发打满） */
 export const TTS_MAX_INFLIGHT = 3;
 
@@ -189,6 +191,8 @@ export interface ChatJob {
   /** 完整 ChatResponse（done 后） */
   result: any | null;
   audio: { audio_url: string | null; audio_urls: string[]; tts_job: string | null };
+  /** V24: 增量 TTS finalize 完成后置 true（前端轮询据此判断音频已定稿，不再等空 audio_urls 超时丢尾） */
+  audio_done?: boolean;
   createdAt: number;
   error?: string;
 }
@@ -247,9 +251,10 @@ export class IncrementalTTS {
             this._buf = this._buf.slice(m[0].length);
             if (s && /[一-龥]/.test(s)) this._pending.push({ text: s, idx: this._gen++ });
         }
-        // ② 触发门槛: >=80字且>=1完整句，或>=2完整句，或 _buf 超 80 字（长句无标点也触发）
+        // ② 触发门槛: 首段(_segGen===0) 60 字即触发，后续段 120 字；或 >=2 完整句
         const cc = this._pending.reduce((n, p) => n + p.text.length, 0);
-        if (cc + this._buf.length >= TTS_INCR_MAX_CHARS && (this._pending.length >= 1 || this._buf.length >= TTS_INCR_MAX_CHARS)) this._dispatch();
+        const _threshold = (this._segGen === 0) ? TTS_FIRST_SEG_CHARS : TTS_INCR_MAX_CHARS;
+        if (cc + this._buf.length >= _threshold && (this._pending.length >= 1 || this._buf.length >= _threshold)) this._dispatch();
         else if (this._pending.length >= 2) this._dispatch();
     }
 
@@ -271,7 +276,10 @@ export class IncrementalTTS {
         if (!this._pending.length) return; // V23: 空 pending 守卫（防 finally 递归时崩溃）
         // 合并前 N 句到 ~120 字（至少 2 句，最多 3 句），杜绝短单句段；
         // flush 后(_forceTail) 或 单句本身 >=120 字 → 单句也单独生成。
-        if (!this._forceTail && this._pending.length < 2 && this._pending[0]!.text.length < TTS_INCR_MAX_CHARS) return;
+        // V24: 首段(_segGen===0)阈值降到 TTS_FIRST_SEG_CHARS(60字)快速触发，消除"文字写完等几秒"；
+        //      后续段维持 TTS_INCR_MAX_CHARS(120字)。合并 2~3 句，杜绝短单句段（NoAudioReceived）。
+        const _threshold = (this._segGen === 0 && !this._forceTail) ? TTS_FIRST_SEG_CHARS : TTS_INCR_MAX_CHARS;
+        if (!this._forceTail && this._pending.length < 2 && this._pending[0]!.text.length < _threshold) return;
         let text = '';
         let n = 0;
         while (this._pending.length && n < 3 && text.length < TTS_INCR_MAX_CHARS) {
@@ -295,7 +303,20 @@ export class IncrementalTTS {
      * 单一分段策略：增量段就是最终段，finalize 只补 flush 尾部残句。 */
     finalize(fullReply: string): Promise<{ audio_url: string | null; audio_urls: string[]; tts_job: string | null }> {
         this.flush();
-        return this._chain.then(() => {
+        // V24 drain: _inFlight 上限(3)会让"在途段之外的剩余句"滞留 _pending，
+        // 此前 _chain.then 只覆盖已排队段 → finalize 提前返回 → 长文只播前 3 段。
+        // 这里轮询等待 _pending 清空 + _inFlight 归零（finally 递归会持续消费），
+        // 保证所有段都排队并生成完，finalize 才返回完整 audio_urls。
+        const drain = async (): Promise<void> => {
+            let guard = 0;
+            while (!this._aborted && (this._pending.length > 0 || this._inFlight > 0)) {
+                this._dispatch();
+                if (++guard > 4000) break; // 5ms*4000=20s 兜底，防死循环
+                await new Promise(r => setTimeout(r, 5));
+            }
+            await this._chain;
+        };
+        return drain().then(() => {
             if (this._aborted || !fullReply || fullReply.length <= 1)
                 return { audio_url: null, audio_urls: [], tts_job: null };
             // 已生成段按 idx 保序（含空位），供前端兜底补缺
@@ -398,6 +419,10 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
       // V15 边写边播: 增量 TTS（tts:false 时为 null，纯文字不变）
       const incrTTS = (body.tts !== false && getRetrievalFusionConfig()?.p1_speed?.streaming?.enabled !== false)
         ? new IncrementalTTS(DATA_DIR, (idx, url) => {
+            // V24: 渐进更新 job.audio.audio_urls——SSE 掉线/第一次 done 后轮询 /job/status
+            // 也能拿到已生成段（finalize drain 返回完整前，这里先逐段落库兜底）。
+            while (job.audio.audio_urls.length <= idx) job.audio.audio_urls.push(null as any);
+            job.audio.audio_urls[idx] = url;
             deps.pushToSSEClients?.('chat-tts', { job_id: jobId, index: idx, url });
           })
         : null;
@@ -420,11 +445,13 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
           if (incrTTS) {
             incrTTS.finalize(job.reply).then((audio) => {
               job.audio = audio;
+              job.audio_done = true; // V24: 音频定稿信号（前端轮询据此退出，不再等空 audio_urls）
               deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
             }).catch((e) => { console.warn('[ChatStream] 增量 TTS 尾补失败:', (e as Error)?.message || e); });
           } else {
             void buildTTSResult(job.reply, body.tts !== false, DATA_DIR, deps.pushToSSEClients?.bind(null)).then((audio) => {
               job.audio = audio;
+              job.audio_done = true;
               deps.pushToSSEClients?.('chat-done', { job_id: jobId, reply: job.reply, audio_url: audio.audio_url, audio_urls: audio.audio_urls, tts_job: audio.tts_job });
             }).catch((e) => { console.warn('[ChatStream] TTS 后台生成失败:', (e as Error)?.message || e); });
           }
@@ -486,6 +513,7 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
       audio_url: job.audio?.audio_url ?? null,
       audio_urls: job.audio?.audio_urls ?? [],
       tts_job: job.audio?.tts_job ?? null,
+      audio_done: !!job.audio_done,
       error: job.error || null,
     }));
     return true;

@@ -55,4 +55,31 @@ describe('V23 段 idx 连续性', () => {
     expect(urls.length).toBeGreaterThan(0);
     expect(urls[0]).toBeTruthy();
   });
+
+  // ── V24 根治「长文只播前几段」 + 「首段响应慢」 ──
+  it('V24: 长文(20句) finalize 返回全部段，不丢尾（drain 修复）', async () => {
+    const t = new IncrementalTTS('D:/tmp/v24-audio', () => {});
+    // 20 句，每句约 20 字，总 ~400 字 → 约 7 段（每段 2~3 句 / 120 字）
+    let long = '';
+    for (let i = 1; i <= 20; i++) long += `这是第${i}句测试内容用来验证长文分段不丢失。`;
+    t.feed(long);
+    t.flush();
+    const r = await t.finalize(long);
+    const nonNull = (r.audio_urls as (string | null)[]).filter(u => !!u);
+    // 修复前 finalize 提前返回（_inFlight 上限挡住剩余句，只含前 2~3 段）；
+    // 修复后 drain 等 _pending 清空 + _inFlight 归零，返回全部段。
+    expect(nonNull.length).toBeGreaterThanOrEqual(5);
+    // 段 idx 连续：第 0 段非空
+    expect((r.audio_urls as (string | null)[])[0]).toBeTruthy();
+  });
+
+  it('V24: 首段 60 字即触发（修复前需 120 字）', async () => {
+    const idxs: number[] = [];
+    const t = new IncrementalTTS('D:/tmp/v24-audio', (idx) => idxs.push(idx));
+    // 单个 80 字句子（有句末标点）→ 修复前 <120 且 <2 句不触发，修复后 >=60 触发首段
+    const s = '首段快速触发测试内容'.repeat(8) + '。'; // 10字 × 8 = 80 字，落在 60~120 区间
+    t.feed(s);
+    await (t as any)._chain;
+    expect(idxs.length).toBe(1);
+  });
 });
