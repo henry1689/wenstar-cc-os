@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { passes, buildSqlClause, filterRows, assertMasterKey } from '../UUIDPoliceFilter.js';
+import { passes, buildSqlClause, filterRows, assertMasterKey, canWriteEntity } from '../UUIDPoliceFilter.js';
 
 const POLICY = {
   visibleUuids: new Set(['TXS-000000001', 'TXS-000000007']), // 我 + 徐诗雨
@@ -52,5 +52,38 @@ describe('UUIDPoliceFilter — 户籍公安过滤器', () => {
     expect(() => assertMasterKey('TXS-000000007', POLICY)).not.toThrow();
     expect(() => assertMasterKey('TXS-000000003', POLICY)).toThrow(/最高权限钥匙/);
     expect(() => assertMasterKey(null, POLICY)).toThrow(); // 无归属 + 非户主钥匙
+  });
+
+  describe('canWriteEntity — 写侧授权（会晤写隔离）', () => {
+    // 模拟主 FG：徐诗雨(TXS-7) / 熊梓铭(TXS-3) 已存在
+    const mockFg = {
+      getUUIDByName: (name: string) =>
+        name === '徐诗雨' ? 'TXS-000000007' : name === '熊梓铭' ? 'TXS-000000003' : null,
+    };
+
+    it('非会晤 → 任意实体均可写', () => {
+      expect(canWriteEntity('张三', { meetingEntityName: null }, mockFg).allowed).toBe(true);
+      expect(canWriteEntity('熊梓铭', {}, mockFg).allowed).toBe(true);
+    });
+
+    it('会晤中 → 写会晤实体本人放行', () => {
+      const r = canWriteEntity('徐诗雨', { meetingEntityName: '徐诗雨', meetingEntityUuid: 'TXS-000000007' }, mockFg);
+      expect(r.allowed).toBe(true);
+    });
+
+    it('会晤中 → 写主FG不存在的新实体放行', () => {
+      const r = canWriteEntity('新同事李四', { meetingEntityName: '徐诗雨' }, mockFg);
+      expect(r.allowed).toBe(true);
+    });
+
+    it('会晤中 → 写主FG已有的其他实体拒绝', () => {
+      const r = canWriteEntity('熊梓铭', { meetingEntityName: '徐诗雨' }, mockFg);
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toContain('熊梓铭');
+    });
+
+    it('空目标名 → 拒绝', () => {
+      expect(canWriteEntity('', { meetingEntityName: '徐诗雨' }, mockFg).allowed).toBe(false);
+    });
   });
 });

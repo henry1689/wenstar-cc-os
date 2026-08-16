@@ -86,6 +86,7 @@ import { alignmentGuard } from '../app/alignment/VectorAlignmentGuard.js';
 import { autoPromoteCandidatesV2 } from '../app/vault/VaultManager.js';
 import { EntityMeeting } from '../m4/household/EntityMeeting.js';
 import { filterPrivateConversations } from '../m4/household/EntityPrivacyFilter.js';
+import { FGProfileWriteGateway } from '../m4/household/FGProfileWriteGateway.js';
 // 🔴 P0-2 会话模式分级: 读取 prompt_depth_enabled 总开关
 import { getRetrievalFusionConfig } from '../config/retrieval-fusion-config.js';
 // 🔴 P1-4 短路: PAE 档案信号检测（有人物提及但无档案事实陈述 → 跳过 LLM 采集）
@@ -350,6 +351,14 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     // 📸 人物全方位档案提取
     console.log('[PersonProfile] 检查开始, ctx.m4=' + (!!ctx.m4) + ' m4类型=' + (typeof ctx.m4));
+    // 写入门户：统一写侧授权（会晤写隔离）——惰性 fg + 动态会晤状态，全程共享
+    const _fgw = new FGProfileWriteGateway(
+      () => ctx.m4?.getFamilyGraph?.(),
+      () => ({
+        meetingEntityUuid: ctx._entityMeeting?.getEntityUUID?.() ?? null,
+        meetingEntityName: ctx._entityMeeting?.isActive?.() ? ctx._entityMeeting.getEntityName() : null,
+      }),
+    );
     try {
       if (ctx.m4) {
         console.log('[PersonProfile] getFamilyGraph...');
@@ -419,9 +428,8 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
               if (_body) _updates.body_features = _body;
               if (_desc) _updates.description = _desc;
               if (Object.keys(_updates).length > 0) {
-                // 📜 当前无角色扮演分支，getFamilyGraph() 即主 FG
-                const _realFg = ctx.m4?.getFamilyGraph?.() || _fgX;
-                _realFg.updatePersonProfile(_n, _updates as any, { countMention: false });
+                // 📜 当前无角色扮演分支，getFamilyGraph() 即主 FG；写入门户收口（会晤写隔离）
+                _fgw.updatePersonProfile(_n, _updates as any, { countMention: false });
                 console.log('[PersonProfile] 已更新 ' + _n + ' 的档案');
               }
               // P1-2: 外貌特征提取为附属实体（支持反向检索）
@@ -454,7 +462,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
                             [_personEntity[0].id, _featId, new Date().toISOString()]
                           );
                           // (FG-迁移) 同步写入 FamilyGraph 特征边
-                          try { ctx.m4?.getFamilyGraph()?.addFeatureEdge(_n, _featName, 'appearance').catch((e: any) => console.warn('[FG] addFeatureEdge失败:', e?.message)); } catch (e) { console.warn('[FG] addFeatureEdge调用异常:', (e as any)?.message); }
+                          try { _fgw.addFeatureEdge(_n, _featName, 'appearance'); } catch (e) { console.warn('[FG] addFeatureEdge调用异常:', (e as any)?.message); }
                         }
                       }
                     } catch (e: any) { console.error('[chat] error:', e?.message); }
@@ -534,8 +542,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
             }
 
             if (Object.keys(updates).length > 0) {
-              const _realFg = ctx.m4?.getFamilyGraph?.() || graph;
-              _realFg.updatePersonProfile(p.name, updates as any, { countMention: false });
+              _fgw.updatePersonProfile(p.name, updates as any, { countMention: false });
               console.log('[Profile] 更新画像:', p.name, Object.keys(updates).join(','));
             }
           }
@@ -1046,7 +1053,7 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
           for (const _p of _pg) {
             const _profile = _fg.getPersonProfile(_p.name);
             if (_profile && !_profile.relation_to_user) {
-              _fg.integrateSocialRelation(_p.name, 'acquaintance_of', message).catch(function(e: any) { console.warn('[chat] FG关系写入失败:', e?.message); });
+              _fgw.integrateSocialRelation(_p.name, 'acquaintance_of', message);
             }
           }
         }
@@ -2281,10 +2288,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
 
               // ── 社交→家族升级：如果此人在 FamilyGraph 中已有社交边，添加家族边 ──
               try {
-                const graph = ctx.m4.getFamilyGraph();
-                if (graph) {
-                  graph.promoteSocialToFamily(rel.personName, rel.relation, rel.context).catch(() => {});
-                }
+                _fgw.promoteSocialToFamily(rel.personName, rel.relation, rel.context);
               } catch (e) { /* 升级失败不影响主线 */ }
 
               continue;
@@ -2294,7 +2298,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
             // 有明确社交类型（同事/朋友/客户等）则精确映射，否则默认"认识的人"
             const socialType = (rel.rawRelation && socialTypeMap[rel.rawRelation]) || 'acquaintance_of';
 
-            await ctx.m4.getFamilyGraph().integrateSocialRelation(rel.personName, socialType, message);
+            _fgw.integrateSocialRelation(rel.personName, socialType, message);
 
           }
 

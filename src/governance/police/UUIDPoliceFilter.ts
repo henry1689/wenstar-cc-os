@@ -156,3 +156,62 @@ export function assertMasterKey(
     `白名单=${[...p.visibleUuids].join(',') || '(empty)'}`,
   );
 }
+
+// ════════════════════════════════════════════════════════════
+// 写侧授权（户籍管理法 · 写入门户收口）
+// ════════════════════════════════════════════════════════════
+
+/**
+ * 写策略快照 — 判定「能否写某实体档案/关系」所需的会话状态。
+ * 与读侧 PolicePolicy 区分：读侧管「能看到谁的」，写侧管「能写谁」。
+ */
+export interface WritePolicy {
+  /** 会晤实体 UUID（非会晤为 null/undefined） */
+  meetingEntityUuid?: string | null;
+  /** 会晤实体名（非会晤为 null/undefined） */
+  meetingEntityName?: string | null;
+}
+
+/**
+ * 判断能否写某实体的档案/关系（写侧软拦截——返回判定而非 throw）。
+ *
+ * 语义（会晤写隔离）：
+ *   - 非会晤（meetingEntityName 为空）→ 一律允许（用户自己的世界，自由录入）
+ *   - 会晤中 → 只允许写「会晤实体本人」或「主 FG 中尚不存在的新实体」；
+ *     主 FG 已有的其他实体（会晤来源可能编造污染）→ 拒绝。
+ *
+ * @param targetName  待写入的目标实体名
+ * @param policy      写策略（会晤状态）
+ * @param fg          主 FG 查询器（用于判断 target 是否已存在于主 FG）
+ * @returns { allowed, reason }——denied 时由调用方记录日志并跳过写，不阻断对话
+ */
+export function canWriteEntity(
+  targetName: string,
+  policy: WritePolicy,
+  fg: { getUUIDByName(name: string): string | null },
+): { allowed: boolean; reason?: string } {
+  const name = (targetName ?? '').trim();
+  if (!name) return { allowed: false, reason: '目标名为空' };
+
+  // 非会晤 → 一律允许（用户自由录入）
+  if (!policy?.meetingEntityName) {
+    return { allowed: true };
+  }
+
+  // 会晤中：写会晤实体本人 → 允许
+  if (name === policy.meetingEntityName) {
+    return { allowed: true };
+  }
+
+  // 会晤中：target 不在主 FG（新实体）→ 允许
+  const existingUuid = fg?.getUUIDByName?.(name) ?? null;
+  if (!existingUuid) {
+    return { allowed: true };
+  }
+
+  // 会晤中：主 FG 已有的其他实体 → 拒绝（防会晤编造污染）
+  return {
+    allowed: false,
+    reason: `会晤"${policy.meetingEntityName}"中尝试写入主FG已有实体"${name}" — 已拦截`,
+  };
+}
