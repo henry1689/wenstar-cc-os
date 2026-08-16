@@ -57,11 +57,11 @@ describe('IncrementalTTS 触发门槛', () => {
     expect(dispatched).toBe(0);
   });
 
-  it('>=80 字且 >=1 完整句触发', () => {
+  it('>=120 字且 >=1 完整句触发（V22 门槛 40→120，段粒度对齐）', () => {
     let dispatched = 0;
     const t = new IncrementalTTS('D:/tmp', () => {});
     (t as any)._dispatch = () => { dispatched++; };
-    const long = '这是一句比较长的回复内容用来测试触发门槛当累积到八十个字左右就会触发一次生成这是一个足够长的句子用来满足字数阈值要求确保不会因为太短而不触发条件这里继续补充一些字数让它超过八十个字的阈值门槛。';
+    const long = '这是一句比较长的回复内容用来测试触发门槛当累积到一百二十个字左右就会触发一次生成这是一个足够长的句子用来满足字数阈值要求确保不会因为太短而不触发条件这里继续补充一些字数让它超过一百二十个字的阈值门槛这些补充的字符数量已经足够多能够稳定地跨越新的触发门槛确保测试仍然有效。';
     t.feed(long);
     expect(dispatched).toBeGreaterThanOrEqual(1);
   });

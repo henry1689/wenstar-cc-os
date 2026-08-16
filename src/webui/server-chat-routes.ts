@@ -30,8 +30,9 @@ export const TTS_MAX_TEXT = 400;
 export const TTS_SEGMENT_TARGET_SENTENCES = 3;
 /** 语音播报单段硬上限（句数达标但字数溢出时的强制截断） */
 export const TTS_SEGMENT_MAX_CHARS = 250;
-/** V15 边写边播: 增量 TTS 触发字量门槛（V17 降至 40 字，首段语音更快，减少"文字写完才出声"滞后） */
-export const TTS_INCR_MAX_CHARS = 40;
+/** V15 边写边播: 增量 TTS 触发字量门槛（V22 升至 120 字，对齐段粒度 2~3 句，
+ *   消除 V17 降 40 字导致的超短单句段 → edge-tts 高频 NoAudioReceived 无声） */
+export const TTS_INCR_MAX_CHARS = 120;
 /** V15 边写边播: 增量段在途上限（串行队列防 edge-tts 并发打满） */
 export const TTS_MAX_INFLIGHT = 3;
 
@@ -230,6 +231,7 @@ export class IncrementalTTS {
     private _aborted = false;
     private _gen = 0;
     private _chain: Promise<unknown> = Promise.resolve();
+    private _done: Array<{ idx: number; url: string }> = []; // V22: 记录已生成段，finalize 保序返回
     constructor(private _dataDir: string, private _onSegment: (idx: number, url: string) => void) {}
 
     feed(tok: string): void {
@@ -258,29 +260,47 @@ export class IncrementalTTS {
         if (this._pending.length) this._dispatch();
     }
 
-    /** 串行队列: 一次只跑一段，在途<=TTS_MAX_INFLIGHT，生成完 onSegment 推 chat-tts */
+    /** 串行队列: 一次只跑一段，在途<=TTS_MAX_INFLIGHT，生成完 onSegment 推 chat-tts。
+     * V22: 合并 2~3 句 / ≤120 字为一段（不再单句）——单句段太短（20~50字）edge-tts 高频 NoAudioReceived，
+     * 导致"时有时无 + 只播一句"。段粒度对齐 edge-tts 稳定区间（80~120 字）。 */
     private _dispatch(): void {
         if (this._aborted || this._inFlight >= TTS_MAX_INFLIGHT) return;
-        const seg = this._pending.shift();
-        if (!seg) return;
+        // 合并前 N 句到 ~120 字（至少 2 句，最多 3 句），杜绝短单句段；
+        // 单句但本身 >=120 字（超长单句）也单独生成——已够长，edge-tts 稳定。
+        if (this._pending.length < 2 && this._pending[0]!.text.length < TTS_INCR_MAX_CHARS) return;
+        let text = '';
+        let idx = -1;
+        let n = 0;
+        while (this._pending.length && n < 3 && text.length < TTS_INCR_MAX_CHARS) {
+            const p = this._pending.shift()!;
+            if (idx < 0) idx = p.idx;
+            text += p.text;
+            n++;
+        }
+        if (!text) return;
         this._inFlight++;
         this._chain = this._chain
-            .then(() => generateTTSAudio([seg.text], this._dataDir, (url) => {
-                if (!this._aborted) this._onSegment(seg.idx, url);
+            .then(() => generateTTSAudio([text], this._dataDir, (url) => {
+                if (!this._aborted) { this._done.push({ idx, url }); this._onSegment(idx, url); }
             }))
             .catch((e) => console.warn('[TTS] 增量段失败:', (e as Error)?.message || e))
             .finally(() => { this._inFlight--; this._dispatch(); });
     }
 
-    /** done 后: 等链清空 → 全量重算对齐最终 reply（增量段已播，此兜底补缺失/尾部） */
+    /** done 后: 等链清空 → 返回已生成的增量段 url（含失败空位，按原始 idx 保序）。
+     * V22: 不再 segmentForTTS 全量重切——增量段(2~3句/段)与全量段(3句/250字)切分粒度不同，
+     * 双轨 idx 冲突导致全量段填不进前端已被增量段占位的 urls 数组 → 兜底失效。
+     * 单一分段策略：增量段就是最终段，finalize 只补 flush 尾部残句。 */
     finalize(fullReply: string): Promise<{ audio_url: string | null; audio_urls: string[]; tts_job: string | null }> {
         this.flush();
-        return this._chain.then(async () => {
+        return this._chain.then(() => {
             if (this._aborted || !fullReply || fullReply.length <= 1)
                 return { audio_url: null, audio_urls: [], tts_job: null };
-            const segs = segmentForTTS(fullReply).filter(s => /[一-龥]/.test(s));
-            const urls = await generateTTSAudio(segs, this._dataDir);
-            return { audio_url: urls[0] || null, audio_urls: urls, tts_job: null };
+            // 已生成段按 idx 保序（含空位），供前端兜底补缺
+            const urls: (string | null)[] = [];
+            for (const r of this._done) urls[r.idx] = r.url;
+            const compact = urls.filter((u): u is string => !!u);
+            return { audio_url: compact[0] || null, audio_urls: urls as string[], tts_job: null };
         });
     }
 

@@ -485,7 +485,9 @@ function _incrTTSTryPlay(){
   ap.play().catch(e=>{console.warn('[Audio] 增量播失败:',e);fin();});
 }
 // 全量段就绪但队列未消费完 → 兜底续播（防止 SSE 漏事件）
-function _incrTTSFill(gen,urls,finalized){ if(gen!==_ttsIncr.gen)return; for(let i=0;i<urls.length;i++) if(!_ttsIncr.urls[i]) _ttsIncr.urls[i]=urls[i]; if(finalized)_ttsIncr.finalized=true; _incrTTSTryPlay(); }
+// V22: urls 按原始 idx 保序（含 null 空位=失败段），fill 时保留空位不紧凑压缩；
+//   空位留给 _incrTTSTryPlay 的 finalized 跳过逻辑处理，避免失败段导致整体索引错位。
+function _incrTTSFill(gen,urls,finalized){ if(gen!==_ttsIncr.gen)return; for(let i=0;i<urls.length;i++) if(!_ttsIncr.urls[i]&&urls[i]) _ttsIncr.urls[i]=urls[i]; if(finalized)_ttsIncr.finalized=true; _incrTTSTryPlay(); }
 
 function pollTTSJob(jobId){
   const gen=_audioGen;       // 捕获本次发送的代际
