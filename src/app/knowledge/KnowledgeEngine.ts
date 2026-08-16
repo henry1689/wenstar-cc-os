@@ -858,9 +858,15 @@ export function createKnowledgeEngine(sqlite: SQLiteAdapter) {
     // 公共资料（belong_entity_uuid IS NULL）始终可见（用户明确允许）；
     // 人物专属知识（如"梓铭简介"belong=梓铭）对徐诗雨（belong=徐诗雨）不可见。
     const _effUuid = belongEntityUuid ?? _sessionEntityUuid ?? null;
-    const allRows: any[] = _effUuid
-      ? sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') AND (belong_entity_uuid = ? OR belong_entity_uuid IS NULL OR belong_entity_uuid = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`, [_effUuid])
-      : sqlite.queryAll(`SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '') ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`);
+    // 🔴 户籍管理法（铁律4）: 收编手写 UUID SQL 逃生口 → UUIDPoliceFilter.buildSqlClause。
+    // 原手写 `AND (belong_entity_uuid = ? OR IS NULL OR '')` 是硬编码逃生口，脱离唯一判定源。
+    // 现委托 buildSqlClause({ visibleUuids:[_effUuid], allowUnowned:true })，与 L544 已收编范式一致：
+    // 会晤实体自己的知识 + 公共无归属资料可见（用户明确允许），他人专属知识 deny-by-default。
+    const _police = _effUuid ? buildSqlClause({ visibleUuids: new Set([_effUuid]), allowUnowned: true }) : { clause: '', params: [] as string[] };
+    const allRows: any[] = sqlite.queryAll(
+      `SELECT * FROM knowledge_base WHERE (source_type IN (${srcFilter}) OR source_type IS NULL OR source_type = '')${_police.clause} ORDER BY COALESCE(impression_score,0.5) DESC, updated_at DESC LIMIT 500`,
+      _police.params,
+    );
     if (!allRows.length) {
       console.log('[KBw] 空库');
       return [];
