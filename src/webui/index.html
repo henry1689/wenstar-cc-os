@@ -480,7 +480,11 @@ function _incrTTSTryPlay(){
   }
   Q.playing=true;
   const ap=new Audio(url);ap.volume=0.8;
-  const fin=()=>{ if(Q.gen!==_audioGen)return; Q.playing=false; Q.cur++; _incrTTSTryPlay(); };
+  // 🔴 V25 幂等护栏：onended/onerror 与 play().catch 可能双触发（资源加载失败时
+  //   error 事件 + play promise 拒绝同时发生），无护栏会导致 Q.cur 连跳两段 → 中间段被吞，
+  //   表现即「长文只读一部分」。与 playAudioQueue 的 handled 护栏一致。
+  let handled=false;
+  const fin=()=>{ if(Q.gen!==_audioGen||handled)return; handled=true; Q.playing=false; Q.cur++; _incrTTSTryPlay(); };
   ap.onended=fin; ap.onerror=fin;
   ap.play().catch(e=>{console.warn('[Audio] 增量播失败:',e);fin();});
 }
