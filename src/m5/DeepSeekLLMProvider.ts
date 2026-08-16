@@ -589,42 +589,43 @@ class StreamThinkingStripper {
     buf = '';
     crossed = false; // 已进入答案区
     tailBuf = '';    // V14: crossed 后 content 增量累积，尾部评估句检测截断
+    reasoningBuf = ''; // V21: 累积 delta.reasoning（思维链字段），仅流结束兜底用，绝不流式展示
     /** V14: 尾部评估句特征（模型在答案后继续输出复盘评估：长度/语气确认、正文检查） */
     private static tailEvalRe = /(?:这个长度很合适|这个长度合适|语气也贴合|语气贴合|语气也合适|确认一下|正文里(?:有|带)|回答里(?:有|带)|内容里(?:有|带)|检查一下.*正文|这段回复|稍微修改|最终确认|最终稿|尺度.{0,8}合适|保持了.{0,12}风格)/;
-    reset() { this.buf = ''; this.crossed = false; this.tailBuf = ''; }
+    reset() { this.buf = ''; this.crossed = false; this.tailBuf = ''; this.reasoningBuf = ''; }
     /** 推送一个 chunk，返回可安全展示的 text 增量（''=本 token 不推） */
     push(content: string | undefined, reasoning: string | undefined): string {
         const c = content || '';
         const r = reasoning || '';
-        if (!c && !r)
+        // V21: reasoning 是思维链字段（分析/规划/草稿/评估段），绝不流式展示。
+        //   只累积到 reasoningBuf，供流结束时 content 为空的降级模式兜底。
+        if (r)
+            this.reasoningBuf += r;
+        if (!c)
             return '';
-        // 已进入答案区 → content 优先（答案在 content），reasoning 兜底
-        // S4-M4: 已过答案起点后 content 优先；reasoning 兜底若带系统指令标记/复盘特征 → 丢弃（防尾部思维链泄漏）
+        // 已进入答案区 → content 直推（答案在 content），reasoning 已在上面丢弃
         if (this.crossed) {
-            if (c) {
-                // V14: 尾部评估句截断——模型在答案后可能继续输出复盘评估
-                //   （"这个长度很合适，语气也贴合。确认一下：正文里有'诗雨'吗？有——"），
-                //   累积 tailBuf 检测评估特征词，命中即停止推送（丢弃后续评估）。
-                this.tailBuf += c;
-                // 注意: search 是 String 方法，不是 RegExp 方法（V14 bug: tailEvalRe.search 抛异常吞后续 content）
-                const evalIdx = this.tailBuf.search(StreamThinkingStripper.tailEvalRe);
-                if (evalIdx >= 0) {
-                    const out = this.tailBuf.slice(0, evalIdx);
-                    this.tailBuf = '';
-                    this.crossed = false; // 进入尾部评估 → 停止推送
-                    return out;
-                }
-                const out = this.tailBuf;
+            // V14: 尾部评估句截断——模型在答案后可能继续输出复盘评估
+            //   （"这个长度很合适，语气也贴合。确认一下：正文里有'诗雨'吗？有——"），
+            //   累积 tailBuf 检测评估特征词，命中即停止推送（丢弃后续评估）。
+            this.tailBuf += c;
+            // 注意: search 是 String 方法，不是 RegExp 方法（V14 bug: tailEvalRe.search 抛异常吞后续 content）
+            const evalIdx = this.tailBuf.search(StreamThinkingStripper.tailEvalRe);
+            if (evalIdx >= 0) {
+                const out = this.tailBuf.slice(0, evalIdx);
                 this.tailBuf = '';
+                this.crossed = false; // 进入尾部评估 → 停止推送
                 return out;
             }
-            if (r && !SYSTEM_MARK_RE.test(r) && !REFLECTIVE_VERB_RE.test(r))
-                return r;
-            return '';
+            const out = this.tailBuf;
+            this.tailBuf = '';
+            return out;
         }
-        // 合并进 buf（V14: content 也可能含思维链——V4-flash 部分模式把思维链输出到 content 字段，
-        //   V13 ②b 直接 crossed 直推导致思维链泄漏前台。统一累积 + findAnswerStart 识别答案起点才 crossed）
-        this.buf += c + r;
+        // 合并进 buf（V21: 只累积 content，绝不混入 reasoning。V14 曾把 reasoning 也混入——
+        //   V4-flash 部分模式把思维链输出到 content 字段时 content 本身可能含思维链，仍靠
+        //   findAnswerStart 识别答案起点才 crossed；但 reasoning 字段的草稿/评估段绝不能进 buf，
+        //   否则第一稿被误判为答案起点泄漏前台。）
+        this.buf += c;
         // ① 过渡标记 → 切答案区，推标记后（剥计划句）
         const m = findAnswerMark(this.buf);
         if (m) {
@@ -902,9 +903,6 @@ export class DeepSeekLLMProvider implements LLMProvider {
       let text = '';
       let usage: { prompt: number; completion: number } | undefined;
       let buf = '';
-      // 🔴 V17: 累积原始全文（reasoning 在前 content 在后，对齐 v4-flash 时序：思维链先、答案后）。
-      //   流式期间 stripper 无法预知"第一稿+评估+第二稿"结构，流结束后全量重新剥离得到干净最终稿覆盖。
-      let rawBuf = '';
       let finished = false;
 
       for (;;) {
@@ -932,7 +930,6 @@ export class DeepSeekLLMProvider implements LLMProvider {
             const reasoning = typeof delta.reasoning === 'string' ? delta.reasoning
               : (typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '');
             if (!content && !reasoning) continue;
-            rawBuf += reasoning + content;   // V17: 累积原始全文（reasoning 先，content 后）
             const push = stripper.push(content, reasoning);
             if (push) {
               sawToken = true;
@@ -955,7 +952,6 @@ export class DeepSeekLLMProvider implements LLMProvider {
               const content = typeof delta.content === 'string' ? delta.content : '';
               const reasoning = typeof delta.reasoning === 'string' ? delta.reasoning
                 : (typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '');
-              rawBuf += reasoning + content;   // V17: 尾帧也累积原始
               const push = stripper.push(content, reasoning);
               if (push) { sawToken = true; text += push; onToken({ text: push }); }
             }
@@ -965,15 +961,15 @@ export class DeepSeekLLMProvider implements LLMProvider {
       // S4-C1/m4: 流结束 flush 残留思维链缓冲（防无标记/短答案整条被吞）
       const flushed = stripper.flush();
       if (flushed) { sawToken = true; text += flushed; onToken({ text: flushed }); }
-      // 🔴 V17 流式结束全量覆盖: 用原始全文重新剥离，覆盖流式期间 stripper 误推的"第一稿+评估段"。
-      //   命中复盘信号/评估结构时无条件信任 full（不依赖 length 比较，防该覆盖却因长度不够没覆盖）。
-      if (rawBuf.trim().length > 0) {
-        const isReflective = REFLECTIVE_SIGNAL_RE.test(rawBuf) || EVAL_STRUCT_RE.test(rawBuf);
-        const full = extractAnswerFromReasoning(rawBuf);
+      // 🔴 V21 流式结束字段边界优先: content 承载最终稿、reasoning 承载思维链。
+      //   流式期间 text 只累积 content 答案（reasoning 已丢弃，草稿/评估段绝不流式展示）。
+      //   content 有答案 → 信任 text；content 空（降级模式: 答案在 reasoning）→ 用 reasoningBuf 全量剥离兜底。
+      if (!text.trim()) {
+        const full = extractAnswerFromReasoning(stripper.reasoningBuf);
         if (full && full.trim().length > 0) {
-          if (isReflective || !text || full.length < text.length) {
-            text = full;
-          }
+          sawToken = true;
+          text = full;
+          onToken({ text: full });
         }
       }
       return { text, usage, sawToken };
