@@ -8,16 +8,32 @@ import { describe, it, vi, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// mock edge-tts：解析 --write-media 路径，写假文件（>0 字节），让 generateTTSAudio 立即成功
+// mock edge-tts worker：spawn 返回假进程，stdin.write 解析 JSON 后立即写假文件 + 回写 stdout 成功响应
+// V25 起 generateTTSAudio 走常驻 worker（spawn），不再 execFile。
 vi.mock('node:child_process', async (importOriginal) => {
   const actual: any = await importOriginal();
+  const { EventEmitter } = await import('node:events');
   return {
     ...actual,
-    execFile: (cmd: string, args: string[], opts: any, cb: (e: any, out?: string) => void) => {
-      const wi = args.indexOf('--write-media');
-      const fp = args[wi + 1];
-      try { fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, 'fake-mp3-bytes'); } catch (_) {}
-      cb(null, '');
+    spawn: (cmd: string, args: string[]) => {
+      const stdout = new EventEmitter() as any;
+      stdout.setEncoding = () => {}; // TTSWorker.ensureStarted 会调 setEncoding('utf8')
+      const stdin = new EventEmitter() as any;
+      stdin.write = (chunk: string) => {
+        try {
+          const req = JSON.parse(chunk);
+          // 立即写假文件（>0 字节），让 genOne 判定成功
+          fs.mkdirSync(path.dirname(req.path), { recursive: true });
+          fs.writeFileSync(req.path, 'fake-mp3-bytes');
+          // 回写成功响应
+          stdout.emit('data', JSON.stringify({ id: req.id, ok: true }) + '\n');
+        } catch (_) { /* 忽略 */ }
+        return true;
+      };
+      const proc: any = new EventEmitter();
+      proc.stdout = stdout; proc.stdin = stdin; proc.stderr = new EventEmitter();
+      proc.killed = false; proc.kill = () => {};
+      return proc; // 不 emit exit——保持 worker 存活，模拟真实常驻进程
     },
   };
 });

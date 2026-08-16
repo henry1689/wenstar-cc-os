@@ -6,9 +6,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-const execFileAsync = promisify(execFile);
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 
 import type { FusionStorageAdapter } from '../m2/FusionStorageAdapter.js';
 import type { FamilyGraph } from '../m4/household/FamilyGraph.js';
@@ -118,13 +117,90 @@ export function segmentForTTS(text: string, targetSentences = TTS_SEGMENT_TARGET
   return out;
 }
 
+/** 🔴 V25 预热优化: edge-tts 常驻 worker 进程。
+ * 原 generateTTSAudio 每次 execFile('edge-tts') 都 fork 新 Python 进程（冷启动 ~3.5s，其中 import edge_tts ~1.4s）。
+ * 改为常驻 worker：模块级 import edge_tts 只发生一次，后续合成走 stdin/stdout JSON 行协议，asyncio 并发。
+ * 注意：edge-tts 装在 Python 3.13；PATH 里的 `python` 是 hermes venv 3.11，必须用绝对路径。 */
+const TTS_PYTHON = 'C:\\Users\\henry\\AppData\\Local\\Programs\\Python\\Python313\\python.exe';
+/** 禁用代理环境变量（edge-tts 需直连微软服务；worker 由 spawn 继承） */
+const TTS_NO_PROXY_ENV = { NO_PROXY: '*', no_proxy: '*', HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' };
+
+class TTSWorker {
+  private proc: ChildProcess | null = null;
+  private pending = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+  private stdoutBuf = '';
+
+  constructor(private scriptPath: string) {}
+
+  /** 懒启动（幂等）。spawn 即返回，import edge_tts 在子进程后台进行，不阻塞调用方。 */
+  ensureStarted(): void {
+    if (this.proc && !this.proc.killed) return;
+    const p = spawn(TTS_PYTHON, [this.scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, ...TTS_NO_PROXY_ENV },
+    });
+    this.proc = p;
+    p.stdout!.setEncoding('utf8');
+    p.stdout!.on('data', (chunk: string) => this._onStdout(chunk));
+    p.stderr!.on('data', () => { /* worker 错误经响应回传，stderr 仅诊断 */ });
+    p.on('exit', () => { this._failAll(new Error('tts worker exited')); this.proc = null; });
+    p.on('error', (e) => { this._failAll(e); this.proc = null; });
+  }
+
+  /** 合成单段 → 写 outPath。resolve=成功；reject=失败（由 genOne 外层重试，空文件检测不变）。 */
+  synthesize(text: string, outPath: string): Promise<void> {
+    this.ensureStarted();
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.proc!.stdin!.write(JSON.stringify({ id, text, path: outPath }) + '\n');
+      } catch (e) {
+        this.pending.delete(id);
+        reject(e as Error);
+      }
+    });
+  }
+
+  private _onStdout(chunk: string): void {
+    this.stdoutBuf += chunk;
+    for (;;) {
+      const nl = this.stdoutBuf.indexOf('\n');
+      if (nl < 0) break;
+      const line = this.stdoutBuf.slice(0, nl).trim();
+      this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
+      if (!line) continue;
+      try {
+        const resp = JSON.parse(line);
+        const p = this.pending.get(resp.id);
+        if (p) { this.pending.delete(resp.id); resp.ok ? p.resolve() : p.reject(new Error(resp.error || 'tts synth failed')); }
+      } catch (_) { /* 解析失败忽略，等待后续行 */ }
+    }
+  }
+
+  private _failAll(e: Error): void {
+    for (const [, p] of this.pending) p.reject(e);
+    this.pending.clear();
+  }
+}
+
+/** worker 单例（懒初始化；路径从 dataDir 推导 PROJECT_ROOT/scripts/tts_worker.py） */
+let _ttsWorker: TTSWorker | null = null;
+function _getWorker(dataDir: string): TTSWorker {
+  if (!_ttsWorker) {
+    _ttsWorker = new TTSWorker(path.resolve(dataDir, '..', '..', 'scripts', 'tts_worker.py'));
+  }
+  return _ttsWorker;
+}
+
 /**
  * generateTTSAudio — 分段文本 → mp3 音频 URL 列表（同步/异步共用）。
  * 并发限流 3（edge-tts 负载保护）；某段失败跳过不阻塞整体。
  * S4 P2-6 修复：文件名用 randomUUID 彻底杜绝同毫秒碰撞。
  */
 export async function generateTTSAudio(segments: string[], dataDir: string, onSegment?: (url: string, idx: number) => void): Promise<string[]> {
-  const _env = { ...process.env, NO_PROXY: '*', no_proxy: '*', HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' };
+  const worker = _getWorker(dataDir);
   const genOne = async (txt: string, idx: number): Promise<string | null> => {
     if (!txt.trim()) return null; // 空段不生成（S4 P2-4）
     const _fn = 'tts_' + Date.now().toString(36) + '_' + randomUUID().slice(0, 8) + '.mp3';
@@ -134,7 +210,7 @@ export async function generateTTSAudio(segments: string[], dataDir: string, onSe
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         if (attempt > 1) await new Promise(r => setTimeout(r, 1500 * attempt)); // 1.5s/3s 退避
-        await execFileAsync('edge-tts', ['--text', txt, '--voice', 'zh-CN-XiaoxiaoNeural', '--write-media', _fp], { timeout: 30000, env: _env });
+        await worker.synthesize(txt, _fp); // V25: 走常驻 worker（复用 import，省 ~1.4s/段）
         if (fs.existsSync(_fp) && fs.statSync(_fp).size > 0) {
           const url = '/audio/' + _fn;
           // 🔴 S2-F2: 每段生成完立即回调（边生成边播，不等全量）— 消除长文"文字写完干等几秒"。
@@ -422,6 +498,9 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
       const jobId = 'chatjob_' + randomUUID();
       const job: ChatJob = { status: 'running', tokens: [], reply: '', result: null, audio: { audio_url: null, audio_urls: [], tts_job: null }, createdAt: Date.now() };
       CHAT_JOBS.set(jobId, job);
+      // 🔴 V25 预热: 流式请求一开始就 spawn worker（import edge_tts ~1.4s 在 LLM 思考期并行完成），
+      // 首段语音不用再等 import，消除「文字写完后首段额外等 1.4s」。
+      if (body.tts !== false) _getWorker(DATA_DIR).ensureStarted();
       // V15 边写边播: 增量 TTS（tts:false 时为 null，纯文字不变）
       const incrTTS = (body.tts !== false && getRetrievalFusionConfig()?.p1_speed?.streaming?.enabled !== false)
         ? new IncrementalTTS(DATA_DIR, (idx, url) => {
