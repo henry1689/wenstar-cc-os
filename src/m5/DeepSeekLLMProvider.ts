@@ -110,6 +110,9 @@ const SYSTEM_MARK_G_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指
  * V2 实测: 复盘思维链无【】标记，只用文字描述（"系统提醒过这是'事实回忆'模式""不能编造没有的细节"），
  * SYSTEM_MARK_RE 不命中 → 走 legacy → findAnswerStart 括号规则把分析句误判为答案起点 → 整条分析段泄漏前台。 */
 const REFLECTIVE_SIGNAL_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指令|优先|模式|要求|注意|事实|记忆)[^】]*】|系统提醒|系统指令|系统告诉|系统要求|事实回忆|事实优先|记忆优先|不能编造|不要编造|不要添加|绝对禁止|提醒过|根据规则|当前问题是事实|让我分析一下|让我来写|分析一下场景|现在说话的是|让我再完善|让我再重写|让我定稿|让我稍微收紧|再检查一遍|嗯，这很好|让我确认一下|让我收紧|让我微调|再润色一下|保持简短|也许我需要|我觉得如上处理没问题|大概不错|保持简洁|不越界|再扩展一下|定位成|报上了名字|稍微修改|修改流畅|最终确认|最终稿|尺度.{0,8}合适|保持了.{0,12}风格/;
+/** V20 系统引用型复盘精确信号（【】系统标记 或 文字引用系统指令）——与草稿迭代词彻底分离。
+ * 复盘型思维链引用的系统指令（事实优先/记忆优先/不能编造），正常角色回答绝不含。 */
+const SYSTEM_REFERENCE_RE = /【[^】]*(?:⚠️|🔴|🟡|禁止|必须|规则|指令|优先|模式|要求|注意|事实|记忆)[^】]*】|系统提醒|系统指令|系统告诉|系统要求|事实回忆|事实优先|记忆优先|不能编造|不要编造|不要添加|绝对禁止|提醒过|根据规则|当前问题是事实/;
 /** 复盘型权衡/草稿措辞（流式 crossed 后 reasoning 过滤用） */
 const REFLECTIVE_VERB_RE = /权衡|草稿|折中|打磨|语气要|如何回应|怎么回应|我决定|我想我可以|这个问题|让我思考|考虑|结构如下|这段回复|这条回复|最终稿|我该如何|我该怎样|让我重新|无中生有|组织语言|起草|初稿|润色/;
 /** 转场锚点 — 评估结束进入最终稿（"…无中生有。开始。最终稿"） */
@@ -178,8 +181,9 @@ function findAnswerStartRobust(text: string): number | null {
  * 返回 string（成功剥离最终稿）/ ''（是复盘型但无可靠转场 = 宁空不泄漏）/ null（非复盘型，走 legacy）。
  */
 function extractFromReflectiveChain(text: string): string | null {
-    // 识别信号：引用系统指令（【】标记 或 文字描述"系统提醒过/事实回忆/不能编造"）——正常角色回答不引用系统指令
-    if (!REFLECTIVE_SIGNAL_RE.test(text))
+    // V20 识别信号：引用系统指令（【】标记 或 文字描述"系统提醒过/事实回忆/不能编造"）——正常角色回答不引用系统指令。
+    //   只认精确系统引用（SYSTEM_REFERENCE_RE），不再混入"让我重写/让我定稿/再润色"等草稿迭代词——那些走 findAfterLastEval（草稿迭代型）。
+    if (!SYSTEM_REFERENCE_RE.test(text))
         return null;
     // ① 转场锚点取最后一个（复盘常多次出现"开始"草稿，"开始。"通常是评估→最终稿转场）
     let last = null;
@@ -434,35 +438,37 @@ function dedupeRepeatedBlock(text: string): string {
 export function extractAnswerFromReasoning(text: string): string {
     if (!text)
         return '';
-    // 🔴 V19 规划型思维链（最高优先级）: [规划段: 列表/编号/元认知主语] + [转场指令] + [答案]。
-    //   骨架稳定（markdown列表 -/编号 1./元认知"我想表达/我的角色是/关于长度"），角色对话绝不含。
+    // ① 复盘型思维链（引用系统指令标记）→ 专用剥离。'' = 宁空不泄漏后台话。
+    //   V20: 只认精确系统引用（SYSTEM_REFERENCE_RE），草稿迭代词已分离，可安全放最前。
+    const reflective = extractFromReflectiveChain(text);
+    if (reflective !== null)
+        return reflective;
+    // ② V19 规划型思维链: [规划段: 列表/编号/元认知主语] + [转场指令] + [答案]。
     const afterPlan = findAfterPlanChain(text);
     if (afterPlan)
         return afterPlan;
-    // 🔴 V18 结构性剥离: 草稿迭代型思维链 = [第一稿] + [评估段: 检查清单+✓] + [最终稿]。
-    //   评估措辞每次漂移（V14c"让我定稿"/V17"最终确认"/V18"这个基本可以/最终写出来"），枚举词追不上。
-    //   但"检查清单结构"稳定: 对勾 ✓ / "最终写出来"——正常角色回答绝不含这些。
+    // ③ V14b 写转场: "让我来写…回应："（冒号后即最终稿，直接切片）。
+    const afterWrite = findAfterWriteGo(text);
+    if (afterWrite)
+        return afterWrite;
+    // ④ 草稿迭代型: [草稿1] + [评估段] + [最终稿]。评估段强信号统一 V17（最终确认）/ V18（✓/最终写出来）/ V20（让我+元认知动词）。
     const afterEval = findAfterLastEval(text);
     if (afterEval)
         return afterEval;
-    // ① 复盘型思维链（引用系统指令标记）→ 专用剥离。'' = 宁空不泄漏后台话
-    const reflective = extractFromReflectiveChain(text);
-    let out: string;
-    if (reflective !== null) {
-        out = reflective;
-    } else {
-        // ②~⑤ legacy 逻辑（复盘型已被①拦截；残留系统标记由 removeSystemMarks 兜底清理）
-        out = removeSystemMarks(extractAnswerFromReasoningLegacy(text));
-    }
-    // V14c: 重复输出去重（同一回复两遍）——放在剥离后兜底
-    return out; // V14c dedupe 暂禁（误伤V3/V6/V7）
+    // ⑤ legacy 逻辑（残留系统标记由 removeSystemMarks 兜底清理）
+    return removeSystemMarks(extractAnswerFromReasoningLegacy(text));
 }
-/** V18 评估段强信号 —— 检查清单的对勾符号 / 明确转场词（正常角色回答绝不含，不依赖漂移措辞） */
-const EVAL_STRUCT_RE = /[✓✔]|最终写出来|最终写出|检查是否有问题|检查：/;
+/** 草稿迭代型评估段强信号 —— 统一 V17/V18/V20 三类漂移措辞（正常角色回答绝不含，不依赖漂移措辞）。
+ * V17: 最终确认/最终稿；V18: ✓/最终写出来/检查；V20: 让我+元认知动词（重写/优化/定稿/再试）。
+ * 注意不收录"差不多/保持了…语气"等弱词——它们在正常对话里常见（"收拾得差不多了"），靠强信号触发。 */
+const EVAL_STRUCT_RE = /[✓✔]|最终写出来|最终写出|检查是否有问题|检查：|最终确认|最终稿|让我[^。！？\n]{0,10}?(?:重写|优化|完善|润色|修改|调整|收紧|微调|确认|改写|整理|写出|写下来|写出来|来写|再试|定稿|补充|扩展|精简|换个|重来|斟酌|打磨|润一润)/;
 /** V19 规划型思维链骨架 —— 角色对话绝不含的元认知结构（列表/编号/自述计划主语） */
 const PLAN_SKELETON_RE = /(?:^|\n)\s*[-•] |(?:^|\n)\s*\d+[.、] |(?:我的角色是|我的性格是|我想表达|我要怎么|我会用较|关于长度|关于语气|必须用|必须保持|不能太直白|避免过度)/;
 /** V19 转场指令 —— 规划段结束、进入最终答案的明确信号（动词骨架，不依赖漂移措辞） */
 const PLAN_GO_RE = /让我(?:把它|现在)?写出来|让我来写|现在开始写|最终写出|写出来[，,]?用/;
+/** V14b 写转场 —— "让我来写…回应/回答/回复/一段/正文："（冒号结尾，答案紧随其后）。
+ * 冒号是明确答案起点，直接切片即可，无需 findAnswerStart（V14b 最终稿以第一人称动作"我把火关小"开头，不命中 ROLE_RE/ACTION_VERBS）。 */
+const WRITE_GO_RE = /让我来写[^。！？\n]{0,12}?(?:回应|回答|回复|一段|正文)[：:]/;
 /** V19: 取规划段之后的答案 —— 识别骨架后，取最后一个转场指令之后的答案起点。 */
 function findAfterPlanChain(text: string): string | null {
     if (!PLAN_SKELETON_RE.test(text))
@@ -486,7 +492,27 @@ function findAfterPlanChain(text: string): string | null {
     }
     return null;
 }
-/** V18: 取评估段之后的最后答案稿 —— 找最后一个评估信号，向后扫描到第一个动作描写/称呼答案起点。 */
+/** V14b: 取"让我来写…回应："写转场之后直接切片 —— 冒号后即为最终稿（无需 findAnswerStart）。 */
+function findAfterWriteGo(text: string): string | null {
+    const re = new RegExp(WRITE_GO_RE.source, 'g');
+    let last = null;
+    for (;;) {
+        const m = re.exec(text);
+        if (!m)
+            break;
+        last = { index: m.index, len: m[0].length };
+    }
+    if (!last)
+        return null;
+    const tail = cleanTail(text.slice(last.index + last.len));
+    if (tail.length >= 10) {
+        const clean = stripPlanningPrefix(tail);
+        if (clean && clean.length >= 10)
+            return clean;
+    }
+    return null;
+}
+/** 草稿迭代型: 取最后一个评估段信号之后的最终稿 —— 找最后一个评估信号，向后扫描到第一个动作描写/称呼答案起点。 */
 function findAfterLastEval(text: string): string | null {
     if (!EVAL_STRUCT_RE.test(text))
         return null;
