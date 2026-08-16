@@ -272,29 +272,35 @@ export class IncrementalTTS {
      * V22: 合并 2~3 句 / ≤120 字为一段（不再单句）——单句段太短（20~50字）edge-tts 高频 NoAudioReceived，
      * 导致"时有时无 + 只播一句"。段粒度对齐 edge-tts 稳定区间（80~120 字）。 */
     private _dispatch(): void {
-        if (this._aborted || this._inFlight >= TTS_MAX_INFLIGHT) return;
-        if (!this._pending.length) return; // V23: 空 pending 守卫（防 finally 递归时崩溃）
+        if (this._aborted) return;
         // 合并前 N 句到 ~120 字（至少 2 句，最多 3 句），杜绝短单句段；
         // flush 后(_forceTail) 或 单句本身 >=120 字 → 单句也单独生成。
-        // V24: 首段(_segGen===0)阈值降到 TTS_FIRST_SEG_CHARS(60字)快速触发，消除"文字写完等几秒"；
-        //      后续段维持 TTS_INCR_MAX_CHARS(120字)。合并 2~3 句，杜绝短单句段（NoAudioReceived）。
-        const _threshold = (this._segGen === 0 && !this._forceTail) ? TTS_FIRST_SEG_CHARS : TTS_INCR_MAX_CHARS;
-        if (!this._forceTail && this._pending.length < 2 && this._pending[0]!.text.length < _threshold) return;
-        let text = '';
-        let n = 0;
-        while (this._pending.length && n < 3 && text.length < TTS_INCR_MAX_CHARS) {
-            text += this._pending.shift()!.text;
-            n++;
-        }
-        if (!text) return;
-        const idx = this._segGen++; // V23: 段 idx 连续（0,1,2,3..），不再用首句 idx（稀疏导致前端 urls 卡空位）
-        this._inFlight++;
-        this._chain = this._chain
-            .then(() => generateTTSAudio([text], this._dataDir, (url) => {
+        // V24: 首段(_segGen===0)阈值降到 TTS_FIRST_SEG_CHARS(60字)快速触发；后续段 120 字。
+        // 🔴 V25 修复响应慢: 原 _chain = _chain.then(...) 是严格串行链——_inFlight 虽能数到 3，
+        //   但每个 generateTTSAudio 都串在前一个 .then 后，实际一次只跑 1 段（9 段串行 32.9s）。
+        //   改为真并发：while 填满 _inFlight 槽位（最多 TTS_MAX_INFLIGHT=3 段同时生成），
+        //   _chain 只做「所有已派发 task 完成」的聚合追踪（task 已并发启动，非串行执行）。
+        while (this._inFlight < TTS_MAX_INFLIGHT && this._pending.length) {
+            const _threshold = (this._segGen === 0 && !this._forceTail) ? TTS_FIRST_SEG_CHARS : TTS_INCR_MAX_CHARS;
+            if (!this._forceTail && this._pending.length < 2 && this._pending[0]!.text.length < _threshold) break;
+            let text = '';
+            let n = 0;
+            while (this._pending.length && n < 3 && text.length < TTS_INCR_MAX_CHARS) {
+                text += this._pending.shift()!.text;
+                n++;
+            }
+            if (!text) break;
+            const idx = this._segGen++; // 段 idx 连续（0,1,2,3..），前端 urls 按 idx 保序
+            this._inFlight++;
+            // 立即并发启动（不再 .then 串行），_inFlight 控制并发上限
+            const task = generateTTSAudio([text], this._dataDir, (url) => {
                 if (!this._aborted) { this._done.push({ idx, url }); this._onSegment(idx, url); }
-            }))
-            .catch((e) => console.warn('[TTS] 增量段失败:', (e as Error)?.message || e))
-            .finally(() => { this._inFlight--; this._dispatch(); });
+            })
+                .catch((e) => console.warn('[TTS] 增量段失败:', (e as Error)?.message || e))
+                .finally(() => { this._inFlight--; this._dispatch(); });
+            // _chain 仅聚合完成（task 已启动，此处不串行执行）
+            this._chain = this._chain.then(() => task);
+        }
     }
 
     /** done 后: 等链清空 → 返回已生成的增量段 url（含失败空位，按原始 idx 保序）。

@@ -82,4 +82,29 @@ describe('V23 段 idx 连续性', () => {
     await (t as any)._chain;
     expect(idxs.length).toBe(1);
   });
+
+  // ── V25 真并发：_inFlight 槽位填满，一次派发多段（不再串行） ──
+  it('V25: 多段并发派发——feed 后 _inFlight 能顶到 TTS_MAX_INFLIGHT', async () => {
+    const t = new IncrementalTTS('D:/tmp/v25-audio', () => {});
+    // 一次性喂 8 句（每句 20 字，总 160 字）→ 首段 60 字触发，后续段 120 字，
+    // 串行版一次只 1 段在途；并发版 while 填满 3 槽位 → _inFlight 应达到 3。
+    let s = '';
+    for (let i = 1; i <= 8; i++) s += `这是并发测试第${i}句用来验证多段同时生成。`;
+    t.feed(s);
+    // 同步派发后，_inFlight 应立即 >1（并发启动），而非串行版的 1
+    const inFlight = (t as any)._inFlight;
+    expect(inFlight).toBeGreaterThan(1);
+    // 等链清空，避免测试进程悬挂
+    await (t as any)._chain;
+  });
+
+  it('V25: 并发不丢段——8 句 finalize 返回全部段', async () => {
+    const t = new IncrementalTTS('D:/tmp/v25-audio', () => {});
+    let s = '';
+    for (let i = 1; i <= 8; i++) s += `这是并发完整性测试第${i}句用来验证不丢段。`;
+    t.feed(s);
+    const r = await t.finalize(s);
+    const nonNull = (r.audio_urls as (string | null)[]).filter(u => !!u);
+    expect(nonNull.length).toBeGreaterThanOrEqual(3);
+  });
 });
