@@ -34,10 +34,9 @@ export interface DetectedRelationship {
   relatedTo?: string;
 }
 
-/** 常见姓氏前300 */
-const SURNAMES = new Set(
-  '赵孙李周吴郑王冯陈褚蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹柏水窦章苏潘葛彭郎鲁韦马苗凤花方俞任袁柳鲍史费廉岑薛雷贺倪汤罗郝邬安乐于时傅卞齐康余元卜顾孟平和穆萧尹邵湛汪祁毛禹狄贝明臧计戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯管卢莫经房解应宗丁宣邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴荣翁荀於惠甄家封羿储靳邴糜松段富乌焦巴弓牧谷车侯宓蓬全郗班仰仲伊宫宁仇甘厉戎符刘景詹束龙叶幸司韶黎薄印宿白蒲从鄂索赖卓蔺屠蒙池乔阴苍双闻莘党翟谭劳逄姬申扶冉宰郦雍郤濮牛寿通扈燕郏浦尚农别庄柴阎充慕茹习宦艾鱼容向古易慎戈廖庾衡步耿满弘匡寇广禄阙沃蔚越隆师巩厍聂晁敖融辛阚那简饶曾毋沙乜养鞠须丰巢关蒯相查荆红游竺逯盖桓公'
-);
+// B1: 姓氏表统一 — 唯一数据源 app-identity.SURNAME_LIST（消除 8 处分散硬编码）
+import { SURNAME_LIST } from '../../config/app-identity.js';
+const SURNAMES = new Set(SURNAME_LIST);
 
 /** 判断是否为可识别的人名 */
 function isName(text: string): boolean {
@@ -46,7 +45,7 @@ function isName(text: string): boolean {
   if (text.length === 2 && text[0] === '阿' && /[一-龥]/.test(text[1]) && !TRAILING_STOP.has(text[1])) return true;
   // "老X" / "小X" — 口语称呼，放宽小X不要求后缀为姓（老李、小王、小芳、小美）
   if (text.length === 2 && (text[0] === '老' || text[0] === '小') && /[一-龥]/.test(text[1]) && !TRAILING_STOP.has(text[1])) return true;
-  // 姓氏+名（张中山、熊梓铭）— 首字为300常见姓氏
+  // 姓氏+名（张中山、熊梓铭）— 首字为姓氏（B1 统一 app-identity）
   return SURNAMES.has(text[0]);
 }
 

@@ -13,6 +13,9 @@
 // MaintenanceService 接受的存储类型：FusionStorageAdapter 或兼容接口
 type AnyStorage = { getStatus(): Promise<{ totalRecords: number }> | { totalRecords: number } };
 
+// B1: 姓氏表统一 — 唯一数据源 app-identity（SURNAME_LIST 供 SURNAMES_SET / SURNAME_CHARS 供 448 正则）
+import { SURNAME_LIST, SURNAME_CHARS } from '../config/app-identity.js';
+
 // ──────────────────────────────────────────────
 // 类型定义
 // ──────────────────────────────────────────────
@@ -415,9 +418,7 @@ export class MaintenanceService {
     // 惰性解析：如果传 null 但存在 getter，取一次
     const familyGraph = fg ?? (this._fgGetter ? this._fgGetter() : null);
     const now = new Date().toISOString();
-    const SURNAMES_SET = new Set(
-      '赵孙李周吴郑王冯陈褚蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹柏水窦章苏潘葛彭郎鲁韦马苗凤花方俞任袁柳鲍史费廉岑薛雷贺倪汤罗郝邬安乐于时傅卞齐康余元卜顾孟平和穆萧尹邵湛汪祁毛禹狄贝明臧计戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯管卢莫经房解应宗丁宣邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴荣翁荀於惠甄家封羿储靳邴糜松段富乌焦巴弓牧谷车侯宓蓬全郗班仰仲伊宫宁仇甘厉戎符刘景詹束龙叶幸司韶黎薄印宿白蒲从鄂索赖卓蔺屠蒙池乔阴苍双闻莘党翟谭劳逄姬申扶冉宰郦雍郤濮牛寿通扈燕郏浦尚农别庄柴阎充慕茹习宦艾鱼容向古易慎戈廖庾衡步耿满弘匡寇广禄阙沃蔚越隆师巩厍聂晁敖融辛阚那简饶曾毋沙乜养鞠须丰巢关蒯相查荆红游竺逯盖桓公'
-    );
+    const SURNAMES_SET = new Set(SURNAME_LIST);
     // 停用字（名字后跟这些字说明不是名字的完整部分）
     const TRAILING_STOP = new Set('昨今明去来也和就都在这那而已了过');
 
@@ -442,8 +443,8 @@ export class MaintenanceService {
     const allText = turns.filter(t => t.role === 'user').map(t => t.content).join('\n');
     if (!allText.trim()) return;
 
-    // 正则：姓氏+1~2字名 | 阿X | 老X | 小X
-    const nameRegex = /([赵孙李周吴郑王冯陈褚蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹柏水窦章苏潘葛彭郎鲁韦马苗凤花方俞任袁柳鲍史费廉岑薛雷贺倪汤罗郝邬安乐于时傅卞齐康余元卜顾孟平和穆萧尹邵湛汪祁毛禹狄贝明臧计戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯管卢莫经房解应宗丁宣邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴荣翁荀於惠甄家封羿储靳邴糜松段富乌焦巴弓牧谷车侯宓蓬全郗班仰仲伊宫宁仇甘厉戎符刘景詹束龙叶幸司韶黎薄印宿白蒲从鄂索赖卓蔺屠蒙池乔阴苍双闻莘党翟谭劳逄姬申扶冉宰郦雍郤濮牛寿通扈燕郏浦尚农别庄柴阎充慕茹习宦艾鱼容向古易慎戈廖庾衡步耿满弘匡寇广禄阙沃蔚越隆师巩厍聂晁敖融辛阚那简饶曾毋沙乜养鞠须丰巢关蒯相查荆红游竺逯盖桓公][一-龥]{1,2}|阿[一-龥]|小[一-龥])/g;
+    // 正则：姓氏+1~2字名 | 阿X | 老X | 小X（B1: 姓氏统一走 app-identity.SURNAME_CHARS）
+    const nameRegex = new RegExp('([' + SURNAME_CHARS + '][一-龥]{1,2}|阿[一-龥]|小[一-龥])', 'g');
     const rawMatches = allText.match(nameRegex);
     if (!rawMatches) return;
 

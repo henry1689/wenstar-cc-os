@@ -14,6 +14,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+// B1: 姓氏表统一 — 唯一数据源 app-identity.SURNAME_CHARS（消除本地硬编码）
+import { SURNAME_CHARS } from '../../config/app-identity.js';
 
 export class FolderManager {
   private rootPath: string;
@@ -144,7 +146,7 @@ export class FolderManager {
 
       // 生成 MD 笔记
       const summary = text.replace(/\s+/g, ' ').trim().substring(0, 200);
-      const entityMatches = text.match(/[赵孙李周吴郑王冯陈褚蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹柏水窦章苏潘葛彭郎鲁韦马苗凤花方俞任袁柳鲍史费廉岑薛雷贺倪汤罗郝邬安乐][一-龥]{1,2}/g) || [];
+      const entityMatches = text.match(new RegExp('[' + SURNAME_CHARS + '][一-龥]{1,2}', 'g')) || [];
             // 任务2: 图片情感标签滤镜
       const imageTags = fileType === 'image' ? (await import("./parsers/ImageParser.js")).analyzeImageTags(text) : [];
       const topicKeywords = [

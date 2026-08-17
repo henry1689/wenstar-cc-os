@@ -123,4 +123,25 @@ export const SURNAME_LIST = [
   '霁','妘','姒','嬴','妫','訾','麴','厍',
 ];
 
+/**
+ * B1: 姓氏判定 — 全系统唯一姓氏判定源（消除 8 处分散姓氏表）。
+ * 判定规则：
+ *   - 复姓优先（万俟/司马/上官/欧阳/夏侯/诸葛/... 前缀匹配）
+ *   - 单字姓匹配 name 首字
+ *   - 单字姓长度 ≤ name 长度（防止把 2 字姓当 1 字姓截断）
+ */
+export function hasSurname(name: string): boolean {
+  if (!name) return false;
+  // 复姓前缀匹配
+  for (const s of SURNAME_LIST) {
+    if (s.length === 2 && name.startsWith(s)) return true;
+  }
+  // 单字姓首字匹配
+  const first = name[0];
+  return SURNAME_LIST.some(s => s.length === 1 && s === first);
+}
+
+/** B1: 单字姓拼接串（供正则构造 [姓氏][名]），复姓由 hasSurname 前缀匹配覆盖 */
+export const SURNAME_CHARS = SURNAME_LIST.filter(s => s.length === 1).join('');
+
 export default APP_IDENTITY;

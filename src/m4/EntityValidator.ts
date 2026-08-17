@@ -18,11 +18,8 @@ const NOISE_WORDS = new Set([
   '应该','时候','强度','索引','关联','相遇','相似','职责','这里','那里',
 ]);
 
-/** 常见中文姓氏（前300）+ 罕见姓补全（P1-8：防"霁月"等罕见姓2字名被误判为昵称） */
-const SURNAMES = new Set(
-  '赵孙李周吴郑王冯陈褚蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜戚谢邹柏水窦章苏潘葛彭郎鲁韦马苗凤花方俞任袁柳鲍史费廉岑薛雷贺倪汤罗郝邬安乐'
-  + '霁妘姒嬴妫訾麴厍'
-);
+// B1: 姓氏表统一 — 唯一数据源 app-identity.hasSurname（单字姓+复姓前缀，消除 8 处分散硬编码）
+import { hasSurname } from '../config/app-identity.js';
 
 // 预定义关系类型白名单
 export const ALLOWED_RELATIONS = new Set([
@@ -69,9 +66,8 @@ export function validatePersonName(name: string): ValidationResult {
     return { valid: false, reason: '噪音词' };
   }
   if (EntityValidationRules.requireSurname) {
-    // 2字名必须含姓氏 | 3字名首字必须含姓氏
-    const hasSurname = SURNAMES.has(name[0]);
-    if (!hasSurname) {
+    // 2字名必须含姓氏 | 3字名首字必须含姓氏（统一 app-identity.hasSurname，支持复姓）
+    if (!hasSurname(name)) {
       return { valid: false, reason: '无常见姓氏' };
     }
   }
