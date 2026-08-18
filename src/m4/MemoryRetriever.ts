@@ -278,7 +278,6 @@ export class MemoryRetriever {
     }
 
     // 5. 检索规则：正常模式排除角色扮演记忆（memory_kind='roleplay' 或 memory_type='rp_dialog'）
-    //    角色扮演记忆只属于角色扮演检索管线(retrieveFullClue)，不应污染正常对话的检索结果。
     const _filtered = merged.filter(dna => {
       // V12.7(批1): memory_kind 已由 toDNA 回填（此前恒 undefined 死过滤）；
       // memory_type 从未被 rowToRecord 回填 → 删死判定，统一用 memory_kind。
@@ -867,62 +866,4 @@ export class MemoryRetriever {
     };
   }
 
-  // === P0: 五层串行截断检索 ===
-  async retrieveFullClue(roleplay: string, message: string, m4Ctx: any, enableTopology?: boolean, namespace?: string, sinceTimestamp?: string): Promise<FullClueResult> {
-    const layers: string[] = []; const r: any = { l1Context:[], l2Sand:[], l2Vault:[], l2Diamond:[], l3Topology:[], l4Knowledge:[], hasValidRelation:false, layersUsed:layers };
-    layers.push('L1');
-    if (m4Ctx && m4Ctx.family_context) for (const fc of m4Ctx.family_context) if (fc.entity === roleplay || fc.related_entity === roleplay) r.l1Context.push(fc.entity + '的' + fc.relation + '是' + fc.related_entity);
-    if (r.l1Context.length > 0) { r.hasValidRelation = true; return r; }
-    layers.push('L2');
-    try {
-      const sq = typeof this.storage.getSQLite === 'function' ? this.storage.getSQLite() : null;
-      if (sq && typeof sq.queryAll === 'function') {
-        // 📜 时间窗过滤：sinceTimestamp 存在时只检索之后的数据（防止旧场景污染）
-        const timeFilter = sinceTimestamp ? "AND timestamp > ?" : "";
-        const timeParams = sinceTimestamp ? [roleplay, sinceTimestamp] : [roleplay];
-        const s = sq.queryAll("SELECT content FROM conversations WHERE roleplay_char=? AND is_compacted=0 AND role='user' " + timeFilter + " ORDER BY timestamp DESC LIMIT 10", timeParams);
-        for (const x of s || []) if (x.content) r.l2Sand.push(String(x.content ?? "").substring(0, 200));
-        const vtFilter = sinceTimestamp ? "AND created_at > ?" : "";
-        const vtParams = sinceTimestamp ? ['%' + roleplay + '%', sinceTimestamp] : ['%' + roleplay + '%'];
-        const v = sq.queryAll("SELECT raw_input FROM memories WHERE raw_input LIKE ? " + vtFilter + " ORDER BY calcium_score DESC LIMIT 8", vtParams);
-        for (const x of v || []) if (x.raw_input) r.l2Vault.push(String(x.raw_input ?? "").substring(0, 200));
-        const bdFilter = sinceTimestamp ? "AND created_at > ?" : "";
-        const bdParams = sinceTimestamp ? ['%rp_' + roleplay + '%', sinceTimestamp] : ['%rp_' + roleplay + '%'];
-        const d = sq.queryAll("SELECT summary FROM black_diamond WHERE tags LIKE ? " + bdFilter + " ORDER BY created_at DESC LIMIT 5", bdParams);
-        for (const x of d || []) if (x.summary) r.l2Diamond.push(String(x.summary ?? "").substring(0, 200));
-      }
-    } catch (e) { /* L2 检索不可用不影响主流程 */ }
-    // 🔴 修正：不因 L2 关键词提前截断 — L2 对话内容含"妈妈"不代表有实际关系数据
-    // 必须运行 L3 拓扑获取真实亲属关系
-    if (enableTopology || /妈妈|爸爸|姐姐|妹妹|母亲|父亲/.test(message || '')) {
-      layers.push('L3');
-      try {
-        const sq = typeof this.storage.getSQLite === 'function' ? this.storage.getSQLite() : null;
-        if (sq) {
-          const { EntityTopologyManager } = await import('./EntityTopologyManager.js');
-          const tp = new EntityTopologyManager(sq);
-          const rels = tp.queryRelatives(roleplay, 3, undefined, namespace || 'default');
-          const seen = new Set<string>();
-          const lm = { mother:'母亲', father:'父亲', elder_sister:'姐姐', younger_sister:'妹妹', sister:'姐妹', brother:'兄弟', sibling:'兄弟姐妹', daughter:'女儿', son:'儿子', wife:'老婆', husband:'老公', aunt:'姑姑', cousin:'表亲', niece:'侄女' };
-          for (const rel of rels) {
-            const k = rel.relation_type + ':' + rel.target_entity_id;
-            if (seen.has(k)) continue; seen.add(k);
-            r.l3Topology.push({ rootId: roleplay, targetId: rel.target_entity_id, relation: (lm as any)[rel.relation_type] || rel.relation_type, chainPath: roleplay + '→' + rel.target_entity_id, level: rel.topology_level });
-          }
-          if (r.l3Topology.length > 0) r.hasValidRelation = true;
-        }
-      } catch (e) { /* L3 拓扑检索不可用不影响主流程 */ }
-    }
-    layers.push('L4');
-    return r;
-  }
-}
-
-export interface FullClueResult {
-  l1Context: string[];
-  l2Sand: string[]; l2Vault: string[]; l2Diamond: string[];
-  l3Topology: Array<{ rootId: string; targetId: string; relation: string; chainPath: string; level: number }>;
-  l4Knowledge: string[];
-  hasValidRelation: boolean;
-  layersUsed: string[];
 }

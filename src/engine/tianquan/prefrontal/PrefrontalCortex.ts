@@ -299,7 +299,6 @@ export class PrefrontalCortex {
     // 🔥 从 globalThis 接入真实数据源（HeartStateStore / FamilyGraph / 会话状态）
     const heartState: any = (globalThis as any).__heartStateStore;
     const fg: any = (globalThis as any).__familyGraph;
-    const _cr: string | null = (globalThis as any).__currentRoleplay || null;
 
     // 情感向量：优先读 HeartStateStore，其次用 snapshot 自带 emotion，最后默认值
     const snapshot = input.snapshot;
@@ -362,8 +361,8 @@ export class PrefrontalCortex {
       familyContext,
       socialContext: [],
       conversationHistory,
-      currentRoleplay: _cr,
-      isRoleplaying: !!_cr,
+      currentRoleplay: null,
+      isRoleplaying: false,
     };
   }
 
