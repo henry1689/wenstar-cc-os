@@ -284,6 +284,16 @@ export class EntityMeeting {
     this._multiTurns = [];
     this._multiMeetingName = '';
 
+    // 🔴 结构修复：清除持久化的会晤实体记录，防止 exit 后被 restoreLastMeeting 自动拉回。
+    // enter() 时 saveLastMeeting() 写入 engine_store，exit() 必须对称清除——否则
+    // "喊玉瑶退出"→下一轮普通消息→restoreLastMeeting 又恢复上个实体→角色混乱。
+    try {
+      const sqlite = this._storage?.getSQLite?.();
+      if (sqlite && typeof sqlite.writeRaw === 'function') {
+        sqlite.writeRaw('DELETE FROM engine_store WHERE key = ?', [EntityMeeting.LAST_MEETING_KEY]);
+      }
+    } catch (e) { console.warn('[EntityMeeting] 清除会晤持久化失败:', (e as Error)?.message || e); }
+
     return minutesResult ? { minutes: minutesResult } : null;
   }
 
@@ -697,6 +707,10 @@ export class EntityMeeting {
       if (!uuid) { console.warn('[EntityMeeting] _resolveEntity uid miss: ' + name); return null; }
       let category = 'G';
       try { const entity = (this.familyGraph as any).getEntityByUUID?.(uuid); if (entity) category = entity.category || 'G'; } catch { /* non-critical */ }
+      // 🔴 结构修复：系统本体（玉瑶，category='S'）不可会晤。
+      // "找玉瑶聊聊" = 切回玉瑶本体视角 = 退出会晤，而不是进入"玉瑶会晤"（玉瑶自己扮演自己）。
+      // 状态机合法状态集合中不应存在"本体会晤"——本体是回答者，不是可会晤实体。
+      if (category === 'S') return null;
       return { name, uuid, category };
     } catch {
       return null;

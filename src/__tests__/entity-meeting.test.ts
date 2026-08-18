@@ -98,3 +98,55 @@ describe('EntityMeeting.detectSwitchIntent — 会中切换', () => {
     expect(r).toBeNull();
   });
 });
+
+// ─── 结构修复回归：玉瑶（系统本体 category='S'）不可会晤 + exit 清除持久化 ───
+describe('EntityMeeting — 本体隔离（category=S 不可会晤）', () => {
+  /** 最小 FamilyGraph mock：getUUIDByName + getEntityByUUID */
+  function makeFG(nodes: Array<{ name: string; uuid: string; category: string }>) {
+    const byName = new Map(nodes.map(n => [n.name, n.uuid]));
+    const byUuid = new Map(nodes.map(n => [n.uuid, n]));
+    return {
+      getUUIDByName: (name: string) => byName.get(name) ?? null,
+      getEntityByUUID: (uuid: string) => byUuid.get(uuid) ?? null,
+    } as any;
+  }
+
+  it('玉瑶（category=S）enter 返回 null，不进入会晤', () => {
+    const fg = makeFG([
+      { name: '玉瑶', uuid: 'TXS-000000001', category: 'S' },
+      { name: '熊梓铭', uuid: 'TXS-000000003', category: 'G' },
+    ]);
+    const em = new EntityMeeting(fg);
+    expect(em.enter('玉瑶')).toBeNull();          // 系统本体不可会晤
+    expect(em.isActive()).toBe(false);
+  });
+
+  it('真人（category=G）enter 正常进入会晤', () => {
+    const fg = makeFG([
+      { name: '熊梓铭', uuid: 'TXS-000000003', category: 'G' },
+    ]);
+    const em = new EntityMeeting(fg);
+    const st = em.enter('熊梓铭');
+    expect(st).not.toBeNull();
+    expect(st?.entityName).toBe('熊梓铭');
+    expect(em.isActive()).toBe(true);
+  });
+
+  it('exit 清除 engine_store 持久化（防 restoreLastMeeting 拉回）', async () => {
+    const written: Array<{ key: string; sql: string }> = [];
+    const sqlite = {
+      queryAll: () => [] as any[],
+      writeRaw: (sql: string, ...params: any[]) => { written.push({ key: String(params[0]), sql }); },
+    };
+    const storage = { getSQLite: () => sqlite };
+    const fg = makeFG([{ name: '熊梓铭', uuid: 'TXS-000000003', category: 'G' }]);
+    const em = new EntityMeeting(fg);
+    (em as any).setStorage(storage);
+    em.enter('熊梓铭');
+    await em.exit();
+    // exit 后应执行 DELETE FROM engine_store，而非只有 INSERT（enter 时写）
+    const deletes = written.filter(w => w.sql.startsWith('DELETE FROM engine_store'));
+    expect(deletes.length).toBeGreaterThanOrEqual(1);
+    expect(em.isActive()).toBe(false);
+  });
+});
