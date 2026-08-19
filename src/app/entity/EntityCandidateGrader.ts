@@ -32,6 +32,22 @@ const L0_EXTRA = new Set([
   '同学','同事','朋友','老板','客户','老师','学生',
 ]);
 
+// ── 句子片段拦截（V12.0 P1-9: 短语污染根因）──
+// 中文里"那/和/关/幸/解/项/舒/阴"等既可能是姓氏，也可能是虚词/普通名词首字。
+// 仅凭"首字在姓氏表"会把句子片段（"那你说""和身体""关系"）误判为候选姓名。
+// 真实人名"徐诗雨/刘运新/熊梓铭"首字是标准姓氏、尾部是名字用字，不受影响。
+const SENTENCE_TAIL_BLOCK = ['的','也','后','小','说','你','她','他','着','了','呢','吗','就','是','要','会','都'];
+const SENTENCE_HEAD_BLOCK = ['那','这','和','与','跟','把','被','在','对','有','就','向','从','让','使'];
+const COMMON_NOUN_BLOCK = new Set(['关系','幸福','舒服','项目','身体','感觉','情况','问题','时候','东西','朋友','同事','理由','意思','未来','现在','今天','明天']);
+
+/** 判断是否为句子片段/普通名词（非人名）。供 gradeEntity 与 LLMEntityExtractor 复用。 */
+export function looksLikeSentenceFragment(name: string): boolean {
+  if (COMMON_NOUN_BLOCK.has(name)) return true;
+  for (const t of SENTENCE_TAIL_BLOCK) if (name.endsWith(t)) return true;
+  if (SENTENCE_HEAD_BLOCK.includes(name[0])) return true;
+  return false;
+}
+
 /** 检查是否在百家姓中 */
 function hasSurname(name: string): boolean {
   if (name.length < 2) return false;
@@ -78,6 +94,11 @@ export function gradeEntity(
   // L1: 普通称谓 — 有语义但非专名（"大姐""小姨"等以称谓结尾的）
   if (/[姐妹妹哥哥弟弟叔叔阿姨伯舅姑爷奶婆公]$/.test(name) && name.length <= 3) {
     return { name, grade: 1, reason: '称谓词 — 需绑定上下文' };
+  }
+
+  // V12.0 P1-9: 句子片段/普通名词拦截（短语污染根因）— 必须在 hasSurname/长度判定之前
+  if (looksLikeSentenceFragment(name)) {
+    return { name, grade: 0, reason: '句子片段/普通名词 — 非人名' };
   }
 
   // L2: 昵称/简称 — 少于3字的非姓氏名（"艺哥""小明""阿芬"）

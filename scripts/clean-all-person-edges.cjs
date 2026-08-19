@@ -43,7 +43,8 @@ const PERSONS = [
     relationUpdate: '鸿艺的熟人——亲密关系（热力追踪已确认）',
     dossierUpdates: {
       socialIdentity: { currentOccupation: '高峰电业营业部跟单员', currentWorkplace: '高峰电业' },
-      basicInfo: { gender: '女', birthYear: 2002, education: '高中', maritalStatus: '已婚' },
+      // 🔴 徐诗雨设定：18岁（2008年生，高中毕业后进高峰电业当跟单员）。勿改回 24岁/2002/已婚。
+      basicInfo: { gender: '女', birthYear: 2008, education: '高中', maritalStatus: '未婚' },
       selfProfile: {
         traits: ['温柔', '令人怜爱', '清纯', '讨人喜欢', '细心'],
         appearance: '徐诗雨是徐诗韵和徐诗涵的姐姐，气质清纯温柔。身材纤细苗条，身高160cm，一头乌黑长发自然垂落，笑起来眼睛弯弯的很温暖。',

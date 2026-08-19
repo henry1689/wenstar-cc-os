@@ -36,6 +36,7 @@ const PERSON_BLACKLIST = new Set([
 /** 中文姓名正则 — 2-3字纯中文，首字在常用姓氏中 */
 // B1: 姓氏表统一 — 唯一数据源 app-identity.SURNAME_CHARS
 import { SURNAME_CHARS } from '../config/app-identity.js';
+import { looksLikeSentenceFragment } from '../app/entity/EntityCandidateGrader.js';
 const SURNAMES = SURNAME_CHARS;
 
 /** 第三层：person人名正则校验 */
@@ -46,6 +47,8 @@ function isValidPersonName(name: string): boolean {
   if (name.length < 2 || name.length > 4) return false;
   if (PERSON_BLACKLIST.has(name)) return false;
   if (RESPECT_PATTERN.test(name)) return true;
+  // V12.0 P1-9: 复用句子片段拦截（短语污染根因，如"那你说""和身体""关系"）
+  if (looksLikeSentenceFragment(name)) return false;
   if (PERSON_NAME_REGEX.test(name)) return true;
   // S4-M4: 放行 阿X/小X 昵称形态（小美/阿珍）——否则 LLM 提取结果被 filterEntities 丢弃，
   //   小X 非姓氏昵称无法进入 entity_genes，PAE 建档级联落空
