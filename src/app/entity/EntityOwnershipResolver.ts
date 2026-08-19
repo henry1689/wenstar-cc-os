@@ -12,13 +12,22 @@
 
 import type { EntityGene } from '../../m1/types/dna.js';
 
+/** 户主（系统默认本体）UUID — 玉瑶（category=S，户主钥匙场景） */
+export const OWNER_UUID = 'TXS-000000001';
+
 export interface OwnershipResult {
   /** 解析出的实体 UUID，null 表示无法归属 */
   uuid: string | null;
   /** 解析来源（用于审计） */
-  src: 'explicit_mention' | 'entity_genes' | 'self_ref' | 'fallback_name' | 'none';
+  src: 'explicit_mention' | 'entity_genes' | 'self_ref' | 'fallback_name' | 'owner_fallback' | 'none';
   /** 关联的实体名 */
   entityName?: string;
+}
+
+/** resolveOwnership 选项 */
+export interface ResolveOptions {
+  /** 无法归属时兜底到户主玉瑶（TXS-000000001），消灭无归属写入 */
+  ownerFallback?: boolean;
 }
 
 /** 自称检测模式 */
@@ -45,6 +54,7 @@ export function resolveOwnership(
   genes: EntityGene[],
   fg: any,
   role: 'user' | 'assistant' = 'user',
+  opts?: ResolveOptions,
 ): OwnershipResult {
   // ① entity_genes 匹配：取第一个 person 类型实体
   const firstPerson = genes?.find(
@@ -88,7 +98,10 @@ export function resolveOwnership(
     } catch { /* fall through */ }
   }
 
-  // ④ 无法归属
+  // ④ 无法归属 — 可兜底到户主玉瑶（消灭无归属写入，V13）
+  if (opts?.ownerFallback) {
+    return { uuid: OWNER_UUID, src: 'owner_fallback' };
+  }
   return { uuid: null, src: 'none' };
 }
 

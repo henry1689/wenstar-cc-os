@@ -116,20 +116,24 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   const _fg = input.ctx.m4?.getFamilyGraph?.();
   let belongUUID: string | null = null;
   let ownerEntityName: string | null = null;
+  let ownerSrc: string | null = null; // V13: 归属来源（H4 修复——owner_fallback 时仍需触发新实体回填）
   if (_meetingUUID) {
     belongUUID = _meetingUUID;  // 会晤强制 = 会晤实体
     ownerEntityName = input.ctx._entityMeeting?.getEntityName?.() ?? null;
   } else {
-    const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
+    // V13: ownerFallback=true — 无法归属时兜底户主玉瑶，消灭新产生的 NULL 归属
+    const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user', { ownerFallback: true });
     belongUUID = _ownerResult.uuid;
     ownerEntityName = _ownerResult.entityName ?? null;
+    ownerSrc = _ownerResult.src;
   }
   // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）；会晤时强制 = 会晤实体
   let asstUUID: string | null = null;
   if (_meetingUUID) {
     asstUUID = _meetingUUID;
   } else {
-    const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant');
+    // V13: ownerFallback=true — assistant 无法归属时兜底户主玉瑶
+    const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant', { ownerFallback: true });
     asstUUID = _asstResult.uuid || belongUUID;
   }
 
@@ -395,8 +399,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     }
   } catch { /* 索引写入不阻塞主流程 */ }
 
-  // ── V12.1: 新实体即时UUID回填（写入时 belongUUID 为 null → FG 可能刚创建节点 → 重试）──
-  if (!belongUUID && input.dna.entity_genes?.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2)) {
+  // ── V12.1: 新实体即时UUID回填（H4 修复：ownerFallback 意味着消息含 FG 未收录 person → 触发回填）──
+  if (ownerSrc === 'owner_fallback' && input.dna.entity_genes?.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2)) {
     try {
       const _fg = input.ctx.m4?.getFamilyGraph?.();
       const _si = input.ctx.storage?.getSQLite?.();
