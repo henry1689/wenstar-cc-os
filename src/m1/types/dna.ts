@@ -52,9 +52,9 @@ export interface DNA {
   calcium_level?: number;
 
   /**
-   * V12.7(批1): 记忆种类标记（'episodic' | 'roleplay'）— 由 M2 存储回填。
-   * 隔离保障：roleplay 记忆不得进入正常检索（读侧 memory_kind === 'roleplay' 过滤）。
-   * 此前 toDNA() 不复制该字段 → keyword/locus 路过滤恒 undefined（死代码）。
+   * 记忆种类标记（'episodic' | 'fact' | 'preference' 等）— 由 M2 存储回填。
+   * 第3期: 不再用 'roleplay' 值区分会晤记忆。隔离完全由 belong_entity_uuid 承担
+   * （私聊标对话对象 UUID，群聊标参与者 UUID）。
    */
   memory_kind?: string;
 

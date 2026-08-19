@@ -29,7 +29,6 @@ export type MemoryKind =
   | 'relationship'
   | 'task'
   | 'reminder'
-  | 'roleplay'
   | 'summary';
 
 export type MemoryLifecycleState =
@@ -146,8 +145,6 @@ export interface RetrievalQuery {
   limit: number;
   /** P1: 对话组检索模式 — 'all'（默认，同组全返回）｜'first-per-group'（同组只返回锚点） */
   dialogGroupMode?: 'all' | 'first-per-group';
-  /** 排除角色扮演记忆：true 时不返回 memory_kind='roleplay' 或 memory_type='rp_dialog' 的记录 */
-  excludeRoleplay?: boolean;
   /** V13: 实体UUID过滤 — 限定检索范围到特定人物（NULL 代表未归属的记忆也返回） */
   entityUuids?: string[];
 }

@@ -156,7 +156,7 @@ export class MemoryRetriever {
           entities: entities.filter(e => e.type === 'emotion').map(e => e.name),
           similarity_mode: 'mood_congruent',
           limit: 10,
-          excludeRoleplay: true,  // 正常检索排除角色扮演记忆
+          entityUuids: options?.entityUuids,  // 第3期: 隔离靠 entityUuids
         });
         for (const sm of scored) {
           if (sm?.record) {
@@ -500,7 +500,6 @@ export class MemoryRetriever {
             entities: entities.filter(e => e.type === 'emotion').map(e => e.name),
             similarity_mode: 'mood_congruent',
             limit: 30,
-            excludeRoleplay: true,
             entityUuids: options?.entityUuids,
           });
           for (const sm of scored) {
