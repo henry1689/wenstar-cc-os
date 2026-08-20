@@ -160,6 +160,53 @@ interface DialogGroupState {
 let _dg: DialogGroupState | null = null;
 let _dgTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ── P1-2: 对话组快照持久化（重启恢复未关闭对话组）──
+let _dgRestoreAttempted = false;
+const DG_SNAPSHOT_KEY = 'dialog_group_snapshot';
+
+/** 从 engine_store 恢复对话组快照（服务重启后首次对话自动恢复，仅执行一次） */
+function _restoreDialogGroup(ctx: any): void {
+  if (_dgRestoreAttempted || _dg) return;
+  _dgRestoreAttempted = true;
+  try {
+    const sql = ctx.storage?.getSQLite?.();
+    if (!sql || typeof sql.queryAll !== 'function') return;
+    const rows = sql.queryAll('SELECT value FROM engine_store WHERE key = ?', [DG_SNAPSHOT_KEY]);
+    if (!rows || rows.length === 0) return;
+    const snap = JSON.parse(String((rows[0] as any).value || '{}'));
+    // 🔴 S4-FIX: 深校验结构——自生成快照恒合法，但畸形/手工修改数据需防护，避免恢复后 _dg 使用处崩溃
+    if (!snap?.id || !Array.isArray(snap.rounds)
+      || typeof snap.locusPath !== 'string' || !Array.isArray(snap.perceptions)
+      || typeof snap.startTime !== 'number') {
+      console.warn('[DG-Snapshot] 快照格式非法，丢弃');
+      _clearDialogGroupSnapshot(sql);
+      return;
+    }
+    // 对话组生命周期 30 分钟——快照超时视为陈旧组，丢弃不恢复
+    const age = Date.now() - snap.startTime;
+    if (age > 30 * 60 * 1000) {
+      console.log('[DG-Snapshot] 快照过期(' + Math.round(age / 60000) + 'min)，丢弃');
+      _clearDialogGroupSnapshot(sql);
+      return;
+    }
+    _dg = snap as DialogGroupState;
+    console.log('[DG-Snapshot] 🔄 重启恢复对话组: ' + snap.id + ' (' + snap.rounds.length + '轮, 话题:' + (snap.topic || 'unknown') + ')');
+  } catch (e) {
+    console.warn('[DG-Snapshot] 恢复失败:', (e as Error)?.message || e);
+    // S4-FIX: JSON.parse 失败等异常路径也清快照，避免损坏行永久残留
+    try { _clearDialogGroupSnapshot(ctx.storage?.getSQLite?.()); } catch { /* 非关键 */ }
+  }
+}
+
+/** 清除对话组快照（flush 落库后调用，防止恢复已关闭的组） */
+function _clearDialogGroupSnapshot(sql: any): void {
+  try {
+    if (sql && typeof sql.writeRaw === 'function') {
+      sql.writeRaw('DELETE FROM engine_store WHERE key = ?', [DG_SNAPSHOT_KEY]);
+    }
+  } catch { /* 非关键 */ }
+}
+
 
 /**
  * 🔋 Token节省模式 — 时间/天气/生理按需一枪式触发
@@ -2107,6 +2154,9 @@ if (_ruleEngineBlocked && _ruleEngineReply) {
 
     // (P0) 对话组管理
     {
+      // 🔴 P1-2: 服务重启后首次对话自动恢复未关闭对话组快照（仅执行一次）
+      _restoreDialogGroup(ctx);
+
       const _locusPath = dna.locus_path || 'general';
       const _locusChanged = _dg && _locusPath !== _dg.locusPath &&
         _locusPath.split('.')[1] !== _dg.locusPath?.split('.')[1];
@@ -2121,6 +2171,8 @@ if (_ruleEngineBlocked && _ruleEngineReply) {
         const _old = _dg;
         _dg = null;
         flushDialogGroup(ctx, _old, dna, decision, message, reply, isValidPersonName).catch(() => {});
+        // 🔴 P1-2: flush 落库后清除快照，防止重启恢复已关闭的对话组
+        try { _clearDialogGroupSnapshot(ctx.storage?.getSQLite?.()); } catch { /* 非关键 */ }
       }
 
       // 🔴 P1-1: 结束语那轮不新建对话组（对话组已由 _meetingExited 触发 flush 关闭）
@@ -2149,6 +2201,19 @@ if (_ruleEngineBlocked && _ruleEngineReply) {
         if (_dg && g.name && g.name !== '我' && !_dg.entities.includes(g.name)) {
           _dg.entities.push(g.name);
         }
+      }
+
+      // 🔴 P1-2: 每轮更新后写对话组快照到 engine_store（重启恢复用）
+      if (_dg) {
+        try {
+          const _sql = ctx.storage?.getSQLite?.();
+          if (_sql && typeof _sql.writeRaw === 'function') {
+            _sql.writeRaw(
+              'INSERT OR REPLACE INTO engine_store (key, value, updated_at) VALUES (?, ?, ?)',
+              [DG_SNAPSHOT_KEY, JSON.stringify(_dg), new Date().toISOString()],
+            );
+          }
+        } catch { /* 快照写失败不阻塞 */ }
       }
     }
 
