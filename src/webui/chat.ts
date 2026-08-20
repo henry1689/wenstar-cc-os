@@ -756,75 +756,94 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       } catch (_gErr) { /* 门阀设置失败不影响对话 */ }
     }
 
+    // ── P1-1 意图前置校验门卫（统一三类指令：结束语/唤醒/普通消息）──
+    // 🔴 状态机：私聊-玉瑶(_meeting=null) → 唤醒允许 enter；私聊-XX/群聊 → 唤醒/换人拒绝（提示先结束）；
+    //    结束语 → flush 对话组+锚点+清session+回玉瑶；群聊加人/换主发言 → 放行。
+    let _meetingDeny: string | null = null;
+    let _meetingExited = false;
+
     // V4.0 实体会晤：多人会议时记录用户发言
     if (ctx._entityMeeting?.isMultiParty()) {
       ctx._entityMeeting.recordTurn('user', message, '我');
     }
 
-    // 🆕 V3.0: 会中换人检测（在退出检测之前）
-    if (ctx._entityMeeting?.isActive()) {
+    const _em = ctx._entityMeeting;
+    if (_em) {
       const fg = ctx.m4?.getFamilyGraph?.();
       const allNames: string[] = fg?.getAllPersonNames?.() || [];
-      const switchTarget = EntityMeeting.detectSwitchIntent(message, allNames);
-      if (switchTarget) {
-        await ctx._entityMeeting.switchTo(switchTarget);
-        console.log('[EntityMeeting] 会中切换: → ' + switchTarget);
-      }
-    }
+      const intent = EntityMeeting.detectIntent(message, allNames);
+      const _isActive = _em.isActive();
+      const _isMulti = _em.isMultiParty();
 
-    // V4.0 会议退出检测
-    // 🆕 V10.12 修复: 补充"切回玉瑶"意图（和玉瑶聊聊/切回玉瑶/回到玉瑶/找玉瑶）—
-    // 玉瑶是默认角色，从会晤切回玉瑶 = 退出会晤。此前只认散会/拜拜/再见，导致"和玉瑶聊聊"卡在会晤中。
-    if (ctx._entityMeeting?.isActive() && (
-      /^(?:散会|结束.*会议|会议.*结束|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见).*$/.test(message.trim())
-      || /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
-      || /^(?:切回|回到|换回|变回)\s*(?:玉瑶|瑶瑶|瑶儿)\s*$/.test(message.trim())
-    )) {
-      const _exitUuid = ctx._entityMeeting.getEntityUUID();
-      const exitResult = await ctx._entityMeeting.exit();
-      // 🔴 户籍管理法（第九条 搜索闸门·收口）: 退出会晤时清除会话实体 UUID，
-      // 恢复户主钥匙视角（不再限制知识库检索范围）。
-      try {
-        const { setSessionEntityUuid } = await import('../app/knowledge/KnowledgeEngine.js');
-        setSessionEntityUuid(null);
-      } catch { /* 非关键 */ }
-      // 🆕 V10.11: 保存情感快照 — 下次进入同一实体会晤时恢复情感基调
-      if (_exitUuid) {
-        try {
-          const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
-          const _store = new EntityContextStore(ctx.storage.getSQLite());
-          _store.saveEmotionSnapshot(_exitUuid, {
-            pleasure: p.pleasure ?? 0, arousal: p.arousal ?? 0, intimacy: p.intimacy ?? 0,
-            lastTopic: message.substring(0, 100),
-          });
-        } catch { /* 非致命 */ }
-      }
-      if (exitResult?.minutes) {
-        console.log('[EntityMeeting] 多人会议结束，纪要已自动归档');
-      }
-    }
-
-    // ── V3.0 实体会晤意图检测 + 激活（含间接呼唤/自然口语） ──
-    if (ctx._entityMeeting && !ctx._entityMeeting.isActive()) {
-      // 🔴 S2-G1: 重启后自动恢复上次会晤实体（用户上次在会晤中，重启后继续以该实体身份回应）
-      // 仅当用户消息没有明确"切回玉瑶/退出会晤"意图时才恢复——否则尊重用户当前意图。
-      const _explicitExit = /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
-        || /^(?:切回|回到|换回|变回|退出|散会|结束).*(?:玉瑶|瑶瑶|瑶儿)?\s*$/.test(message.trim());
-      const fg = ctx.m4?.getFamilyGraph?.();
-      const allNames: string[] = fg?.getAllPersonNames?.() || [];
-      const intentNames = EntityMeeting.detectUserIntent(message, allNames);
-      if (intentNames && intentNames.length > 0) {
-        if (intentNames.length >= 3) {
-          ctx._entityMeeting.enterMulti(intentNames);
-          console.log('[EntityMeeting] 多人会晤启动: ' + intentNames.join(', '));
-        } else {
-          ctx._entityMeeting.enter(intentNames[0]);
-          console.log('[EntityMeeting] 单人会晤启动: ' + intentNames[0]);
+      if (!_isActive) {
+        // ── 状态 A: 私聊-玉瑶 / 无会晤 → 唤醒允许，普通消息放行 ──
+        // 🔴 S4-FIX: addParticipant/switch 在无会晤态并入 wake——"叫张小龙来/让阿珍也来/换熊梓铭来"均为唤醒进入
+        const _enterTargets = intent.kind === 'wake' ? intent.targets
+          : (intent.kind === 'addParticipant' || intent.kind === 'switch') && intent.targets.length > 0 ? intent.targets
+          : [];
+        if (_enterTargets.length > 0) {
+          if (_enterTargets.length >= 3) {
+            _em.enterMulti(_enterTargets);
+            console.log('[EntityMeeting] 多人会晤启动: ' + _enterTargets.join(', '));
+          } else {
+            _em.enter(_enterTargets[0]);
+            console.log('[EntityMeeting] 单人会晤启动: ' + _enterTargets[0]);
+          }
+        } else if (intent.kind === 'normal' || intent.kind === 'exit') {
+          // 🔴 S2-G1: 重启后自动恢复上次会晤实体（用户上次在会晤中，重启后继续以该实体身份回应）
+          // 仅当用户消息没有明确"切回玉瑶/退出会晤"意图时才恢复——否则尊重用户当前意图。
+          const _explicitExit = /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
+            || /^(?:切回|回到|换回|变回|退出|散会|结束).*(?:玉瑶|瑶瑶|瑶儿)?\s*$/.test(message.trim());
+          if (!_explicitExit && _em.restoreLastMeeting?.()) {
+            console.log('[EntityMeeting] 消息无会晤意图，自动恢复上次会晤: ' + _em.getEntityName());
+          }
         }
-      } else if (!_explicitExit && ctx._entityMeeting.restoreLastMeeting?.()) {
-        // 无明确意图 + 有持久化会晤 → 自动恢复上次实体
-        console.log('[EntityMeeting] 消息无会晤意图，自动恢复上次会晤: ' + ctx._entityMeeting.getEntityName());
+        // exit 在玉瑶态无意义（不恢复、不 enter，玉瑶正常回复）
+      } else if (intent.kind === 'exit') {
+        // ── 结束语: 关闭对话组 + 锚点 + 清 session + 强制退回私聊-玉瑶 ──
+        // 🔴 P1-1: 对话组 flush 由对话组管理段（_meetingExited → _shouldCloseGroup）统一执行，
+        //   用真实 reply 生成锚点/碎片；本轮不新建对话组。
+        _meetingExited = true;
+        const _exitUuid = _em.getEntityUUID();
+        const exitResult = await _em.exit();
+        // 🔴 户籍管理法（第九条 搜索闸门·收口）: 退出会晤时清除会话实体 UUID，
+        // 恢复户主钥匙视角（不再限制知识库检索范围）。
+        try {
+          const { setSessionEntityUuid } = await import('../app/knowledge/KnowledgeEngine.js');
+          setSessionEntityUuid(null);
+        } catch { /* 非关键 */ }
+        // 🆕 V10.11: 保存情感快照 — 下次进入同一实体会晤时恢复情感基调
+        if (_exitUuid) {
+          try {
+            const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+            const _store = new EntityContextStore(ctx.storage.getSQLite());
+            _store.saveEmotionSnapshot(_exitUuid, {
+              pleasure: p.pleasure ?? 0, arousal: p.arousal ?? 0, intimacy: p.intimacy ?? 0,
+              lastTopic: message.substring(0, 100),
+            });
+          } catch { /* 非致命 */ }
+        }
+        if (exitResult?.minutes) {
+          console.log('[EntityMeeting] 多人会议结束，纪要已自动归档');
+        }
+      } else if (_isMulti && intent.kind === 'addParticipant' && intent.targets.length === 1) {
+        // ── 群聊加人（addParticipant ≠ 唤醒拒绝）──
+        _em.addParticipant(intent.targets[0]);
+        console.log('[EntityMeeting] 群聊加人: +' + intent.targets[0]);
+      } else if (_isMulti && intent.kind === 'switch' && intent.targets.length === 1) {
+        // ── 群聊换主发言（switch）──
+        await _em.switchTo(intent.targets[0]);
+        console.log('[EntityMeeting] 群聊换主发言: → ' + intent.targets[0]);
+      } else if (intent.kind === 'wake' || intent.kind === 'switch' || intent.kind === 'addParticipant') {
+        // ── 会晤中唤醒/换人 → 拒绝，提示先结束当前对话 ──
+        const curName = _em.getEntityName() || '当前实体';
+        const targetName = intent.targets[0] || '';
+        _meetingDeny = _isMulti
+          ? `（现在开着会呢，先结束会议${targetName ? '再单独找' + targetName : '吧'}～）`
+          : `（正和${curName}聊着呢，${targetName ? '想找' + targetName + '聊得' : '想换人得'}先说"结束/再见"回到玉瑶哦～）`;
+        console.log('[EntityMeeting] 门卫拒绝: ' + intent.kind + ' targets=' + intent.targets.join(',') + ' → ' + _meetingDeny);
       }
+      // normal → 放行
     }
 
     // 🆕 V4.0: 会晤知识库缓存 — 首轮搜到的 KB 内容持续注入后续轮次
@@ -1998,7 +2017,12 @@ if (_ruleEngineBlocked && _ruleEngineReply) {
 } else {
 // 🔴 D2 修复: userMessage 移除 knowledgeBaseText — KB 由 finalKnowledgeText（memoryText）唯一承载，
 // 避免同一份知识重复注入 LLM 浪费 token（此前 userMessage + memoryText 两处注入）。
-reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, message, _currentRole, !!_meetingEntityName, streamOpts);
+// 🔴 P1-1: 门卫拒绝（会晤中唤醒/换人）时跳过 LLM 调用，直接返回拒绝提示
+    if (_meetingDeny) {
+      reply = _meetingDeny;
+    } else {
+      reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, message, _currentRole, !!_meetingEntityName, streamOpts);
+    }
 }
 
     // P0-3: 规则幻觉校验 — 提取回复中的人名对照 FamilyGraph
@@ -2088,7 +2112,7 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         _locusPath.split('.')[1] !== _dg.locusPath?.split('.')[1];
 
       const _shouldCloseGroup = _dg && (
-        _locusChanged || isTopicShift ||
+        _locusChanged || isTopicShift || _meetingExited ||
         _dg.rounds.length >= 10 ||
         (Date.now() - _dg.startTime) > 30 * 60 * 1000
       );
@@ -2099,7 +2123,8 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         flushDialogGroup(ctx, _old, dna, decision, message, reply, isValidPersonName).catch(() => {});
       }
 
-      if (!_dg) {
+      // 🔴 P1-1: 结束语那轮不新建对话组（对话组已由 _meetingExited 触发 flush 关闭）
+      if (!_dg && !_meetingExited) {
         _dg = {
           id: (dna as any).dna_root_id + '_DG_' + String(seqPos).padStart(3, '0'),
           topic: _locusPath,
@@ -2113,14 +2138,15 @@ reply = await ctx.m5.orchestrate(ctx_m4, enrichedWithGuard, finalKnowledgeText, 
         };
       }
 
-      _dg.rounds.push({ q: message, a: reply, seqPos, time: Date.now() });
-      _dg.perceptions.push({ ...p });
-      if (decision.enhanced.calcium_score > _dg.maxCalcium) {
+      // 🔴 P1-1: 结束语那轮 _dg 已置 null（_meetingExited），跳过本轮加入
+      _dg?.rounds.push({ q: message, a: reply, seqPos, time: Date.now() });
+      _dg?.perceptions.push({ ...p });
+      if (_dg && decision.enhanced.calcium_score > _dg.maxCalcium) {
         _dg.maxCalcium = decision.enhanced.calcium_score;
         _dg.maxCalciumRound = _dg.rounds.length - 1;
       }
       for (const g of dna.entity_genes) {
-        if (g.name && g.name !== '我' && !_dg.entities.includes(g.name)) {
+        if (_dg && g.name && g.name !== '我' && !_dg.entities.includes(g.name)) {
           _dg.entities.push(g.name);
         }
       }

@@ -150,3 +150,54 @@ describe('EntityMeeting — 本体隔离（category=S 不可会晤）', () => {
     expect(em.isActive()).toBe(false);
   });
 });
+
+describe('EntityMeeting.detectIntent — P1-1 意图分类门卫', () => {
+  it('exit: 散会', () => {
+    expect(EntityMeeting.detectIntent('散会', NAMES).kind).toBe('exit');
+  });
+  it('exit: 结束吧（口语结束语）', () => {
+    expect(EntityMeeting.detectIntent('结束吧', NAMES).kind).toBe('exit');
+  });
+  it('exit: 不聊了', () => {
+    expect(EntityMeeting.detectIntent('不聊了', NAMES).kind).toBe('exit');
+  });
+  it('exit: 切回玉瑶', () => {
+    expect(EntityMeeting.detectIntent('切回玉瑶', NAMES).kind).toBe('exit');
+  });
+  it('exit: 拜拜', () => {
+    expect(EntityMeeting.detectIntent('拜拜', NAMES).kind).toBe('exit');
+  });
+  it('addParticipant: 叫徐诗雨也来', () => {
+    expect(EntityMeeting.detectIntent('叫徐诗雨也来', NAMES)).toEqual({ kind: 'addParticipant', targets: ['徐诗雨'] });
+  });
+  it('addParticipant: 让阿珍加入', () => {
+    expect(EntityMeeting.detectIntent('让阿珍加入', NAMES)).toEqual({ kind: 'addParticipant', targets: ['阿珍'] });
+  });
+  it('switch: 换熊梓铭来', () => {
+    expect(EntityMeeting.detectIntent('换熊梓铭来', NAMES)).toEqual({ kind: 'switch', targets: ['熊梓铭'] });
+  });
+  it('wake: 找徐诗雨聊聊', () => {
+    expect(EntityMeeting.detectIntent('找徐诗雨聊聊', NAMES)).toEqual({ kind: 'wake', targets: ['徐诗雨'] });
+  });
+  it('wake: 我想和罗权斌聊', () => {
+    expect(EntityMeeting.detectIntent('我想和罗权斌聊', NAMES)).toEqual({ kind: 'wake', targets: ['罗权斌'] });
+  });
+  it('normal: 今天天气不错', () => {
+    expect(EntityMeeting.detectIntent('今天天气不错', NAMES).kind).toBe('normal');
+  });
+  it('normal: 泛称词不触发唤醒（老婆生日）', () => {
+    expect(EntityMeeting.detectIntent('老婆今天生日快乐', NAMES).kind).toBe('normal');
+  });
+  it('normal: 疑问句不误判 exit（结束了吗）', () => {
+    expect(EntityMeeting.detectIntent('结束了吗', NAMES).kind).toBe('normal');
+  });
+  it('normal: 疑问句不误判 exit（散会了没）', () => {
+    expect(EntityMeeting.detectIntent('散会了没', NAMES).kind).toBe('normal');
+  });
+  it('exit: 结束会议', () => {
+    expect(EntityMeeting.detectIntent('结束会议', NAMES).kind).toBe('exit');
+  });
+  it('addParticipant: 叫张小龙来（无会晤态唤醒路径）', () => {
+    expect(EntityMeeting.detectIntent('叫张小龙来', NAMES)).toEqual({ kind: 'addParticipant', targets: ['张小龙'] });
+  });
+});

@@ -1493,12 +1493,8 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 
 
 async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean, onToken?: (delta: { text?: string }) => void): Promise<ChatResponse> {
-  // 🔴 P0-4.1: 移除 server.ts 自然语言会晤触发（含人名即 enter → 跨实体污染）。
-  // 会晤切换统一由 chat.ts 的 EntityMeeting.detectUserIntent（精准句式）处理。
-  // 退出
-  if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
-    await entityMeeting.exit(); console.log('[server.ts V10.0] 退出');
-  }
+  // 🔴 P1-1: 移除 server.ts 提前退出（只认纯词 + 提前清 session 导致对话组永不落库）。
+  // 会晤结束语统一由 chat.ts 门卫处理（flush 对话组 + 锚点 + 清 session + 回玉瑶）。
   return processChatNew(message, {
     encoder, storage, m3, m4, m5, m6, m7,
     masterProfile,
@@ -1528,10 +1524,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
  * 3. 新链路异常 → 静默回退旧链路，用户无感知
  */
 async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
-  // 🔴 P0-4.1: 移除 server.ts 强制会晤激活（含人名即 enter → 跨实体污染），统一走 chat.ts detectUserIntent
-  if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
-    await entityMeeting.exit(); console.log('[server.ts V10.0 HUM] 退出');
-  }
+  // 🔴 P1-1: 移除 server.ts 提前退出，结束语统一由 chat.ts 门卫处理。
   console.log('[HUM] message=' + message.substring(0,20) + ' clientMsgId=' + (clientMsgId||'').substring(0,20) + ' ENABLE_NEW_ARCH=' + ENABLE_NEW_ARCH + ' orch=' + !!orchestrator);
   if (!ENABLE_NEW_ARCH || !orchestrator) {
     return processChat(message, clientMsgId, testMode);

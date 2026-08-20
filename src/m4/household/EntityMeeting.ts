@@ -39,6 +39,16 @@ interface EntityInfo {
   category: string;
 }
 
+/** 🆕 P1-1: 会晤意图分类 */
+export type MessageIntentKind = 'exit' | 'wake' | 'switch' | 'addParticipant' | 'normal';
+
+/** 🆕 P1-1: 意图分类结果 */
+export interface MessageIntent {
+  kind: MessageIntentKind;
+  /** wake: 目标实体列表（多人）；switch/addParticipant: 目标实体；exit/normal: 空 */
+  targets: string[];
+}
+
 export class EntityMeeting {
   private familyGraph: FamilyGraph;
   private gatekeeper: UUIDGatekeeper | null = null;
@@ -63,6 +73,9 @@ export class EntityMeeting {
 
   /** 是否首轮对话（用于开场协议注入） */
   private _isFirstTurn: boolean = false;
+
+  /** 高频泛称词 — 会晤意图检测时排除（妹妹/老婆等不是实体名） */
+  private static GENERIC_NAMES = new Set(['妹妹', '老婆', '妈妈', '爸爸', '姐姐', '哥哥', '弟弟']);
 
   constructor(familyGraph: FamilyGraph) {
     this.familyGraph = familyGraph;
@@ -434,13 +447,70 @@ export class EntityMeeting {
     return null;
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // 🆕 P1-1: 意图前置校验门卫 — 统一五类指令分类
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * P1-1: 统一意图分类 — 取代 chat.ts 里三块散落的会晤意图检测。
+   * 优先级: exit(结束语) > addParticipant(群聊加人) > switch(显式换主发言) > wake(唤醒/开会) > normal。
+   *
+   * - exit: 散会/结束/拜拜/切回玉瑶 → 关闭对话组+锚点+清session+回玉瑶
+   * - addParticipant: 群聊中"叫XX也来/参加/加入"
+   * - switch: "换XX来/吧"（群聊内换主发言）
+   * - wake: detectUserIntent 命中（找XX聊聊/开个会/@XX）→ 仅私聊-玉瑶态允许 enter
+   * - normal: 普通消息
+   */
+  static detectIntent(message: string, knownPersonNames: string[]): MessageIntent {
+    const msg = message.trim();
+
+    // 1. 结束语（exit）— 不依赖人名。覆盖"结束吧/不聊了/先这样吧"等口语结束语。
+    //    🔴 排除疑问句（"结束了吗/散会了没"不算退出，避免会晤中疑问误终止）。
+    const _exit1 = /^(?:散会|不聊了|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见)\s*(?:吧|了|啦|~|～|!|！)?\s*$/.test(msg)
+      || /^结束\s*(?:了|吧|啦)?\s*(?:会议|对话|会晤|话题|我们|聊天)?\s*(?:吧|了|啦|~|～|!|！)?\s*$/.test(msg);
+    if (
+      _exit1
+      || /^(?:切回|回到|换回|变回)\s*(?:玉瑶|瑶瑶|瑶儿)\s*$/.test(msg)
+      || /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(msg)
+    ) {
+      return { kind: 'exit', targets: [] };
+    }
+
+    if (!knownPersonNames || knownPersonNames.length === 0) return { kind: 'normal', targets: [] };
+
+    const sorted = [...knownPersonNames]
+      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n))
+      .sort((a, b) => b.length - a.length);
+
+    // 2. 群聊加人（addParticipant）: "叫XX也来/参加/加入/进来"
+    const addMatch = msg.match(/(?:叫|让|喊|把)\s*([一-龥]{2,4})\s*(?:也)?\s*(?:来|过来|参加|加入|进来)/);
+    if (addMatch) {
+      const name = EntityMeeting._fuzzyFindName(addMatch[1], sorted);
+      if (name) return { kind: 'addParticipant', targets: [name] };
+    }
+
+    // 3. 显式换主发言（switch）: "换XX来/吧"
+    const swMatch = msg.match(/^换\s*([一-龥]{2,4})\s*(?:来|吧)?\s*$/);
+    if (swMatch) {
+      const name = EntityMeeting._fuzzyFindName(swMatch[1], sorted);
+      if (name) return { kind: 'switch', targets: [name] };
+    }
+
+    // 4. 唤醒/开会（wake）
+    const wake = EntityMeeting.detectUserIntent(msg, sorted);
+    if (wake && wake.length > 0) {
+      return { kind: 'wake', targets: wake };
+    }
+
+    return { kind: 'normal', targets: [] };
+  }
+
   static detectUserIntent(message: string, knownPersonNames: string[]): string[] | null {
     if (!message || knownPersonNames.length === 0) return null;
 
     // 🆕 V10.0 P1-5 补充: 所有路径排除高频泛称词
-    const GENERIC_NAMES = new Set(['妹妹', '老婆', '妈妈', '爸爸', '姐姐', '哥哥', '弟弟']);
     const sorted = [...knownPersonNames]
-      .filter(n => !GENERIC_NAMES.has(n))
+      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n))
       .sort((a, b) => b.length - a.length);
     const msg = message.trim();
 
@@ -687,7 +757,7 @@ export class EntityMeeting {
       const target = intent[0];
       // 明确切换动词（找/和/叫/让/换/想 等）
       const hasExplicitSwitch = /(?:找|和|跟|叫|让|喊|换|想|要|以|用|见)/.test(msg);
-      const hasTail = /(?:聊聊|谈谈|说说话|说几句|说点事|聊一下|聊天|来|过来|出来|身份|角色|也来)/.test(msg);
+      const hasTail = /(?:聊聊|谈谈|说说话|说几句|说点事|聊一下|聊天|聊|来|过来|出来|身份|角色|也来)/.test(msg);
       // "XX在吗/在不" — 用户想确认 XX 在线并切换（如"熊梓铭在吗"）
       const isPresenceCheck = /在吗|在不|在不在/.test(msg) && msg.length <= target.length + 4;
       if ((hasExplicitSwitch && hasTail) || isPresenceCheck) return target;
