@@ -109,10 +109,25 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       const _entityUuid = _fg?.getUUIDByName?.(_meetingEntityName);
       const _sqlite = ctx.storage?.getSQLite?.();
       if (_entityUuid && _sqlite && typeof _sqlite.queryAll === 'function') {
-        const _entityMems = _sqlite.queryAll(
-          "SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories WHERE belong_entity_uuid = ? ORDER BY calcium_score DESC LIMIT 20",
+        // 🔴 P1-3: 会晤记忆检索排序 — 废弃单一 ORDER BY calcium_score DESC（把近期低钙化记忆挤出 TOP20，
+        // 实测"树林记忆 0.56 排第21+ 检索不到"即此根因）。改为**近期+历史双槽位**：
+        //   近期槽（当日 <1天，最多14格）：保底命中当天对话记忆（"回头就忘"直接修复）；
+        //   历史槽（>=1天，按钙化补足20，至少6格）：保留重要历史地标（钙化 10/9.99 不被整体挤出，
+        //   避免时间主导导致的"历史高钙饥饿"）。金库/砂金库(L170/L181)继续补充历史重要记忆。
+        const _recentRows = _sqlite.queryAll(
+          `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
+           WHERE belong_entity_uuid = ? AND julianday('now') - julianday(created_at) < 1
+           ORDER BY calcium_score DESC LIMIT 14`,
           [_entityUuid]
         ) || [];
+        const _histSlot = Math.max(6, 20 - _recentRows.length);
+        const _histRows = _sqlite.queryAll(
+          `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
+           WHERE belong_entity_uuid = ? AND julianday('now') - julianday(created_at) >= 1
+           ORDER BY calcium_score DESC LIMIT ${_histSlot}`,
+          [_entityUuid]
+        ) || [];
+        const _entityMems = [..._recentRows, ..._histRows];
         // 🔴 S2-J1b: 过滤编造特征记忆 — LLM 单方面输出的"过去经历"类内容(海边/比基尼/营销总监/来月经等)
         // 被当真实记忆检索注入 → 巩固谎言。命中特征词的记忆不注入。
         const FABRICATION_PATTERNS = /海边|比基尼|营销总监|全职太太|来月经|身体开始变|刻骨铭心|从零到一|泳衣|穿拖鞋/;
