@@ -748,17 +748,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     // 非会晤提及的人用 addSessionEntity（并集，不 clear），避免误踢会晤实体。
     if (ctx._gatekeeper) {
       try {
-          const personUUIDs: string[] = [];
-          for (const gene of (dna.entity_genes || [])) {
-            if (gene.type === 'person' && gene.name && gene.name !== '我') {
-              const uuid = ctx.m4.getFamilyGraph()?.getUUIDByName?.(gene.name);
-              if (uuid) personUUIDs.push(uuid);
-            }
-          }
-          // 仅非会晤模式：把消息提到的人加入会话层（并集），会晤模式由 EntityMeeting 管理
-          if (personUUIDs.length > 0 && !ctx._entityMeeting?.isActive?.()) {
-            for (const _u of personUUIDs) ctx._gatekeeper.addSessionEntity(_u);
-          }
+        // 🔴 P0-4: 非会晤不再把消息提到的人累积进 sessionEntities（避免跨实体污染）。
+        // 消息提到的人只进 mentioned_entity_uuids[]（persistence-stage 实现），供 FG 图谱/PAE。
+        // 会话层白名单由 EntityMeeting 管理（会晤=聊天对象），玉瑶默认态由 retrieval-stage 兜底。
         // 同步设置 M4Orchestrator 的门阀（记忆检索过滤用）
         ctx.m4.setGatekeeper?.(ctx._gatekeeper);
       } catch (_gErr) { /* 门阀设置失败不影响对话 */ }
@@ -1042,7 +1034,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
 
     // V12.7(批2): 会晤模式注入会晤实体 UUID 作为 extraPersonUuids，
     // 堵 M4 记忆检索绕过会晤隔离墙（retrieveMemories.findByLocus 曾跨实体扫描）。
-    const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories, _meetingEntityUuid ? [_meetingEntityUuid] : undefined);
+    // P0-4: 非会晤（默认玉瑶私聊）也传玉瑶 UUID，不再传 undefined 触发全库扫描
+    const _yuyaoM4 = _meetingEntityUuid ?? ctx.m4.getFamilyGraph()?.getUUIDByName?.('玉瑶') ?? undefined;
+    const ctx_m4 = await ctx.m4.orchestrate(decision, biosGatedMemories, _yuyaoM4 ? [_yuyaoM4] : undefined);
 
     // FIX-1: M4 完成后写入尚未建立家庭关系的 person 实体
     if (true) { // V4.0: 非角色扮演守卫已移除

@@ -98,7 +98,8 @@ export class ConversationDB {
         roleplay_char TEXT,
         message_id TEXT UNIQUE,
         namespace TEXT DEFAULT 'default',
-        belong_entity_uuid TEXT
+        belong_entity_uuid TEXT,
+        mentioned_entity_uuids TEXT
       )
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC)`);
@@ -128,6 +129,7 @@ export class ConversationDB {
     try { this.db.run("ALTER TABLE conversations ADD COLUMN message_id TEXT"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN namespace TEXT DEFAULT 'default'"); } catch {}
     try { this.db.run("ALTER TABLE conversations ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
+    try { this.db.run("ALTER TABLE conversations ADD COLUMN mentioned_entity_uuids TEXT"); } catch {} /* P0-2 */
     try { this.db.run("ALTER TABLE conversations ADD COLUMN global_uid TEXT"); } catch {} /* V10.0 P0-3 */
     try { this.db.run("ALTER TABLE conversations ADD COLUMN location_fingerprint TEXT"); } catch {} /* V10.0 P0-3 */
     try { this.db.run("ALTER TABLE knowledge_base ADD COLUMN belong_entity_uuid TEXT"); } catch {} /* V3.2 */
@@ -150,6 +152,8 @@ export class ConversationDB {
     namespace?: string;
     /** V3.2: 户籍卷宗归档 — 此对话归属的实体 UUID */
     belongEntityUuid?: string;
+    /** P0-2: 消息内提到的人/实体 UUID 集合（FG 图谱旁路，不参与记忆归属与检索） */
+    mentionedEntityUuids?: string[];
   }): number {
     this.ensureReady();
     const seqPos = options?.seqPos ?? 0;
@@ -159,12 +163,13 @@ export class ConversationDB {
     // is_summary 与 is_compacted 同步写入（过渡兼容，后续统一为 is_summary）
     const compactVal = options?.isCompacted ?? 0;
     this.db.run(
-      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, global_uid, location_fingerprint, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace, belong_entity_uuid)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      `INSERT INTO conversations (role, content, timestamp, seq_pos, topic, entity_names, perception_summary, calcium_score, dna_root_id, global_uid, location_fingerprint, dialog_group_id, dialog_round, is_test, is_compacted, is_summary, roleplay_char, is_promoted, namespace, belong_entity_uuid, mentioned_entity_uuids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       [role, content, timestamp, seqPos, options?.topic || '', entityNames, perceptionSummary,
        options?.calciumScore || 0, options?.dnaRootId || null, options?.globalUid || null, options?.locationFingerprint || null,
        options?.dialogGroupId || null, options?.dialogRound ?? null, options?.isTest ?? 0, compactVal, compactVal,
-       options?.roleplayChar || null, options?.namespace || 'default', options?.belongEntityUuid || null],
+       options?.roleplayChar || null, options?.namespace || 'default', options?.belongEntityUuid || null,
+       options?.mentionedEntityUuids ? JSON.stringify(options.mentionedEntityUuids) : null],
     );
     // C4: 触发防抖落盘（共享模式委托 owner；独立模式 150ms 合并落盘），防止用户/助手消息因崩溃丢失
     this.scheduleFlush();

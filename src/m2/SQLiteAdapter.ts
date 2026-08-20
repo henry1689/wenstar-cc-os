@@ -983,7 +983,7 @@ export class SQLiteAdapter {
    */
   findByEmotionalSimilarity40D(query: RetrievalQuery): ScoredMemory[] {
     this.ensureReady();
-    const cacheKey = 'ems40_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + (query.entityUuids?.slice().sort().join(',') || '') + '_' + JSON.stringify(query.current_perception);
+    const cacheKey = 'ems40_' + query.similarity_mode + '_' + query.limit + '_' + (query.locus_path || '') + '_' + (query.entities?.slice().sort().join(',') || '') + '_' + (query.entityUuids?.slice().sort().join(',') || '') + '_' + (query.isBackgroundTask ? 'bg' : 'chat') + '_' + JSON.stringify(query.current_perception);
     const cached = this._cacheGet<ScoredMemory[]>(cacheKey);
     if (cached) return cached;
 
@@ -991,9 +991,11 @@ export class SQLiteAdapter {
     // 查询 24D → 40D 派生（与 M3 buildPerceptionV40 同源投影）
     const q40 = map24DTo40D(query.current_perception);
 
-    // 第3期: 正常检索固定排除旧角色扮演记忆（excludeRoleplay 参数化已随 RetrievalQuery 移除，
-    // 排除行为改为无条件内置——MemoryRetriever/retrieval-stage/M8 均依赖底层此安全网防泄漏）
-    const rpExclude = " AND (memory_kind IS NULL OR (memory_kind != 'roleplay' AND memory_type != 'rp_dialog'))";
+    // P0-3: 仅后台任务（isBackgroundTask=true，梦境/金库/分析）排除 roleplay 记忆；
+    // 聊天私聊/会晤检索不过滤（会晤记忆可被聊天召回，根治"回头就忘"）。保留 memory_kind 体系。
+    const rpExclude = query.isBackgroundTask
+      ? " AND (memory_kind IS NULL OR (memory_kind != 'roleplay' AND memory_type != 'rp_dialog'))"
+      : "";
     const euClause = this._entityUuidClause(query.entityUuids);
     const landmarkRows = this.execSql(
       `SELECT * FROM memories WHERE is_landmark = 1${rpExclude}${euClause.clause} ORDER BY calcium_score DESC LIMIT 20`,

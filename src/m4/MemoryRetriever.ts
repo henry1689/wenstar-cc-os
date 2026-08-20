@@ -69,7 +69,7 @@ export class MemoryRetriever {
   async retrieveMemories(
     locusPath: string,
     entities: Array<{ name: string; type: string }>,
-    options?: { limit?: number; perception?: Perception24D; sessionId?: string; entityUuids?: string[] }
+    options?: { limit?: number; perception?: Perception24D; sessionId?: string; entityUuids?: string[]; isBackgroundTask?: boolean }
   ): Promise<DNA[]> {
     const limit = options?.limit ?? 5;
     const startTs = Date.now();
@@ -281,7 +281,7 @@ export class MemoryRetriever {
     const _filtered = merged.filter(dna => {
       // V12.7(批1): memory_kind 已由 toDNA 回填（此前恒 undefined 死过滤）；
       // memory_type 从未被 rowToRecord 回填 → 删死判定，统一用 memory_kind。
-      if (dna.memory_kind === 'roleplay') return false;
+      if (options?.isBackgroundTask && dna.memory_kind === 'roleplay') return false;
       return true;
     });
     if (_filtered.length < merged.length) {
@@ -296,7 +296,7 @@ export class MemoryRetriever {
     if (byEntityUuid.length > 0) {
       for (const dna of byEntityUuid) {
         if (!seen.has(dna.branch_id)) {
-          if (dna.memory_kind === 'roleplay') continue;
+          if (options?.isBackgroundTask && dna.memory_kind === 'roleplay') continue;
           seen.add(dna.branch_id);
           merged.push(dna);
         }
@@ -449,7 +449,7 @@ export class MemoryRetriever {
   async retrieveMultiRank(
     locusPath: string,
     entities: Array<{ name: string; type: string }>,
-    options?: { perception?: Perception24D; entityUuids?: string[]; sessionId?: string }
+    options?: { perception?: Perception24D; entityUuids?: string[]; sessionId?: string; isBackgroundTask?: boolean }
   ): Promise<MultiRankResult> {
     const sessionId = options?.sessionId ?? this._sessionId;
     const lists: RankedList[] = [];
@@ -531,7 +531,7 @@ export class MemoryRetriever {
           for (const dna of recent) {
             if (seen.has(dna.branch_id)) continue;
             const kind = dna.memory_kind;
-            if (kind === 'roleplay') continue;
+            if (options?.isBackgroundTask && kind === 'roleplay') continue;
             let hitCount = 0;
             for (const kw of keywords) {
               if (dna.raw_input?.includes(kw)) hitCount++;
@@ -608,7 +608,7 @@ export class MemoryRetriever {
         const byLocus = await this.storage.findByLocus(locusPath, { limit: 20, entityUuids: options?.entityUuids });
         for (const dna of byLocus) {
           const kind = dna.memory_kind;
-          if (kind === 'roleplay') continue;
+          if (options?.isBackgroundTask && kind === 'roleplay') continue;
           items.push({
             id: dna.branch_id,
             text: (dna.raw_input ?? '').substring(0, 200),
@@ -637,7 +637,7 @@ export class MemoryRetriever {
                 // S4 P0-1 修复: memory_type 从未被 rowToRecord 回填（恒 undefined）→ 死过滤。
                 // 改用 memory_kind === 'roleplay'（EmotionalMemoryRecord 有该字段且 rowToRecord 回填），
                 // 否则激活的 entity 路会把 roleplay 记忆泄漏进正常检索。
-                if ((em as any).memory_kind === 'roleplay') continue;
+                if (options?.isBackgroundTask && (em as any).memory_kind === 'roleplay') continue;
                 items.push({
                   id: em.id ?? '', text: (em.raw_input ?? '').substring(0, 200),
                   score: em.seq_pos ?? 0, source: 'entity',

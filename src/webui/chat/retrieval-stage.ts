@@ -326,18 +326,16 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
 
   const hasPersonEntity = dna.entity_genes.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length > 1);
 
-  // V13: 提前收集当前活跃实体 UUID（供所有检索路径共用）
+  // 🔴 P0-4: 聊天检索过滤条件强制取自 UUIDGatekeeper.sessionEntities（+ 玉瑶默认兜底）
+  // 不再从消息文本提取人名作为检索过滤——消息人名留给图谱/关联分析（mentioned_entity_uuids）
   const _activeEntityUuids: string[] = [];
   try {
-    if (hasPersonEntity && ctx.m4?.getFamilyGraph) {
-      const _fg = ctx.m4.getFamilyGraph();
-      const _personNames = dna.entity_genes.filter((g: any) => g.type === 'person').map((g: any) => g.name);
-      for (const _pn of _personNames.slice(0, 3)) {
-        try {
-          const _uuid = _fg.getUUIDByName?.(_pn);
-          if (_uuid) _activeEntityUuids.push(_uuid);
-        } catch { /* skip */ }
-      }
+    const _session = ctx._gatekeeper?.getSessionEntities?.() ?? [];
+    const _yuyaoU = ctx.m4?.getFamilyGraph?.()?.getUUIDByName?.('玉瑶') ?? null;
+    if (_session.length > 0) {
+      _activeEntityUuids.push(..._session);
+    } else if (_yuyaoU) {
+      _activeEntityUuids.push(_yuyaoU);  // 玉瑶默认态兜底（私聊-玉瑶检索自己的记忆）
     }
   } catch { /* 不阻塞 */ }
 
@@ -510,13 +508,10 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
 
             const _locusPath = (dna as any).locus_path || 'default';
             const _entities = dna.entity_genes.map((g: any) => ({ name: g.name, type: g.type }));
-            const _personUuids = _entities.filter((e: any) => e.type === 'person' && e.name !== '我')
-              .map((e: any) => { try { return ctx.m4?.getFamilyGraph?.()?.getUUIDByName?.(e.name); } catch { return null; } })
-              .filter(Boolean) as string[];
 
             const _multiRank = await ctx.m4.retrieveMultiRankForSearch(_locusPath, _entities, {
               perception: p,
-              entityUuids: _personUuids.length > 0 ? _personUuids : _activeEntityUuids,
+              entityUuids: _activeEntityUuids,
               sessionId: ctx.sessionId,
             });
 

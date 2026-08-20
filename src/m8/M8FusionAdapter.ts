@@ -38,6 +38,7 @@ export class M8FusionAdapter implements M8Engine {
       current_perception: params.perception,
       similarity_mode: 'balanced',
       limit: 5,
+      isBackgroundTask: true,  // P0-3: 后台巩固任务排除 roleplay 记忆
     });
 
     const bestMatch = results[0];

@@ -432,6 +432,7 @@ let consolidationQueue: ConsolidationQueue;
 let m7: M7Orchestrator;
 let m7Timer: ReturnType<typeof setInterval> | null = null;
 let m6Timer: ReturnType<typeof setInterval> | null = null;
+let backupTimer: ReturnType<typeof setInterval> | null = null;
 let workingMemory: MemoryWriteBuffer;
 let knowledgeBase: KnowledgeBase;
 let masterProfile: MasterProfileService;
@@ -960,7 +961,7 @@ async function initPipeline(): Promise<void> {
   } else { console.log('  [调试] 已跳过: M6定时维护 + 记忆仓备份'); }
 
   // ── 统一备份引擎（三大永久存储：fusion_memory + family_graph + knowledge） ──
-  // 启动后15分钟首次执行，之后每30分钟执行一次
+  // 启动后15分钟首次执行，之后每6小时执行一次（生产期备份策略）
   const BACKUP_DIR = path.join(PROJECT_ROOT, "data", "backups");
   if (!existsSync(BACKUP_DIR)) mkdirSync(BACKUP_DIR, { recursive: true });
 
@@ -1048,6 +1049,7 @@ async function initPipeline(): Promise<void> {
         // 按时间排序（最新的在前）
         groupFiles.sort().reverse();
         const kept: string[] = [];
+        const bestForDay = new Map<string, Date>(); // prefix_date -> latest file date
         const today = new Date();
 
         for (const f of groupFiles) {
@@ -1058,10 +1060,24 @@ async function initPipeline(): Promise<void> {
           const fileDate = new Date(parseInt(dateMatch[1]), parseInt(dateMatch[2]) - 1, parseInt(dateMatch[3]));
           const daysDiff = Math.floor((today.getTime() - fileDate.getTime()) / 86400000);
 
-          if (daysDiff <= 7) {
-            kept.push(f); // 最近 7 天全留
-          } else if (daysDiff <= 28 && fileDate.getDay() === 1) {
-            kept.push(f); // 最近 4 周的周一备份
+          // 按类型分别保留：knowledge 3 天每天最新 1 个，family_graph/vault 7 天每天最新 1 个
+          const isKnowledge = prefix === 'knowledge';
+          const isVault = prefix === 'vault';
+          const keepDays = isKnowledge ? 3 : 7;
+          if (daysDiff <= keepDays) {
+            const dateKey = dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3];
+            const dayKey = prefix + '_' + dateKey;
+            if (!bestForDay.has(dayKey) || fileDate > bestForDay.get(dayKey)!) {
+              if (bestForDay.has(dayKey)) {
+                const oldIdx = kept.findIndex(kf => {
+                  const m = kf.match(/(\d{4})-?(\d{2})-?(\d{2})/);
+                  return m && (prefix + '_' + m[1] + '-' + m[2] + '-' + m[3]) === dayKey;
+                });
+                if (oldIdx >= 0) kept.splice(oldIdx, 1);
+              }
+              bestForDay.set(dayKey, fileDate);
+              kept.push(f);
+            }
           }
         }
 
@@ -1094,7 +1110,10 @@ async function initPipeline(): Promise<void> {
     }
   } catch (_bkCheck) { /* fall through */ }
   }
-  addTimer(setInterval(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 30 * 60 * 1000));
+  // 防止重复注册：如果已有 timer 先清除
+  if (backupTimer) { clearInterval(backupTimer); backupTimer = null; }
+  backupTimer = setInterval(async () => { try { await runUnifiedBackup(); } catch (e: any) { console.error('[server] error:', e?.message); } }, 6 * 60 * 60 * 1000);
+  addTimer(backupTimer);
   if (WS_LAZY_TIMERS) console.log('  统一备份引擎 — Token节省模式，未启动 ✓');
   console.log('  统一备份引擎已启动 ✓ (15min首执行, 30min周期)');
   markModuleAlive('Backup·备份引擎');
@@ -1474,27 +1493,8 @@ function createReplyOnlyChatResponse(reply: string): ChatResponse {
 
 
 async function processChat(message: string, clientMsgId?: string | null, testMode?: boolean, onToken?: (delta: { text?: string }) => void): Promise<ChatResponse> {
-  // 🔥 V10.0: 自然语言会晤触发 — 支持"我想找XX聊聊""瑶瑶，找XX来"等句式
-  if (entityMeeting && !entityMeeting.isActive()) {
-    const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
-    let found: string | null = null;
-
-    // 路径A: "找XX聊聊/谈谈/了解一下" | "想找XX" | "想和XX聊" | "叫XX来" | "让XX过来"
-    const hasMeetingIntent = true;
-
-    for (const n of HC) {
-      const short = n.length >= 3 ? n.slice(-2) : null;
-      if (message.includes(n) || (short && message.includes(short))) {
-        if (hasMeetingIntent || message.length <= 6 || /^你是|^你叫/.test(message)) {
-          found = n; break;
-        }
-      }
-    }
-    if (found) {
-      const r = entityMeeting.enter(found, conversationHistory?.length ?? 0);
-      console.log('[server.ts V10.0] enter(' + found + ') => ' + (r ? 'OK' : 'FAILED'));
-    }
-  }
+  // 🔴 P0-4.1: 移除 server.ts 自然语言会晤触发（含人名即 enter → 跨实体污染）。
+  // 会晤切换统一由 chat.ts 的 EntityMeeting.detectUserIntent（精准句式）处理。
   // 退出
   if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
     await entityMeeting.exit(); console.log('[server.ts V10.0] 退出');
@@ -1528,17 +1528,7 @@ async function processChat(message: string, clientMsgId?: string | null, testMod
  * 3. 新链路异常 → 静默回退旧链路，用户无感知
  */
 async function handleUserMessage(message: string, clientMsgId?: string | null, testMode?: boolean): Promise<ChatResponse> {
-  // 🔥 V10.0: 服务器级会晤强制激活
-  if (entityMeeting && !entityMeeting.isActive()) {
-    const HC = familyGraph?.getAllPersonNames?.() || ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
-    for (const n of HC) {
-      if (message.indexOf(n) >= 0 || (n.length >= 3 && message.indexOf(n.slice(-2)) >= 0)) {
-        entityMeeting.enter(n, conversationHistory?.length ?? 0);
-        console.log('[server.ts V10.0 HUM] enter(' + n + ') isActive=' + entityMeeting.isActive());
-        break;
-      }
-    }
-  }
+  // 🔴 P0-4.1: 移除 server.ts 强制会晤激活（含人名即 enter → 跨实体污染），统一走 chat.ts detectUserIntent
   if (entityMeeting && entityMeeting.isActive() && /^(?:瑶瑶|玉瑶|瑶儿|散会|结束|拜拜|再见)\s*$/.test(message.trim())) {
     await entityMeeting.exit(); console.log('[server.ts V10.0 HUM] 退出');
   }
@@ -2125,6 +2115,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         entities: body.entities || [],
         similarity_mode: mode,
         limit,
+        isBackgroundTask: true,  // P0-3: 管理/诊断查询排除 roleplay 记忆
       };
       const results = storage.findByEmotionalSimilarity(query);
 

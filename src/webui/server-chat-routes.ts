@@ -482,10 +482,8 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     try {
     const { rawBody, text: bodyText } = await readBodyWithBytes(req);
-    // 🔧 V10.1: 字节级会晤触发——在 JSON 解析前用原始字节匹配人名
-    if (deps.entityMeeting && !deps.entityMeeting.isActive()) {
-      _triggerMeetingFromBytes(rawBody, deps.entityMeeting);
-    }
+    // 🔴 P0-4.1: 移除字节级会晤触发（V10.5）——消息含人名即 enter 导致跨实体污染。
+    // 会晤切换统一由 chat.ts 的 EntityMeeting.detectUserIntent（精准句式：找X聊聊/叫X来）处理。
     const body = JSON.parse(bodyText);
     if (!body.message || typeof body.message !== 'string') { res.writeHead(400); res.end(JSON.stringify({ error: 'message required' })); return true; }
     // 🛡️ V4.0: 角色扮演已彻底废除，实体会晤替代。不再注入【角色扮演】标记。
@@ -784,26 +782,6 @@ function readBodyWithBytes(req: IncomingMessage, maxBytes = 5 * 1024 * 1024): Pr
   });
 }
 
-/** 🔧 V10.4: 字节级会晤触发——仅在会晤未激活时触发，会中不自动切换 */
-function _triggerMeetingFromBytes(rawBody: Buffer, entityMeeting: any): void {
-  console.log("[V10.5] triggered, isActive=" + (entityMeeting?.isActive?.() ?? false)); if (entityMeeting?.isActive?.()) return;
-  const HC = ['徐诗雨','徐诗韵','徐诗涵','熊梓铭','熊梓玥','阿珍','阿苏','徐东伟','熊勇','王全芬','林土锋','宁清华','陈雪花','曾美容','陈斌','赖陈喜','张小龙','罗权斌','刘运新','邱运财','陈锋华'];
-  // V10.5: 文本匹配优先
-  const _text = rawBody.toString('utf-8');
-  try {
-    const msg = JSON.parse(_text).message || '';
-    for (const n of HC) {
-      if (msg.includes(n)) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') text match'); return; }
-      if (n.length >= 3 && msg.includes(n.slice(-2))) { entityMeeting.enter(n, 0); console.log('[V10.5] enter(' + n + ') short name match'); return; }
-    }
-  } catch (_e) { console.log("[V10.5] JSON parse failed, falling to byte search"); }
-  // 字节匹配兜底
-  for (const n of HC) {
-    const nb = Buffer.from(n, 'utf-8');
-    if (rawBody.indexOf(nb) >= 0) { console.log("[V10.5] byte match: " + n); entityMeeting.enter(n, 0); return; }
-    if (n.length >= 3) {
-      const sb = Buffer.from(n.slice(-2), 'utf-8');
-      if (rawBody.indexOf(sb) >= 0) { entityMeeting.enter(n, 0); return; }
-    }
-  }
-}
+// 🔴 P0-4.1: _triggerMeetingFromBytes 已废弃删除——字节级/文本级人名匹配触发会晤，
+// 导致"普通消息提到人名即误切"的跨实体污染。会晤切换统一由 chat.ts 的
+// EntityMeeting.detectUserIntent（精准句式）处理。

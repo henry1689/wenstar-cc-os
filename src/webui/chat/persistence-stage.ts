@@ -111,30 +111,59 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   // P0-4+P1-2: 统一实体归属解析 — EntityOwnershipResolver 单一入口
   // 🔴 户籍管理法（第五条 会晤写入强制）: 会晤模式 belong_entity_uuid 强制 = 会晤实体 UUID，
   // 禁止 entity_genes 推断覆盖（用户消息提到他人时不应把对话归属他人）。
+  // 🔴 P0-2: belong_entity_uuid 权威 = 当前聊天对象 UUID
+  // 私聊（会晤激活）→ 聊天对象 UUID；群聊 → 当前发言者 UUID（_meetingUUID 随 switchTo 切换）
+  // 非会晤（_meeting=null）→ 玉瑶 UUID（默认私聊对象，category='S' 本体）
+  // resolveOwnership 不再决定 belong，仅输出 mentioned_entity_uuids[]（供 FG 图谱/PAE/M4 分析）
   const _meetingUUID = input.ctx._entityMeeting?.getEntityUUID?.() ?? null;
-  const { resolveOwnership } = await import('../../app/entity/EntityOwnershipResolver.js');
+  const { resolveOwnership, OWNER_UUID } = await import('../../app/entity/EntityOwnershipResolver.js');
   const _fg = input.ctx.m4?.getFamilyGraph?.();
-  let belongUUID: string | null = null;
-  let ownerEntityName: string | null = null;
-  let ownerSrc: string | null = null; // V13: 归属来源（H4 修复——owner_fallback 时仍需触发新实体回填）
-  if (_meetingUUID) {
-    belongUUID = _meetingUUID;  // 会晤强制 = 会晤实体
-    ownerEntityName = input.ctx._entityMeeting?.getEntityName?.() ?? null;
-  } else {
-    // V13: ownerFallback=true — 无法归属时兜底户主玉瑶，消灭新产生的 NULL 归属
-    const _ownerResult = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user', { ownerFallback: true });
-    belongUUID = _ownerResult.uuid;
-    ownerEntityName = _ownerResult.entityName ?? null;
-    ownerSrc = _ownerResult.src;
+  const _yuyaoUUID = _fg?.getUUIDByName?.('玉瑶') ?? null;
+  // 归属 = 聊天对象 UUID（会晤激活/群聊当前发言者）或 玉瑶 UUID（默认私聊）
+  let belongUUID: string | null = _meetingUUID ?? _yuyaoUUID;
+  let asstUUID: string | null = _meetingUUID ?? _yuyaoUUID;
+  let ownerEntityName: string | null = _meetingUUID ? (input.ctx._entityMeeting?.getEntityName?.() ?? null) : '玉瑶';
+  // 强制 belong 非空（杜绝脏数据；world_domain_id 预留接口本次不落地）
+  if (!belongUUID) {
+    console.warn('[Persist] ⚠️ belong_entity_uuid 为空，兜底玉瑶');
+    belongUUID = _yuyaoUUID ?? OWNER_UUID;
+    asstUUID = _yuyaoUUID ?? OWNER_UUID;
+    ownerEntityName = '玉瑶';
   }
-  // assistant 回复也走 resolveOwnership（替代旧 _detectSpeakerUUID）；会晤时强制 = 会晤实体
-  let asstUUID: string | null = null;
-  if (_meetingUUID) {
-    asstUUID = _meetingUUID;
-  } else {
-    // V13: ownerFallback=true — assistant 无法归属时兜底户主玉瑶
-    const _asstResult = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant', { ownerFallback: true });
-    asstUUID = _asstResult.uuid || belongUUID;
+  // 🔴 P0-2: 实体识别结果独立输出 mentioned_entity_uuids[]（不干预 belong，供 FG 图谱/PAE/M4）
+  // 识别来源：消息/回复提到的人（resolveOwnership 分级解析）+ entity_genes person 实体
+  const mentionedEntityUuids: string[] = [];
+  try {
+    const _mentionUser = resolveOwnership(input.message, input.dna.entity_genes, _fg, 'user');
+    const _mentionAsst = resolveOwnership(input.reply, input.dna.entity_genes, _fg, 'assistant');
+    for (const _m of [_mentionUser, _mentionAsst]) {
+      if (_m.uuid && !mentionedEntityUuids.includes(_m.uuid)) mentionedEntityUuids.push(_m.uuid);
+    }
+    for (const _g of input.dna.entity_genes || []) {
+      if (_g.type === 'person' && _g.name && _g.name !== '我' && _g.name !== '玉瑶') {
+        const _u = _fg?.getUUIDByName?.(_g.name);
+        if (_u && !mentionedEntityUuids.includes(_u)) mentionedEntityUuids.push(_u);
+      }
+    }
+  } catch (_e: any) { console.warn('[Persist] mentioned 实体识别失败:', _e?.message); }
+  // P0-4: mentioned_entity_uuids 图谱消费（异步推 FG，不阻塞主流程）
+  // 消息提到的人（非当前聊天对象）→ 建 acquaintance 边，供 FG 图谱/PAE 丰富档案
+  if (mentionedEntityUuids.length > 0) {
+    try {
+      const _fgC = input.ctx.m4?.getFamilyGraph?.();
+      if (_fgC && typeof _fgC.integrateSocialRelation === 'function') {
+        for (const _mu of mentionedEntityUuids) {
+          if (_mu === belongUUID) continue;  // 跳过当前聊天对象（对话已归属）
+          try {
+            const _ent = _fgC.getEntityByUUID?.(_mu);
+            const _name = _ent?.name;
+            if (_name) {
+              _fgC.integrateSocialRelation(_name, 'acquaintance_of', input.message).catch((_e: any) => console.warn('[Persist] 图谱消费失败:', _e?.message));
+            }
+          } catch (_e: any) { console.warn('[Persist] 单实体图谱消费失败:', _e?.message); }
+        }
+      }
+    } catch (_e: any) { console.warn('[Persist] 图谱消费异常:', _e?.message); }
   }
 
   try {
@@ -148,6 +177,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       locationFingerprint: input.dna.location_fingerprint || '',
       isTest: input.ctx.testMode ? 1 : 0,
       belongEntityUuid: belongUUID || undefined,
+      mentionedEntityUuids: mentionedEntityUuids,
     });
     if (_convUserId) _convUserRowId = _convUserId;
     const _convAsstId = input.ctx.conversationDB?.insertConversation('assistant', input.reply, {
@@ -157,6 +187,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       globalUid: input.dna.global_uid || (input.dna as any).dna_root_id,
       locationFingerprint: input.dna.location_fingerprint || '',
       belongEntityUuid: asstUUID || undefined,
+      mentionedEntityUuids: mentionedEntityUuids,
     });
     if (_convAsstId) _convAsstRowId = _convAsstId;
   } catch (e: any) {
@@ -399,8 +430,9 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     }
   } catch { /* 索引写入不阻塞主流程 */ }
 
-  // ── V12.1: 新实体即时UUID回填（H4 修复：ownerFallback 意味着消息含 FG 未收录 person → 触发回填）──
-  if (ownerSrc === 'owner_fallback' && input.dna.entity_genes?.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2)) {
+  // ── V12.1: 新实体即时UUID回填（P0-2: 仅 FG 未收录的新 person 触发回填，保留 PAE 建档能力，避免每次全扫描）──
+  const _paFg = input.ctx.m4?.getFamilyGraph?.();
+  if (_paFg && input.dna.entity_genes?.some((g: any) => g.type === 'person' && g.name !== '我' && g.name.length >= 2 && g.name !== ownerEntityName && !_paFg.getUUIDByName?.(g.name))) {
     try {
       const _fg = input.ctx.m4?.getFamilyGraph?.();
       const _si = input.ctx.storage?.getSQLite?.();

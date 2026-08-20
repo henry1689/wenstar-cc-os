@@ -147,6 +147,8 @@ export interface RetrievalQuery {
   dialogGroupMode?: 'all' | 'first-per-group';
   /** V13: 实体UUID过滤 — 限定检索范围到特定人物（NULL 代表未归属的记忆也返回） */
   entityUuids?: string[];
+  /** P0-3: 后台任务标记 — true 时排除 roleplay 记忆（梦境/金库/分析）；聊天检索 false/缺省 不过滤 */
+  isBackgroundTask?: boolean;
 }
 
 /** 评分后的记忆 */
