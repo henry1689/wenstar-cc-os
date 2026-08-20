@@ -308,23 +308,9 @@ function loadConversationHistory(): void {
         console.log('  从融合库加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
       }
     }
-    // 后备: 从旧的 fusion_memory.db 加载（conversationDB修复前的存量数据）
-    if (storage && storage.getSQLite) {
-      try {
-        const oldRecent = storage.getSQLite().getRecentConversations(30);
-        if (oldRecent.length > 0) {
-          conversationHistory = oldRecent.filter((r: any) => !r.roleplay_char).map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, timestamp: r.timestamp }));
-          console.log('  从fusion_memory.db(旧库)加载了 ' + conversationHistory.length + ' 条对话记忆 ✓');
-          // 尝试迁移到新库
-          if (conversationDB) {
-            for (const conv of oldRecent.reverse()) {
-              try { conversationDB.insertConversation(conv.role, conv.content, { seqPos: 0 }); } catch (e: any) { console.error('[server] error:', e?.message); }
-            }
-            console.log('  已将旧对话迁移到conversations.db');
-          }
-        }
-      } catch (e: any) { console.error('[server] error:', e?.message); }
-    }
+    // 🔴 2026-08-21: 移除"后备迁移"块——它从同一 conversations 表读最近 30 条再 insertConversation(seqPos:0)
+    // 不查重插入副本，每次启动累积（实测 9435 条 seq_pos=0 副本，唯一内容仅 1672 条）。
+    // 主路径 L305 已从 conversationDB 加载 200 条（同源），此块多余且有害，已整体移除。
     if (conversationHistory.length === 0) {
       console.log('  无历史对话记忆');
     }
