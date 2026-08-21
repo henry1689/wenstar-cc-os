@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>文曲星 · 玉瑶 · 太虚境</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌙</text></svg>">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -408,6 +411,15 @@ let busy=false,last=null,refreshTimer=null;
 
 // ── P2-2: 当前聊天对象状态（顶部/聊天标题/placeholder 动态，数据源=后端 chat_state）──
 let _cs=null;
+// 🔴 顶部抬头"玉瑶"永远不变（系统主人/默认人格）——防篡改守卫：
+// 无论 applyChatState 旧版本/loadPersona/任何代码试图修改，立即改回"玉瑶"
+(function(){
+  const _pn=document.getElementById('pname');
+  if(!_pn)return;
+  const _keep=()=>{if(_pn.textContent!=='玉瑶')_pn.textContent='玉瑶'};
+  _keep();
+  new MutationObserver(_keep).observe(_pn,{childList:true,subtree:true,characterData:true});
+})();
 function applyChatState(cs){
   if(!cs||typeof cs!=='object')return;
   _cs=cs;
