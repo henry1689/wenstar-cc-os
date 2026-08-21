@@ -829,7 +829,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
           : (intent.kind === 'addParticipant' || intent.kind === 'switch') && intent.targets.length > 0 ? intent.targets
           : [];
         if (_enterTargets.length > 0) {
-          if (_enterTargets.length >= 3) {
+          // 🔴 P2-2: 会晤边界修复 — 用户确认「会晤=用户+2人及以上实体」。
+          // 原 >=3 才 enterMulti → 2 人（如熊梓铭+徐诗雨）被错判为单人会晤。
+          if (_enterTargets.length >= 2) {
             _em.enterMulti(_enterTargets);
             console.log('[EntityMeeting] 多人会晤启动: ' + _enterTargets.join(', '));
           } else {

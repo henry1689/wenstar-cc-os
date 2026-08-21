@@ -168,7 +168,8 @@ export class EntityMeeting {
         this._meeting = {
           active: true, entityName: entity.name, entityUUID: entity.uuid,
           startedAt: this._meeting.startedAt, turnCount: 0,
-          isMulti: entities.length >= 3,
+          // P2-2: 会晤=用户+2人及以上实体（原 >=3，2 人错判为单人会晤）
+          isMulti: entities.length >= 2,
           meetingStartHistoryIndex: startHistoryIndex || this._meeting.meetingStartHistoryIndex,
         };
         if (this.gatekeeper) {
@@ -231,7 +232,8 @@ export class EntityMeeting {
     this._multiMeetingName = `多人会晤: ${entityNames.join('、')}`;
 
     const primary = entities[0];
-    const isMulti = entities.length >= 3;
+    // P2-2: 会晤=用户+2人及以上实体（原 >=3，2 人错判为单人会晤）
+    const isMulti = entities.length >= 2;
 
     this._meeting = {
       active: true,
