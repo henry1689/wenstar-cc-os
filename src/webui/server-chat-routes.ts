@@ -475,6 +475,25 @@ export interface ChatRouteDeps {
   entityMeeting?: EntityMeeting;  // V10.1: byte-level meeting trigger
 }
 
+/** P2-2: 派生当前聊天对象状态（UI 显示单一事实来源，聊天核心链路零改动）。
+ *  mode: yuyao=玉瑶默认态(_meeting=null) / private=私聊-XX / meeting=会晤(2人+)
+ *  targetName=当前聊天对象昵称；participants=会晤参会人；
+ *  speakerName=本条回复发言者 —— 仅会晤(meeting)返回当前主发言实体，私聊/玉瑶为 null
+ *  （前端据此仅在会晤时前置【发言者】前缀，且退出会晤后历史消息前缀保留）
+ */
+function buildChatState(entityMeeting?: EntityMeeting): { mode: 'yuyao' | 'private' | 'meeting'; targetName: string; participants: string[]; speakerName: string | null } | null {
+  if (!entityMeeting) return null;
+  const active = entityMeeting.isActive();
+  const isMulti = entityMeeting.isMultiParty();
+  const entityName = active ? (entityMeeting.getEntityName() || '玉瑶') : '玉瑶';
+  return {
+    mode: (!active ? 'yuyao' : (isMulti ? 'meeting' : 'private')) as 'yuyao' | 'private' | 'meeting',
+    targetName: entityName,
+    participants: isMulti ? entityMeeting.getParticipants().map(p => p.name) : [],
+    speakerName: isMulti ? entityName : null,
+  };
+}
+
 export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const { processChat, resetPipeline, conversationHistory, conversationDB, storage, familyGraph, m6, maintenance, DATA_DIR, PROJECT_ROOT, PROJECT_DIR } = deps;
 
@@ -558,8 +577,10 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
     // 安全序列化：防止循环引用导致 JSON.stringify 抛异常
     const safeResult = _sanitizeForJSON(result);
     const safeObject = (safeResult && typeof safeResult === 'object' && !Array.isArray(safeResult)) ? safeResult : {};
+    // P2-2: UI 显示 — 附带当前聊天对象状态（chat_state 不进 ChatResponse 核心结构，仅路由层附加）
+    const chat_state = buildChatState(deps.entityMeeting);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ...(safeObject as Record<string, unknown>), audio_url, audio_urls, tts_job }));
+    res.end(JSON.stringify({ ...(safeObject as Record<string, unknown>), chat_state, audio_url, audio_urls, tts_job }));
     } catch (err) {
       console.error('[ChatRoute] /api/chat 异常:', (err as Error)?.message || err);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -724,8 +745,10 @@ export async function handleChatRoutes(deps: ChatRouteDeps, req: IncomingMessage
       const turns = deps.conversationHistory
         .filter((t: any) => t.role === 'user' || t.role === 'assistant')
         .map((t: any) => ({ role: t.role, content: t.content, timestamp: t.timestamp }));
+      // P2-2: 附带当前聊天对象状态（前端打开页面时初始化顶部状态栏）
+      const chat_state = buildChatState(deps.entityMeeting);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ turns }));
+      res.end(JSON.stringify({ turns, chat_state }));
     } catch (err) { res.writeHead(500); res.end(JSON.stringify({ error: (err as Error).message })); }
     return true;
   }
