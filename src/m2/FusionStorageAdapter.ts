@@ -62,8 +62,14 @@ export class FusionStorageAdapter {
   /** 预分配下一个 seq_pos（不写入，由 WorkingMemory 负责实际写入） */
   reserveNextSeq(): number {
     this.ensureReady();
-    this.seqCounter++;
-    return this.seqCounter;
+    // 🔴 P1.5 修复: 每轮对话预分配 2 个 seq（user + assistant）。
+    // 原 seqCounter++ 每轮 +1 → 下一轮 user 的 seq = 上一轮 assistant 的 seqPos+1 →
+    // 与 memories.seq_pos UNIQUE 冲突 → INSERT OR REPLACE 覆盖上一轮 assistant 记忆
+    // （实测会晤/私聊 assistant 回复记忆全部丢失，同 seq 多行数 = 0 印证）。
+    // 改为 +2: user=N+1, asst=N+2, 下轮 user=N+3 —— user/asst seq 全局唯一。
+    const pos = this.seqCounter + 1;
+    this.seqCounter += 2;
+    return pos;
   }
 
   async write(dna: DNA, perception: Perception24D, primaryEmotion?: string, secondaryEmotions?: string[]): Promise<WriteResult> {
