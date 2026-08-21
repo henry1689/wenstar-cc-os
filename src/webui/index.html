@@ -406,6 +406,32 @@ const m5c=M('m5-c'),m5b=M('m5-bdg'),m6c=M('m6-c'),m6b=M('m6-bdg'),m7c=M('m7-c'),
 
 let busy=false,last=null,refreshTimer=null;
 
+// ── P2-2: 当前聊天对象状态（顶部/聊天标题/placeholder 动态，数据源=后端 chat_state）──
+let _cs=null;
+function applyChatState(cs){
+  if(!cs||typeof cs!=='object')return;
+  _cs=cs;
+  const pn=document.getElementById('pname');if(pn)pn.textContent=cs.targetName||'玉瑶';
+  const ps=document.getElementById('psub');if(ps)ps.textContent=(cs.mode==='meeting'&&cs.participants&&cs.participants.length)?'会晤 · '+cs.participants.join('、'):'私聊 · '+(cs.targetName||'玉瑶');
+  const rh=document.querySelector('#right .rh span');if(rh)rh.textContent='💬 '+(cs.targetName||'玉瑶');
+  inp.placeholder='对'+(cs.targetName||'玉瑶')+'说点什么…';
+}
+// P2-2: 流式路径专用 — done 后经 /api/conversation 同步 chat_state（后端 job/status 未附带该字段）
+// 并给当前气泡加会晤发言者前缀（仅 meeting 时 speakerName 非空）
+async function applyChatStateAsync(bubble){
+  try{
+    const rr=await fetch('/api/conversation');
+    const dd=await rr.json();
+    if(dd.chat_state)applyChatState(dd.chat_state);
+    if(bubble&&dd.chat_state&&dd.chat_state.mode==='meeting'&&dd.chat_state.speakerName){
+      const sp=dd.chat_state.speakerName;
+      if(bubble.textContent.indexOf('【'+sp+'】')!==0)bubble.textContent='【'+sp+'】'+bubble.textContent;
+      const ml=bubble.closest('.msg')?.querySelector('.ml');
+      if(ml)ml.textContent=sp;
+    }
+  }catch(e){}
+}
+
 // ── Init ──
 inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,60)+'px'});
 inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
@@ -530,7 +556,9 @@ async function send(){
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t})});
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
-    addMsg('a',d.reply);tc.textContent=d.turn_count+' 轮';
+    // P2-2: 更新顶部状态栏 + 会晤发言者（仅会晤时 speakerName 非空）
+    if(d.chat_state)applyChatState(d.chat_state);
+    addMsg('a',d.reply,d.chat_state&&d.chat_state.mode==='meeting'?d.chat_state.speakerName:null);tc.textContent=d.turn_count+' 轮';
 	    // 融合度评分展示
 	    var _es=d.emotionMatchScore||d.sceneFitScore?'情'+d.emotionMatchScore+'场'+d.sceneFitScore:'';
 	    var _rf=d.riskFlag?'⚠️'+d.riskFlag:'';
@@ -572,6 +600,8 @@ async function sendStream(t){
       done=1;
       const finalTxt=dd.reply||lastTxt||'';
       b.textContent=finalTxt;scrollChat();
+      // P2-2: 流式 done 后同步当前聊天对象状态（顶部/标题/发言者前缀）
+      applyChatStateAsync(b);
       if(dd.result){
         tc.textContent=dd.result.turn_count+' 轮';
         var _es=dd.result.emotionMatchScore||dd.result.sceneFitScore?'情'+dd.result.emotionMatchScore+'场'+dd.result.sceneFitScore:'';
@@ -674,6 +704,8 @@ async function loadConversation(){
     const r=await fetch('/api/conversation');
     if(!r.ok)return;
     const d=await r.json();
+    // P2-2: 打开页面时初始化顶部状态栏（服务端会晤状态）
+    if(d.chat_state)applyChatState(d.chat_state);
     const turns=d.turns||[];
     if(turns.length===0)return;
     // 欢迎语还在时，移除它
@@ -906,14 +938,15 @@ function renderM8(d){
 window.tp=function(id){const el=document.getElementById(id);if(el)el.classList.toggle('cd')};
 
 // ── Chat helpers ──
-function addMsg(role,content){
+function addMsg(role,content,speaker){
   const wc=chat.querySelector('.wc');if(wc)wc.remove();
   const ty=document.getElementById('_ty');if(ty)ty.remove();
   const d=document.createElement('div');d.className='msg '+role;
   const i=document.createElement('div');i.style.cssText='display:flex;flex-direction:column';
-  const l=document.createElement('div');l.className='ml';l.textContent=role==='u'?'鸿艺':getPersonaLabel();
+  // P2-2: 会晤时 assistant 消息标签与内容前置【发言者】（speaker 仅 meeting 时非空）
+  const l=document.createElement('div');l.className='ml';l.textContent=role==='u'?'鸿艺':(speaker||getPersonaLabel());
   i.appendChild(l);
-  const b=document.createElement('div');b.className='bb';b.textContent=content;
+  const b=document.createElement('div');b.className='bb';b.textContent=speaker?'【'+speaker+'】'+content:content;
   i.appendChild(b);d.appendChild(i);chat.appendChild(d);
   requestAnimationFrame(()=>chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'}));
 }
