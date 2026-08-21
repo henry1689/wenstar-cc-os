@@ -411,9 +411,8 @@ let _cs=null;
 function applyChatState(cs){
   if(!cs||typeof cs!=='object')return;
   _cs=cs;
-  const pn=document.getElementById('pname');if(pn)pn.textContent=cs.targetName||'玉瑶';
-  const ps=document.getElementById('psub');if(ps)ps.textContent=(cs.mode==='meeting'&&cs.participants&&cs.participants.length)?'会晤 · '+cs.participants.join('、'):'私聊 · '+(cs.targetName||'玉瑶');
-  const rh=document.querySelector('#right .rh span');if(rh)rh.textContent='💬 '+(cs.targetName||'玉瑶');
+  // 🔴 顶部抬头保持"玉瑶"不变（系统主人/默认人格）；只更新对话区显示"和谁聊就显示谁"
+  const rh=document.querySelector('#right .rh span');if(rh)rh.textContent='💬 '+(cs.mode==='meeting'&&cs.participants&&cs.participants.length?'会晤 · '+cs.participants.join('、'):(cs.targetName||'玉瑶'));
   inp.placeholder='对'+(cs.targetName||'玉瑶')+'说点什么…';
 }
 // P2-2: 流式路径专用 — done 后经 /api/conversation 同步 chat_state（后端 job/status 未附带该字段）
@@ -943,8 +942,9 @@ function addMsg(role,content,speaker){
   const ty=document.getElementById('_ty');if(ty)ty.remove();
   const d=document.createElement('div');d.className='msg '+role;
   const i=document.createElement('div');i.style.cssText='display:flex;flex-direction:column';
-  // P2-2: 会晤时 assistant 消息标签与内容前置【发言者】（speaker 仅 meeting 时非空）
-  const l=document.createElement('div');l.className='ml';l.textContent=role==='u'?'鸿艺':(speaker||getPersonaLabel());
+  // P2-2: 标签=和谁聊显示谁（会晤=发言者 / 私聊=聊天对象 / 玉瑶态保留 persona 身份）
+  const _label=role==='u'?'鸿艺':(speaker||(_cs&&_cs.mode!=='yuyao'?_cs.targetName:getPersonaLabel()));
+  const l=document.createElement('div');l.className='ml';l.textContent=_label;
   i.appendChild(l);
   const b=document.createElement('div');b.className='bb';b.textContent=speaker?'【'+speaker+'】'+content:content;
   i.appendChild(b);d.appendChild(i);chat.appendChild(d);
