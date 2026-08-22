@@ -463,15 +463,18 @@ export class EntityMeeting {
    * - wake: detectUserIntent 命中（找XX聊聊/开个会/@XX）→ 仅私聊-玉瑶态允许 enter
    * - normal: 普通消息
    */
-  static detectIntent(message: string, knownPersonNames: string[]): MessageIntent {
+  static detectIntent(message: string, knownPersonNames: string[], inMeeting: boolean = false): MessageIntent {
     const msg = message.trim();
 
     // 1. 结束语（exit）— 不依赖人名。覆盖"结束吧/不聊了/先这样吧"等口语结束语。
     //    🔴 排除疑问句（"结束了吗/散会了没"不算退出，避免会晤中疑问误终止）。
     const _exit1 = /^(?:散会|不聊了|不开了|今天就到这儿|今天就到这里|先这样|下了|拜拜|再见)\s*(?:吧|了|啦|~|～|!|！)?\s*$/.test(msg)
       || /^结束\s*(?:了|吧|啦)?\s*(?:会议|对话|会晤|话题|我们|聊天)?\s*(?:吧|了|啦|~|～|!|！)?\s*$/.test(msg);
+    // 🔴 P2-2: 句尾结束词扩展——"就聊到这，下次再聊""先这样吧""回聊"等自然句尾也算结束
+    //   天然排除疑问句（词后可选字符不含"吗/么/？"）
+    const _exitTail = /(?:聊到这儿|聊到这|就到这儿|就到这|先这样|不聊了|下了|拜拜|再见|下次再聊|改天聊|回聊|回头聊|下次聊|回头再聊)\s*(?:吧|了|啦|~|～|!|！)?\s*$/.test(msg);
     if (
-      _exit1
+      _exit1 || _exitTail
       || /^(?:切回|回到|换回|变回)\s*(?:玉瑶|瑶瑶|瑶儿)\s*$/.test(msg)
       || /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(msg)
     ) {
@@ -499,7 +502,9 @@ export class EntityMeeting {
     }
 
     // 4. 唤醒/开会（wake）
-    const wake = EntityMeeting.detectUserIntent(msg, sorted);
+    // 🔴 P2-2: 会晤中(inMeeting)用严格模式——只认明确切换句式，跳过确认/寒暄/兜底
+    //   （"全芬你还是那么丰满"→normal，不再误判为唤醒王全芬触发门卫拒绝）
+    const wake = EntityMeeting.detectUserIntent(msg, sorted, inMeeting);
     if (wake && wake.length > 0) {
       return { kind: 'wake', targets: wake };
     }
@@ -507,8 +512,10 @@ export class EntityMeeting {
     return { kind: 'normal', targets: [] };
   }
 
-  static detectUserIntent(message: string, knownPersonNames: string[]): string[] | null {
+  static detectUserIntent(message: string, knownPersonNames: string[], inMeeting: boolean = false): string[] | null {
     if (!message || knownPersonNames.length === 0) return null;
+    // P2-2: 会晤中严格模式——确认/寒暄类（你是X吗/XX在吗/消息含名字且短）不算切换意图
+    const _strict = inMeeting === true;
 
     // 🆕 V10.0 P1-5 补充: 所有路径排除高频泛称词
     const sorted = [...knownPersonNames]
@@ -580,15 +587,17 @@ export class EntityMeeting {
     }
 
     // name：格式（如 "徐诗雨：" "阿珍，"）
+    // 🔴 P2-2: 会晤中跳过——"徐诗雨：" 可能是对当前对象的对话称呼，非切换意图
     const prefixMatch = msg.match(/^([一-龥]{2,8})[：:，,]/);
-    if (prefixMatch) {
+    if (!_strict && prefixMatch) {
       const name = EntityMeeting._fuzzyFindName(prefixMatch[1], sorted);
       if (name) return [name];
     }
 
     // 🆕 V9.0: 纯名字（无标点）—— "诗雨" / "梓铭" 单独一句话
+    // 🔴 P2-2: 会晤中跳过——"熊勇不在家真好"是 2-8 字纯汉字，会被误当名字并模糊匹配
     const bareMatch = msg.match(/^([一-龥]{2,8})\s*$/);
-    if (bareMatch) {
+    if (!_strict && bareMatch) {
       const name = EntityMeeting._fuzzyFindName(bareMatch[1], sorted);
       if (name) return [name];
     }
@@ -653,9 +662,10 @@ export class EntityMeeting {
         return [name];
       }
       // 🆕 V10.0: 身份确认 — "你是XX吗"/"你叫XX"等（直接用 includes 避免正则编码问题）
+      // 🔴 P2-2: 会晤中严格模式跳过——"全芬你还是那么丰满"是对话不是切换意图
       const _short = nt.short || '';
       const _isIdCheck = /(?:你是|你叫|你就是|你是叫)/.test(msg);
-      if (_isIdCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
+      if (!_strict && _isIdCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
         if (msg.length <= name.length + 8) {
           console.log(`[EntityMeeting ID] 身份确认匹配: "${msg}" → name="${name}" short="${_short}"`);
           return [name];
@@ -663,11 +673,12 @@ export class EntityMeeting {
       }
       // 🆕 V10.0: "XX在吗"
       const _isHereCheck = /(?:在吗|在不|在不在)/.test(msg);
-      if (_isHereCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
+      if (!_strict && _isHereCheck && (msg.includes(name) || (_short && msg.includes(_short)))) {
         if (msg.length <= name.length + 6) return [name];
       }
       // 最宽泛兜底：消息中包含XX且结尾有"聊聊/谈谈/说说话/聊一下"
-      if (new RegExp(`${name}.*(?:聊聊|谈谈|说说话|聊一下|说几句)\\s*$`).test(msg)) {
+      // 🔴 P2-2: 会晤中跳过（"我们聊聊"可能是对当前对象的对话，非切换）
+      if (!_strict && new RegExp(`${name}.*(?:聊聊|谈谈|说说话|聊一下|说几句)\\s*$`).test(msg)) {
         return [name];
       }
       // 简短直接: "找XX" / "叫XX" / "让XX来" 句尾
@@ -677,10 +688,11 @@ export class EntityMeeting {
     }
 
     // 🆕 V10.0 P1-5: 终极兜底（泛称词已在 sorted 中排除）
+    // 🔴 P2-2: 会晤中跳过——"全芬你还是那么丰满"含短名"全芬"且消息短 → 误判为唤醒
     for (const name of sorted) {
-      if (msg.includes(name) && msg.length <= name.length + 5) return [name];
+      if (!_strict && msg.includes(name) && msg.length <= name.length + 5) return [name];
       // 🆕 V10.0 修复: 消息含短名且消息≤10字也触发（之前≤4字太严，漏掉"你是诗雨吗"等6字消息）
-      if (msg.length <= 10 && msg.length >= 2 && msg.length < name.length && name.includes(msg)) return [name];
+      if (!_strict && msg.length <= 10 && msg.length >= 2 && msg.length < name.length && name.includes(msg)) return [name];
     }
 
     return null;
