@@ -52,6 +52,84 @@ export class EntityContextStore {
     }
   }
 
+  /** 🔴 记忆召回彻底解决: 分段查询实体对话历史（近期全量 + 早期/中期采样）。
+   *  原 queryEntityContext(limit=10) 只取最近 10 条 → 长对话早期记忆 LLM 无感知。
+   *  改为近期 recent 条全量 + 最早 early 条 + 中部 mid 条采样，保证时间轴覆盖。 */
+  queryEntityContextSegmented(
+    uuid: string,
+    opts: { recent: number; early: number; mid: number } = { recent: 30, early: 10, mid: 5 },
+  ): ConversationTurn[] {
+    try {
+      const { recent, early, mid } = opts;
+      const totalRow = this._sqlite.queryAll(
+        `SELECT COUNT(*) AS c FROM conversations WHERE belong_entity_uuid = ? AND is_compacted = 0`,
+        [uuid],
+      ) as any;
+      const total = Number(totalRow?.[0]?.c ?? 0);
+      if (total <= recent) return this.queryEntityContext(uuid, Math.max(total, recent));
+
+      const recentRows = this._sqlite.queryAll(
+        `SELECT role, content, timestamp FROM conversations
+         WHERE belong_entity_uuid = ? AND is_compacted = 0
+         ORDER BY timestamp DESC LIMIT ?`,
+        [uuid, recent],
+      ) || [];
+      const earlyRows = this._sqlite.queryAll(
+        `SELECT role, content, timestamp FROM conversations
+         WHERE belong_entity_uuid = ? AND is_compacted = 0
+         ORDER BY timestamp ASC LIMIT ?`,
+        [uuid, early],
+      ) || [];
+      const _midSpan = Math.max(1, total - recent - early);
+      const _midTake = Math.min(mid, _midSpan);
+      const _midOffset = early + Math.floor((_midSpan - _midTake) / 2);
+      const midRows = this._sqlite.queryAll(
+        `SELECT role, content, timestamp FROM conversations
+         WHERE belong_entity_uuid = ? AND is_compacted = 0
+         ORDER BY timestamp ASC LIMIT ? OFFSET ?`,
+        [uuid, _midTake, _midOffset],
+      ) || [];
+
+      // 合并去重（时间正序：早期 + 中期 + 近期）
+      const seen = new Set<string>();
+      const merged: ConversationTurn[] = [];
+      const add = (r: any) => {
+        const key = (r.role || '') + (r.content || '').substring(0, 24) + (r.timestamp || '');
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push({ role: r.role as 'user' | 'assistant', content: r.content as string, timestamp: r.timestamp as string });
+      };
+      earlyRows.forEach(add);
+      midRows.forEach(add);
+      recentRows.slice().reverse().forEach(add);
+      return merged;
+    } catch (e: any) {
+      console.warn('[EntityStore] queryEntityContextSegmented 失败:', e?.message);
+      return this.queryEntityContext(uuid, opts.recent);
+    }
+  }
+
+  /** 🔴 记忆召回彻底解决: 按内容关键词检索实体历史对话（用户问具体事时 LIKE 精准召回） */
+  searchEntityContext(uuid: string, keyword: string, limit = 3): ConversationTurn[] {
+    try {
+      const rows = this._sqlite.queryAll(
+        `SELECT role, content, timestamp FROM conversations
+         WHERE belong_entity_uuid = ? AND is_compacted = 0 AND content LIKE ?
+         ORDER BY timestamp DESC LIMIT ?`,
+        [uuid, `%${keyword}%`, limit],
+      );
+      if (!rows?.length) return [];
+      return rows.reverse().map((r: any) => ({
+        role: r.role as 'user' | 'assistant',
+        content: r.content as string,
+        timestamp: r.timestamp as string,
+      }));
+    } catch (e: any) {
+      console.warn('[EntityStore] searchEntityContext 失败:', e?.message);
+      return [];
+    }
+  }
+
   /** 启动时为所有 FG 实体重建上下文（并行） */
   async rebuildAllContexts(
     entityUuids: Array<{ name: string; uuid: string }>,

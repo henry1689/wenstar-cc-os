@@ -111,23 +111,35 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
       if (_entityUuid && _sqlite && typeof _sqlite.queryAll === 'function') {
         // 🔴 P1-3: 会晤记忆检索排序 — 废弃单一 ORDER BY calcium_score DESC（把近期低钙化记忆挤出 TOP20，
         // 实测"树林记忆 0.56 排第21+ 检索不到"即此根因）。改为**近期+历史双槽位**：
-        //   近期槽（当日 <1天，最多14格）：保底命中当天对话记忆（"回头就忘"直接修复）；
-        //   历史槽（>=1天，按钙化补足20，至少6格）：保留重要历史地标（钙化 10/9.99 不被整体挤出，
-        //   避免时间主导导致的"历史高钙饥饿"）。金库/砂金库(L170/L181)继续补充历史重要记忆。
+        //   近期槽（当日 <1天）：保底命中当天对话记忆（"回头就忘"直接修复）；
+        //   历史槽（>=1天）：保留重要历史地标（钙化 10/9.99 不被整体挤出，避免时间主导的历史高钙饥饿）。
+        // 🔴 记忆召回彻底解决(2026-08-21): 双槽位只按钙化排序 → 早期低钙化记忆（王全芬679条中85%钙化1）
+        //   永久取不到。改**三槽位时间覆盖**: 近期钙化8 + 最早6(时间轴兜底,保证早期记忆有代表) + 历史钙化6。
         const _recentRows = _sqlite.queryAll(
           `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
            WHERE belong_entity_uuid = ? AND julianday('now') - julianday(created_at) < 1
-           ORDER BY calcium_score DESC LIMIT 14`,
+           ORDER BY calcium_score DESC LIMIT 8`,
           [_entityUuid]
         ) || [];
-        const _histSlot = Math.max(6, 20 - _recentRows.length);
+        const _earlyRows = _sqlite.queryAll(
+          `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
+           WHERE belong_entity_uuid = ?
+           ORDER BY seq_pos ASC LIMIT 6`,
+          [_entityUuid]
+        ) || [];
         const _histRows = _sqlite.queryAll(
           `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
            WHERE belong_entity_uuid = ? AND julianday('now') - julianday(created_at) >= 1
-           ORDER BY calcium_score DESC LIMIT ${_histSlot}`,
+           ORDER BY calcium_score DESC LIMIT 6`,
           [_entityUuid]
         ) || [];
-        const _entityMems = [..._recentRows, ..._histRows];
+        // 三槽位合并去重
+        const _seenMId = new Set<string>();
+        const _entityMems = [..._recentRows, ..._earlyRows, ..._histRows].filter((_m: any) => {
+          if (_seenMId.has(_m.id)) return false;
+          _seenMId.add(_m.id);
+          return true;
+        });
         // 🔴 S2-J1b: 过滤编造特征记忆 — LLM 单方面输出的"过去经历"类内容(海边/比基尼/营销总监/来月经等)
         // 被当真实记忆检索注入 → 巩固谎言。命中特征词的记忆不注入。
         const FABRICATION_PATTERNS = /海边|比基尼|营销总监|全职太太|来月经|身体开始变|刻骨铭心|从零到一|泳衣|穿拖鞋/;
@@ -162,7 +174,8 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
           } catch (_p40e) { /* 40D 重排失败 → 保持钙化序 */ }
         }
         // 🔴 S2-O2: 记忆条数 5→8，颗粒度更精细（用户问过去时覆盖更多关键记忆，回复更完整真实）
-        for (const _em of _rankedMems.slice(0, 8)) {
+        // 🔴 记忆召回彻底解决: 8→15（配合三槽位时间覆盖，早期记忆也可注入）
+        for (const _em of _rankedMems.slice(0, 15)) {
           // 🔴 P0-3 修复: 会晤记忆截断 100 → 250（避免关键记忆细节丢失导致 LLM 编造）
           const _t = (_em.raw_input || '').substring(0, 250);
           if (_t.length > 4) memoryFragments.push('【' + _meetingEntityName + '的记忆】' + _t);
@@ -194,6 +207,28 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             const _tag = _sr.calcium_level >= 3 ? '💎' : '📌';
             memoryFragments.push('【' + _tag + '重要记忆】' + _t);
           }
+        }
+        // 🔴 记忆召回彻底解决: 内容匹配召回 — 用户问具体过去的事（记得/聊过/上次）时，
+        // 按关键词 LIKE 检索该实体历史对话，精准找回早期特定记忆（时间覆盖兜底不了"问特定内容"）
+        if (/(?:记得|聊过|说过|之前|以前|上次|那件事|那次|回忆|是不是|上次说|聊起)/.test(message)) {
+          try {
+            const { EntityContextStore: _ECS2 } = await import('../../app/entity/EntityContextStore.js');
+            const _store2 = new _ECS2(_sqlite);
+            const _exclNames = new Set<string>([_meetingEntityName, '玉瑶', ...((_fg?.getAllPersonNames?.()) || [])]);
+            const _STOP_KW = new Set(['我们', '你们', '那个', '这个', '什么', '怎么', '今天', '明天', '昨天', '时候', '还是', '一起', '但是', '因为', '如果', '不是', '就是', '记得', '聊过', '说过', '以前', '之前', '上次', '那件', '那次', '回忆', '自己', '咱们', '大家', '真的', '一直', '是不是', '没有', '知道', '你说', '我问']);
+            const _kwCandidates = (message.match(/[一-龥]{2,4}/g) || [])
+              .filter((s: string) => s.length >= 2 && !_exclNames.has(s) && !_STOP_KW.has(s) && !/^(?:那|这|我|你|他|她)[一-龥]{1,2}$/.test(s));
+            const _kwList = [...new Set(_kwCandidates)].slice(0, 2);
+            for (const _kw of _kwList) {
+              const _hits = _store2.searchEntityContext(_entityUuid, _kw, 2);
+              for (const _ht of _hits) {
+                const _cbody = (_ht.content || '').substring(0, 250);
+                if (_cbody.length > 4 && !memoryFragments.some((f: string) => f.includes(_cbody.substring(0, 20)))) {
+                  memoryFragments.push('【对话·' + _meetingEntityName + '】' + _cbody);
+                }
+              }
+            }
+          } catch (_kwErr) { /* 内容匹配失败不阻塞 */ }
         }
         // 🔴 V10.14 隐私隔离: 过滤会晤实体记忆中的他人私密内容
         // 世界规则：每个人的聊天记录通过 UUID 绝对隔离，绝不互通。
