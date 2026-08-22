@@ -215,10 +215,18 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
             const { EntityContextStore: _ECS2 } = await import('../../app/entity/EntityContextStore.js');
             const _store2 = new _ECS2(_sqlite);
             const _exclNames = new Set<string>([_meetingEntityName, '玉瑶', ...((_fg?.getAllPersonNames?.()) || [])]);
-            const _STOP_KW = new Set(['我们', '你们', '那个', '这个', '什么', '怎么', '今天', '明天', '昨天', '时候', '还是', '一起', '但是', '因为', '如果', '不是', '就是', '记得', '聊过', '说过', '以前', '之前', '上次', '那件', '那次', '回忆', '自己', '咱们', '大家', '真的', '一直', '是不是', '没有', '知道', '你说', '我问']);
-            const _kwCandidates = (message.match(/[一-龥]{2,4}/g) || [])
-              .filter((s: string) => s.length >= 2 && !_exclNames.has(s) && !_STOP_KW.has(s) && !/^(?:那|这|我|你|他|她)[一-龥]{1,2}$/.test(s));
-            const _kwList = [...new Set(_kwCandidates)].slice(0, 2);
+            const _STOP_KW = new Set(['我们', '你们', '他们', '那个', '这个', '什么', '怎么', '今天', '明天', '昨天', '时候', '还是', '一起', '但是', '因为', '如果', '不是', '就是', '记得', '聊过', '说过', '以前', '之前', '上次', '那件', '那次', '回忆', '自己', '咱们', '大家', '真的', '一直', '是不是', '没有', '知道', '你说', '我问', '们是', '是不', '是聊', '过树', '林具', '体怎', '么回', '回事', '具体', '还有', '然后', '后来', '那些', '别的', '其他', '我们是', '们是不', '是聊过', '聊过树', '过树林', '树林具', '林具体', '具体怎', '体怎么', '怎么回', '我们这']);
+            // 关键词提取改进: 2字+3字滑动窗口（原 [一-龥]{2,4} 贪婪切块会把"树林"切成"林具体怎"导致 LIKE 检索失效）
+            const _kwCandidates: string[] = [];
+            for (let _wi = 0; _wi + 2 <= message.length; _wi++) {
+              const _s2 = message.slice(_wi, _wi + 2);
+              if (/^[一-龥]{2}$/.test(_s2) && !_STOP_KW.has(_s2) && !_exclNames.has(_s2)) _kwCandidates.push(_s2);
+              if (_wi + 3 <= message.length) {
+                const _s3 = message.slice(_wi, _wi + 3);
+                if (/^[一-龥]{3}$/.test(_s3) && !_STOP_KW.has(_s3) && !_exclNames.has(_s3)) _kwCandidates.push(_s3);
+              }
+            }
+            const _kwList = [...new Set(_kwCandidates)].slice(0, 4);
             for (const _kw of _kwList) {
               const _hits = _store2.searchEntityContext(_entityUuid, _kw, 2);
               for (const _ht of _hits) {
