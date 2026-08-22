@@ -930,7 +930,11 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
               const _store = new _ECS(ctx.storage.getSQLite());
               // 🔴 记忆召回彻底解决: 原 queryEntityContext(10) 只取最近 10 轮 → 长对话早期记忆无感知。
               // 改分段采样（近期30全量 + 最早10 + 中部5），保证时间轴覆盖。
-              const _turns = _store.queryEntityContextSegmented(_muuid, { recent: 30, early: 10, mid: 5 });
+              // 🔴 记忆召回策略: 常规近期 30 轮全量（聚焦当前话题）；回忆问句时才分段采样（+早期/中部）
+              const _recallQ = /(?:记得|聊过|说过|之前|以前|上次|那件事|那次|回忆|是不是|上次说|聊起|什么内容|最早|第一次|当初|刚认识)/.test(message);
+              const _turns = _recallQ
+                ? _store.queryEntityContextSegmented(_muuid, { recent: 30, early: 10, mid: 5 })
+                : _store.queryEntityContext(_muuid, 30);
               if (_turns && _turns.length > 0) {
                 recentConversations = _turns.map((t: any) => ({
                   role: t.role || 'user',
