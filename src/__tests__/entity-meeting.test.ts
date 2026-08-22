@@ -200,4 +200,30 @@ describe('EntityMeeting.detectIntent — P1-1 意图分类门卫', () => {
   it('addParticipant: 叫张小龙来（无会晤态唤醒路径）', () => {
     expect(EntityMeeting.detectIntent('叫张小龙来', NAMES)).toEqual({ kind: 'addParticipant', targets: ['张小龙'] });
   });
+  // ── P2-2 新增：句尾结束词（问题3）──
+  it('exit: 句尾结束词「就聊到这吧」', () => {
+    expect(EntityMeeting.detectIntent('就聊到这吧', NAMES).kind).toBe('exit');
+  });
+  it('exit: 句尾结束词「下次再聊，拜拜」', () => {
+    expect(EntityMeeting.detectIntent('下次再聊，拜拜', NAMES).kind).toBe('exit');
+  });
+  it('exit: 句尾结束词「今天先这样了」', () => {
+    expect(EntityMeeting.detectIntent('今天先这样了', NAMES).kind).toBe('exit');
+  });
+  it('normal: 句尾含"再聊"但非结束（下次再聊那个问题）', () => {
+    expect(EntityMeeting.detectIntent('下次再聊那个问题', NAMES).kind).toBe('normal');
+  });
+  // ── P2-2 新增：会晤中提名字不触发唤醒（问题2）──
+  it('会晤中 normal: 提名字「熊梓铭不在家真好」', () => {
+    expect(EntityMeeting.detectIntent('熊梓铭不在家真好', NAMES, true).kind).toBe('normal');
+  });
+  it('会晤中 normal: 对当前对象说话「徐诗雨你还是那么丰满」', () => {
+    expect(EntityMeeting.detectIntent('徐诗雨你还是那么丰满', NAMES, true).kind).toBe('normal');
+  });
+  it('会晤中 wake 仍识别: 找熊梓铭聊聊（明确切换）', () => {
+    expect(EntityMeeting.detectIntent('找熊梓铭聊聊', NAMES, true)).toEqual({ kind: 'wake', targets: ['熊梓铭'] });
+  });
+  it('玉瑶态 wake 不变: 熊梓铭不在家真好', () => {
+    expect(EntityMeeting.detectIntent('熊梓铭不在家真好', NAMES, false).kind).toBe('wake');
+  });
 });
