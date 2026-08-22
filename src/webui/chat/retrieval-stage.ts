@@ -113,18 +113,13 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         // 实测"树林记忆 0.56 排第21+ 检索不到"即此根因）。改为**近期+历史双槽位**：
         //   近期槽（当日 <1天）：保底命中当天对话记忆（"回头就忘"直接修复）；
         //   历史槽（>=1天）：保留重要历史地标（钙化 10/9.99 不被整体挤出，避免时间主导的历史高钙饥饿）。
-        // 🔴 记忆召回彻底解决(2026-08-21): 双槽位只按钙化排序 → 早期低钙化记忆（王全芬679条中85%钙化1）
-        //   永久取不到。改**三槽位时间覆盖**: 近期钙化8 + 最早6(时间轴兜底,保证早期记忆有代表) + 历史钙化6。
+        // 🔴 记忆召回策略(2026-08-21): 三槽位时间覆盖导致早期无关记忆**默认注入**，冲散当前话题（用户反馈"一会东一会西"）。
+        // 调整为**早期按需触发**: 常规只注入近期钙化8 + 历史地标6（聚焦当前话题）；
+        //   用户明确问过去的事（回忆问句）时才追加最早6条（时间轴兜底，早期记忆仍可召回）。
         const _recentRows = _sqlite.queryAll(
           `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
            WHERE belong_entity_uuid = ? AND julianday('now') - julianday(created_at) < 1
            ORDER BY calcium_score DESC LIMIT 8`,
-          [_entityUuid]
-        ) || [];
-        const _earlyRows = _sqlite.queryAll(
-          `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
-           WHERE belong_entity_uuid = ?
-           ORDER BY seq_pos ASC LIMIT 6`,
           [_entityUuid]
         ) || [];
         const _histRows = _sqlite.queryAll(
@@ -133,9 +128,21 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
            ORDER BY calcium_score DESC LIMIT 6`,
           [_entityUuid]
         ) || [];
-        // 三槽位合并去重
+        const _isRecallQuestion = /(?:记得|聊过|说过|之前|以前|上次|那件事|那次|回忆|是不是|上次说|聊起|什么内容|最早|第一次|当初|刚认识)/.test(message);
+        let _entityMems = [..._recentRows, ..._histRows];
+        if (_isRecallQuestion) {
+          // 回忆问句: 追加最早 6 条（时间轴兜底，早期低钙化记忆此时才可被召回）
+          const _earlyRows = _sqlite.queryAll(
+            `SELECT id, raw_input, calcium_score, effective_strength, perception_40d FROM memories
+             WHERE belong_entity_uuid = ?
+             ORDER BY seq_pos ASC LIMIT 6`,
+            [_entityUuid]
+          ) || [];
+          _entityMems = [..._entityMems, ..._earlyRows];
+        }
+        // 去重
         const _seenMId = new Set<string>();
-        const _entityMems = [..._recentRows, ..._earlyRows, ..._histRows].filter((_m: any) => {
+        _entityMems = _entityMems.filter((_m: any) => {
           if (_seenMId.has(_m.id)) return false;
           _seenMId.add(_m.id);
           return true;
@@ -210,7 +217,7 @@ export async function runRetrieval(input: RetrievalInput): Promise<RetrievalOutp
         }
         // 🔴 记忆召回彻底解决: 内容匹配召回 — 用户问具体过去的事（记得/聊过/上次）时，
         // 按关键词 LIKE 检索该实体历史对话，精准找回早期特定记忆（时间覆盖兜底不了"问特定内容"）
-        if (/(?:记得|聊过|说过|之前|以前|上次|那件事|那次|回忆|是不是|上次说|聊起)/.test(message)) {
+        if (_isRecallQuestion) {
           try {
             const { EntityContextStore: _ECS2 } = await import('../../app/entity/EntityContextStore.js');
             const _store2 = new _ECS2(_sqlite);
