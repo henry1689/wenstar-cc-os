@@ -928,7 +928,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
             if (_muuid && ctx.storage?.getSQLite) {
               const { EntityContextStore: _ECS } = await import('../app/entity/EntityContextStore.js');
               const _store = new _ECS(ctx.storage.getSQLite());
-              const _turns = _store.queryEntityContext(_muuid, 10);
+              // 🔴 记忆召回彻底解决: 原 queryEntityContext(10) 只取最近 10 轮 → 长对话早期记忆无感知。
+              // 改分段采样（近期30全量 + 最早10 + 中部5），保证时间轴覆盖。
+              const _turns = _store.queryEntityContextSegmented(_muuid, { recent: 30, early: 10, mid: 5 });
               if (_turns && _turns.length > 0) {
                 recentConversations = _turns.map((t: any) => ({
                   role: t.role || 'user',
