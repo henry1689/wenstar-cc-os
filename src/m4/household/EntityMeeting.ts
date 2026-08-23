@@ -484,7 +484,7 @@ export class EntityMeeting {
     if (!knownPersonNames || knownPersonNames.length === 0) return { kind: 'normal', targets: [] };
 
     const sorted = [...knownPersonNames]
-      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n))
+      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n) && n !== '玉瑶')  // 🔴 玉瑶=默认本体，不可作唤醒候选（"玉瑶，你现在在哪"→normal，防前缀"玉瑶，"误判 wake 答非所问）
       .sort((a, b) => b.length - a.length);
 
     // 2. 群聊加人（addParticipant）: "叫XX也来/参加/加入/进来"
@@ -519,7 +519,7 @@ export class EntityMeeting {
 
     // 🆕 V10.0 P1-5 补充: 所有路径排除高频泛称词
     const sorted = [...knownPersonNames]
-      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n))
+      .filter(n => !EntityMeeting.GENERIC_NAMES.has(n) && n !== '玉瑶')  // 🔴 玉瑶=默认本体，不可作唤醒候选（"玉瑶，你现在在哪"→normal，防前缀"玉瑶，"误判 wake 答非所问）
       .sort((a, b) => b.length - a.length);
     const msg = message.trim();
 
