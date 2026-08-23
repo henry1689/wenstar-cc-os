@@ -2141,7 +2141,9 @@ if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityNa
 
 // 🧠 2026-08-24 瑶光物理客观规律: 读场景锚点 → wf_physical_laws → 一致性约束注入。
 // 仅在关键场景触发（浴室/床/裸露/亲密动作），普通聊天零开销；静默失败不影响主流程。
-if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityName) {
+// 🔴 2026-08-24 会晤扩展: 不再排除 _meetingEntityName——物理规律基于「本轮消息+历史」推断场景，
+// 会晤模式（如熊梓铭在浴室）同样适用裸身客观规律。仅排除转场轮/门卫拒绝轮。
+if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny) {
   try {
     // 🔴 2026-08-24 触发改进: 用「本轮消息 + 最近历史」实时推断场景（不依赖上一轮锚点），
     // 保证"去浴室冲凉吧"这一轮就注入——否则玉瑶首轮自由发挥建立错误叙述（如穿着短衫）后难以纠正。
