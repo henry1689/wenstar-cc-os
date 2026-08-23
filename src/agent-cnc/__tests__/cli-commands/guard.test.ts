@@ -71,7 +71,7 @@ describe('cmdGuard', () => {
       { id: 'fg-meter', title: 'FamilyGraph 完整性检查', severity: 'S', status: 'pass', score: 100, evidence: [], warnings: [], failures: [] },
       { id: 'behavior-meter', title: '行为回归检查', severity: 'A', status: 'pass', score: 100, evidence: [], warnings: [], failures: [] },
     ];
-    const args = parseArgs(['guard', '--files', 'src/m2/SQLiteAdapter.ts,src/m5/RoleplayPromptBuilder.ts', '--no-test']);
+    const args = parseArgs(['guard', '--files', 'src/m2/SQLiteAdapter.ts,src/app/role/RoleClassifier.ts', '--no-test']);
 
     await expect(cmdGuard(args, rt)).resolves.not.toThrow();
 
@@ -248,7 +248,7 @@ describe('cmdGuard — Meter 注入', () => {
       meterPass('fg-meter', 'FG 完整性检查', 'S'),
       meterPass('behavior-meter', '行为回归检查', 'A'),
     ];
-    const args = parseArgs(['guard', '--files', 'src/m5/RoleplayPromptBuilder.ts', '--no-test']);
+    const args = parseArgs(['guard', '--files', 'src/app/role/RoleClassifier.ts', '--no-test']);
 
     await expect(cmdGuard(args, rt)).resolves.not.toThrow();
 
@@ -282,7 +282,7 @@ describe('cmdGuard — Meter 注入', () => {
       meterPass('roleplay-isolation-meter', '角色扮演隔离检查'),
       meterPass('behavior-meter', '行为回归检查', 'A'),
     ];
-    const args = parseArgs(['guard', '--files', 'src/m5/RoleplayPromptBuilder.ts', '--no-test']);
+    const args = parseArgs(['guard', '--files', 'src/app/role/RoleClassifier.ts', '--no-test']);
 
     await expect(cmdGuard(args, rt)).rejects.toThrow('EXIT:1');
 

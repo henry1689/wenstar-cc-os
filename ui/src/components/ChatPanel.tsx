@@ -24,13 +24,19 @@ interface Props {
 
 export default function ChatPanel({ inline }: Props) {
   const {
-    messages, isOpen, isTyping, error, turnCount, emotionalFlash,
-    addMessage, toggleOpen, setTyping, setError,
+    messages, isOpen, isTyping, error, emotionalFlash, chatState,
+    addMessage, toggleOpen, setError,
   } = useChatStore();
 
   const [input, setInput] = useState('');
   const [showWelcome, setShowWelcome] = useState(true);
   const [voiceMode, setVoiceMode] = useState<'none' | 'mic' | 'phone'>('none');
+  // P2-2: 顶部状态栏模式文本 — 私聊 · 玉瑶 / 私聊 · 熊梓铭 / 会晤 · 熊梓铭、徐诗雨
+  const chatStateLabel = !chatState || chatState.mode === 'yuyao'
+    ? `私聊 · ${chatState?.targetName || '玉瑶'}`
+    : chatState.mode === 'meeting'
+      ? `会晤 · ${chatState.participants.join('、')}`
+      : `私聊 · ${chatState.targetName}`;
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [showKB, setShowKB] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -392,10 +398,10 @@ export default function ChatPanel({ inline }: Props) {
             <div className="chat-header-info">
               <span className="chat-avatar">💠</span>
               <div>
-                <div className="chat-name">玉瑶</div>
+                <div className="chat-name">{chatState?.targetName || '玉瑶'}</div>
                 <div className="chat-subtitle">
                   <span className="chat-status-dot" />
-                  {voiceMode === 'phone' ? '📞 通话中...' : (voiceMode === 'mic' ? '🎤 语音输入中...' : (isTyping ? '输入中...' : `太虚境 · ${turnCount} 次对话`))}
+                  {voiceMode === 'phone' ? '📞 通话中...' : (voiceMode === 'mic' ? '🎤 语音输入中...' : (isTyping ? '输入中...' : chatStateLabel))}
                 </div>
               </div>
             </div>
@@ -435,6 +441,9 @@ export default function ChatPanel({ inline }: Props) {
           )}
           {messages.map((msg) => (
             <div key={msg.id} className={`chat-msg ${msg.role}${msg.recalled ? ' recalled' : ''}`}>
+              {msg.role === 'assistant' && msg.speaker && (
+                <div className="chat-msg-speaker">【{msg.speaker}】</div>
+              )}
               <div className="chat-msg-content">{msg.recalled ? '⚠ 消息已撤回' : msg.content}</div>
               <div className="chat-msg-time">
                 {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -486,7 +495,7 @@ export default function ChatPanel({ inline }: Props) {
               setInput(`请帮我看看这个文件 ${file.name}:\n\`\`\`\n${preview}\n\`\`\``);
               e.target.value = '';
             }} />
-          <textarea ref={inputRef} className="chat-input" placeholder="对玉瑶说点什么...（可粘贴文本/图片）"
+          <textarea ref={inputRef} className="chat-input" placeholder={`对${chatState?.targetName || '玉瑶'}说点什么...（可粘贴文本/图片）`}
             value={input} onChange={(e) => handleInputChange(e.target.value)} onKeyDown={handleKeyDown} disabled={isTyping} autoFocus
             rows={1}
             onInput={(e) => {
@@ -588,10 +597,10 @@ export default function ChatPanel({ inline }: Props) {
                 <div className="chat-header-info">
                   <span className="chat-avatar">💠</span>
                   <div>
-                    <div className="chat-name">玉瑶</div>
+                    <div className="chat-name">{chatState?.targetName || '玉瑶'}</div>
                     <div className="chat-subtitle">
                       <span className="chat-status-dot" />
-                      {voiceMode === 'phone' ? '📞 通话中...' : (voiceMode === 'mic' ? '🎤 语音输入中...' : (isTyping ? '输入中...' : `太虚境 · ${turnCount} 次对话`))}
+                      {voiceMode === 'phone' ? '📞 通话中...' : (voiceMode === 'mic' ? '🎤 语音输入中...' : (isTyping ? '输入中...' : chatStateLabel))}
                     </div>
                   </div>
                 </div>
@@ -620,6 +629,9 @@ export default function ChatPanel({ inline }: Props) {
               )}
               {messages.map((msg) => (
                 <motion.div key={msg.id} className={`chat-msg ${msg.role}${msg.recalled ? ' recalled' : ''}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} layout>
+                  {msg.role === 'assistant' && msg.speaker && (
+                    <div className="chat-msg-speaker">【{msg.speaker}】</div>
+                  )}
                   <div className="chat-msg-content">{msg.recalled ? '⚠ 消息已撤回' : msg.content}</div>
                   <div className="chat-msg-time">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 {msg.role === 'user' && !msg.recalled && (Date.now() - msg.timestamp < 30000) && (
@@ -655,7 +667,7 @@ export default function ChatPanel({ inline }: Props) {
               )}
             </div>
             <div className="chat-input-area">
-              <textarea ref={inputRef} className="chat-input" placeholder="对玉瑶说点什么..." autoFocus
+              <textarea ref={inputRef} className="chat-input" placeholder={`对${chatState?.targetName || '玉瑶'}说点什么...`} autoFocus
                 value={input} onChange={(e) => handleInputChange(e.target.value)} onKeyDown={handleKeyDown} disabled={isTyping}
                 rows={1}
                 onInput={(e) => {

@@ -1100,6 +1100,14 @@ html, body, #root {
   align-self: flex-start;
 }
 
+/* P2-2: 会晤发言者前缀（仅会晤消息显示） */
+.chat-msg-speaker {
+  font-size: 11px;
+  color: #ff9933;
+  margin: 0 4px 2px;
+  font-weight: 500;
+}
+
 .chat-msg-content {
   font-size: 13px;
   line-height: 1.5;

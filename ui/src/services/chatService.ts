@@ -5,7 +5,7 @@
  * 开发模式下通过 Vite proxy 转发 /api → localhost:3000
  * Tauri 生产模式下使用绝对路径 http://localhost:3000/api
  */
-import { useChatStore } from '../store/chatStore';
+import { useChatStore, type ChatStateInfo } from '../store/chatStore';
 import { pushChatModules } from './thoughtService';
 
 // TTS 音频状态回调（用于 ChatPanel 暂停/恢复语音识别，防止回声死循环）
@@ -63,6 +63,8 @@ interface ChatResponse {
   triggeredMemoryId?: string | null;
   audio_url?: string | null;
   candidates?: any;
+  /** P2-2: 当前聊天对象状态（顶部状态栏/发言前缀） */
+  chat_state?: ChatStateInfo | null;
 }
 
 /** 发送消息给玉瑶（SSE 流式输出） */
@@ -122,7 +124,9 @@ export async function sendMessage(message: string, ttsEnabled: boolean = true): 
 
     const data: ChatResponse = await res.json();
     store.setTurnCount(data.turn_count);
-    store.addMessage('assistant', data.reply);
+    // P2-2: 更新当前聊天对象状态 + 会晤发言者（仅会晤时 speakerName 非空）
+    if (data.chat_state) store.setChatState(data.chat_state);
+    store.addMessage('assistant', data.reply, data.chat_state?.speakerName ?? undefined);
     if (data.candidates) {
       store.setLastMessageCandidates(data.candidates);
     }
@@ -214,6 +218,8 @@ export async function fetchConversation(): Promise<ConversationTurn[]> {
     const res = await fetch(`${API_BASE}/conversation`);
     if (!res.ok) return [];
     const data = await res.json();
+    // P2-2: 打开页面时初始化顶部状态栏（服务端会晤状态）
+    if (data.chat_state) useChatStore.getState().setChatState(data.chat_state);
     return data.turns || [];
   } catch { return []; }
 }

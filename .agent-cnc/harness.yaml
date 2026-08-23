@@ -24,13 +24,11 @@ agent_cnc_harness:
     - id: "familygraph_change"
       when_any_changed:
         - "src/m4/household/FamilyGraph.ts"
-        - "src/m4/household/FamilyGraphRoleBranch.ts"
         - "src/m4/household/EntityContextBuilder.ts"
         - "src/m4/household/ProfileAcquisitionEngine.ts"
       workflow: "workflows/familygraph-change.yaml"
       meters:
         - "fg-meter"
-        - "roleplay-isolation-meter"
         - "uuid-meter"
 
     - id: "uuid_chain_change"
@@ -54,19 +52,6 @@ agent_cnc_harness:
       meters:
         - "meeting-mode-meter"
         - "uuid-meter"
-        - "behavior-meter"
-
-    - id: "roleplay_change"
-      when_any_changed:
-        - "src/app/role/**"
-        - "src/app/persona/**"
-        - "src/m4/household/FamilyGraphRoleBranch.ts"
-        - "src/**/RoleplayPromptBuilder.ts"
-        - "src/**/PromptAssembler.ts"
-      workflow: "workflows/roleplay-change.yaml"
-      meters:
-        - "roleplay-isolation-meter"
-        - "fg-meter"
         - "behavior-meter"
 
     - id: "sqlite_change"
