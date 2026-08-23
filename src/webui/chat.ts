@@ -2180,6 +2180,19 @@ if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny) {
   } catch (e) { console.warn('[PhysicalLaws] 失败(静默):', (e as Error).message); }
 }
 
+// 🛰️ 2026-08-24 和风真实天气注入玉瑶/会晤 prompt（30分钟缓存，失败静默不影响聊天）。
+// 玉瑶答"外面天气/温度/外出/穿衣"直接以真实数据为准（此前靠季节常识可能不准）。
+if (!_meetingExited && !_ruleEngineBlocked) {
+  try {
+    const { getRealWeather } = await import('../common/weather.js');
+    const _w = await getRealWeather();
+    if (_w) {
+      finalKnowledgeText = (finalKnowledgeText || '') +
+        '\n\n【当前真实天气·和风】' + _w.summary + '（' + _w.weather_text + '，' + _w.temperature + '°C，' + (_w.wind_dir || '') + (_w.wind_scale ? _w.wind_scale + '级' : '') + '）。回答用户关于天气/温度/外出/穿衣的问题时，以这个真实数据为准，不要凭季节猜测。';
+    }
+  } catch { /* 天气失败不影响聊天 */ }
+}
+
 // 🔴 转场彻底隔离(2026-08-23): 退出轮玉瑶只回中性过渡语——不调 LLM（省 token + 缩短响应）、
 // 不接任何前话（人格/时空全新）、不打听用户上一轮在干嘛，多变不单调；转场后=全新会话。
 if (_meetingExited) {
