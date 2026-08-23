@@ -872,6 +872,17 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         // 🔴 人格独立红线(2026-08-21): 转场回玉瑶=全新会话——重置场景锚点/情感基线，
         // 玉瑶时空正确（不延续实体场景如浴室/全裸/在外地），绝不接实体会话话题。
         try { (ctx.m5 as any)?.resetSession?.(); } catch { /* 场景重置失败不阻塞 */ }
+        // 直接 import 重置（确定性生效——实测 ctx.m5.resetSession 未覆盖场景锚点残留，
+        // 否则玉瑶态仍注入"厨房/高潮"等实体会话场景，时空错乱）
+        try {
+          const { resetContext } = await import('../m5/ContextMemory.js');
+          resetContext();
+        } catch { /* 非阻塞 */ }
+        try {
+          const { resetAnchor } = await import('../m5/SceneAnchor.js');
+          resetAnchor();
+        } catch { /* 非阻塞 */ }
+        console.log('[MeetExit] 转场回玉瑶: 场景锚点/情感基线已重置');
         const _exitUuid = _em.getEntityUUID();
         const exitResult = await _em.exit();
         // 🔴 户籍管理法（第九条 搜索闸门·收口）: 退出会晤时清除会话实体 UUID，
