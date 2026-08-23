@@ -859,9 +859,12 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         } else if (intent.kind === 'normal' || intent.kind === 'exit') {
           // 🔴 S2-G1: 重启后自动恢复上次会晤实体（用户上次在会晤中，重启后继续以该实体身份回应）
           // 仅当用户消息没有明确"切回玉瑶/退出会晤"意图时才恢复——否则尊重用户当前意图。
+          // 🔴 转场彻底隔离(2026-08-23): 消息提及"玉瑶/瑶瑶/瑶儿" = 明确和玉瑶（默认本体）说话，
+          //   绝不自动恢复上次实体会晤（防"玉瑶，你现在在哪"被上次会晤实体劫持，如熊梓玥）。
+          const _yuyaoMention = /玉瑶|瑶瑶|瑶儿/.test(message);
           const _explicitExit = /^(?:和|跟|找|叫|让)?\s*(?:玉瑶|瑶瑶|瑶儿)\s*(?:聊聊|谈谈|说说话|聊一下|聊天)?\s*$/.test(message.trim())
             || /^(?:切回|回到|换回|变回|退出|散会|结束).*(?:玉瑶|瑶瑶|瑶儿)?\s*$/.test(message.trim());
-          if (!_explicitExit && _em.restoreLastMeeting?.()) {
+          if (!_yuyaoMention && !_explicitExit && _em.restoreLastMeeting?.()) {
             console.log('[EntityMeeting] 消息无会晤意图，自动恢复上次会晤: ' + _em.getEntityName());
           }
         }
