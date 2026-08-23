@@ -1239,7 +1239,9 @@ export class DeepSeekLLMProvider implements LLMProvider {
     const maxTokens = Math.max(_llmCfg.maxTokens, spec.wordCountMin);
     const temperature = _llmCfg.temperature;
     const _timeoutMs = _llmCfg.timeoutMs;
-    const _reasoningEffort = _isScenario ? 'max' : _llmCfg.reasoningEffort;
+    // 🔴 B3 省token(2026-08-23): 正常模式默认 reasoning_effort='low'（V4-flash 思维链模型 reasoning token 消耗大，
+    //   日常对话/闲聊/位置问答不需要深思考；场景/亲密仍用配置或 max）
+    const _reasoningEffort = _isScenario ? 'max' : (_llmCfg.reasoningEffort || 'low');
     const frequencyPenalty = _llmCfg.frequencyPenalty;
     const presencePenalty = _llmCfg.presencePenalty;
 
