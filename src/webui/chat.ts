@@ -2165,9 +2165,13 @@ if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityNa
         });
         const _lr = _lawResult?.result ?? null;
         if (_lr?.status === 'ok' && _lr?.laws?.length) {
-          finalKnowledgeText = (finalKnowledgeText || '') + '\n\n' + _lr.laws.join('\n') +
-            (_lr.forbidden_words?.length ? '\n🔴 当前身体状态下禁止出现的词汇: ' + _lr.forbidden_words.join('、') : '');
-          console.log('[PhysicalLaws] 注入: ' + (_lr.state?.location || '') + '/' + (_lr.state?.action || '') + ' nudity=' + _lr.state?.nudity + ' laws=' + _lr.laws.length);
+          // 🔴 2026-08-24 前置注入: 客观规律置于 finalKnowledgeText 最前，避免被长记忆稀释。
+          // 明确覆盖心理活动/内心念头/动作行为——不只'描述'层面。
+          finalKnowledgeText = '【🔴 最高优先级·客观物理规律 — 先于一切规则执行】\n' +
+            _lr.laws.join('\n') +
+            (_lr.forbidden_words?.length ? '\n🔴 当前身体状态下，这些词连同相关的念头/动作一律不得出现: ' + _lr.forbidden_words.join('、') : '') +
+            '\n\n' + (finalKnowledgeText || '');
+          console.log('[PhysicalLaws] 注入(前置): ' + (_lr.state?.location || '') + '/' + (_lr.state?.action || '') + ' nudity=' + _lr.state?.nudity + ' laws=' + _lr.laws.length);
         }
       }
     }
