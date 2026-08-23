@@ -2216,6 +2216,8 @@ export class FamilyGraph implements FamilyGraphInterface {
       let promoted = false;
       switch (item.field) {
         case 'contact.workplace':
+          // 🔴 2026-08-23 崩溃修复: dossier.contact 可能缺失（旧档案/未初始化）→ 空保护，避免 promotePendingItems 崩溃
+          if (!dossier.contact) dossier.contact = {};
           if (!dossier.contact.workplace || dossier.contact.workplace === item.value) {
             dossier.contact.workplace = item.value;
             promoted = true;
