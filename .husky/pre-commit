@@ -7,4 +7,16 @@ if grep -rn "鸿鸣" src/ --include="*.ts" --include="*.json" --include="*.html"
   exit 1
 fi
 
+# 🔴 禁止提交测试用临时开关
+if grep -rn "WS_DISABLE_MINOR_CHECK\|disableMinor\|_disableMinor\|已临时关闭" src/ --include="*.ts" 2>/dev/null | grep -v node_modules | grep -v ".test.ts"; then
+  echo ""
+  echo "❌ 错误: 检测到测试用临时开关代码，请清理后再提交！"
+  echo "   相关行："
+  grep -rn "WS_DISABLE_MINOR_CHECK\|disableMinor\|_disableMinor\|已临时关闭" src/ --include="*.ts" 2>/dev/null | grep -v node_modules | grep -v ".test.ts"
+  echo ""
+  echo "   清理命令: git checkout -- src/engine/reflex/SafetyInterceptor.ts src/m4/household/EntityContextBuilder.ts"
+  exit 1
+fi
+
 echo "✅ 鸿鸣检查通过"
+echo "✅ 临时开关检查通过"

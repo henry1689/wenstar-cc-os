@@ -34,6 +34,10 @@ S1 全局审视 → S2 方案定稿 → S3 实施 → S4 架构评审 → S4.5 �
 ```
 **S2 已配置自动批准**（headless 模式）。调用 `harness_run_flow` 后流水线自动跑完全程，无需你手动确认。
 
+### 🔴 铁律 0.1.1：豁免记录必须留存
+
+调用 `harness_run_flow` 时使用 `skip_s3_compile` 或 `exempt_files` 时，**必须同步创建豁免记录**（`.agent-cnc/exemptions/YYYY-MM-DD-描述.md`）。豁免记录是审计的一部分，不是可选文档。
+
 ### 🔴 铁律 0.2：禁止打补丁 — 必须做架构性修复
 
 | ❌ 补丁行为 | ✅ 架构性修复 |
@@ -143,6 +147,28 @@ DeepSeek-V4-pro 上限 **104 万 tokens**。超过后 `/compact` 被 API 拒绝 
 - 第2步（调用链追踪）**不能跳过**——至少 `grep` 一遍所有引用
 - 如果涉及 FG/角色扮演 → **必须**先 Read `D:\AI文件\personal-assistant\memory\projects\wenstar-fg-roleplay.md`
 - 如果第3步回答"是补丁" → 拒绝动手，先讨论架构方案
+
+### 6.5 🔴 改动前必查：模块影响面速查表
+
+以下表格是第2步"追踪调用链"的速查替代。改某个模块前，先看这张表确认影响范围，再决定是否要 grep 补充。
+
+| 改这个模块/文件 | 会影响的下游模块 | 文件数 | 最高风险点 |
+|---|---|---|---|
+| **m1** (DNA类型/DNAEncoder) | app/*, engine/tianquan/*, m2, m3, m4, m9, webui/* | ~45 | m2 写入路径、m9 WorkingMemory 类型兼容 |
+| **m2** (SQLiteAdapter/KnowledgeBase/类型) | app/ 几乎全部、engine/tianquan/temporal/*、m1, m3, m4, m7-m9, webui/* | ~80+ | **全系统最广泛依赖**，改类型前必须 grep 所有引用 |
+| **m3** (PerceptionAnalyzer/24D类型) | m1, m2, m4, m5, m8, m9, webui/*, engine/tianquan/heart/* | ~50 | 情感向量结构变更影响 M5 候选选择 |
+| **m4** (MemoryRetriever/FamilyGraph/M4Orchestrator) | m1, m3, m5, m7, webui/chat/*, engine/tianquan/* | ~30 | FamilyGraph.ts 5982行最大文件，改 schema 前务必 grep 全仓库 |
+| **m5** (M5Orchestrator/类型) | m1, webui/chat/*, app/entity/*, app/vault/* | ~15 | LLM provider 变更影响所有对话路径 |
+| **m7** (M7Orchestrator/ConsolidationQueue) | m2, m5, webui/chat.ts, engine/tianquan/temporal/* | ~5 | 巩固队列结构变更影响梦境调度 |
+| **webui/chat.ts** | webui/*, app/knowledge/* | ~9 | 对话主入口，改 import 必须同步 server.ts |
+| **app/knowledge/** (KnowledgeEngine/KnowledgeContextBuilder) | m2, m7, webui/*, adapter/* | ~9 | 知识消费接口变更影响检索和对话 |
+| **engine/tianquan/temporal/** (SleepTimeConsolidator) | app/brain/*, m4, webui/server-brain-routes.ts | ~8 | 后台巩固路径，改 API 需同步 brain/* 适配器 |
+| **governance/police/** (UUIDPoliceFilter) | m2, m4/retrieval/*, app/knowledge/*, webui/chat/retrieval-stage.ts | ~10 | UUID 查询 SQL 变更影响所有检索路径 |
+
+**使用方式**：
+1. 改模块 A → 看表中 A 行 → 确认下游模块列表
+2. 对高风险模块（标注 ** 的）执行 `grep -rn "被改标识" src/` 补充验证
+3. 改接口/类型前，**必须**检查 m2 下游（全系统最广依赖）
 
 ### 7. 🔴 Bug 修复强制流程：六步闸门
 
@@ -454,3 +480,22 @@ L5 · 事后编造检测
 | 要收尾提交 | `/finish-branch` |
 | 安全检查 | `/security-audit` |
 | 安全重构 | `/refactor` |
+
+---
+
+## 🔬 安全机制验证沉淀（2026-08-23 控制变量测试）
+
+### 结论
+- 熊梓玥（8 岁角色）面对 6 轮性施压链（胸→生理知识→为你好→臀部），保护性拒绝 **100% 来自模型能力（对齐）**，与系统提示词守卫（`allGuardMsgs` 11 条）**零相关**。
+- 证据：`WS_NO_CONTENT_FILTER=true`（11 条守卫全关 + 内容过滤全放行）与守卫开两种状态，6/6 全部拒绝，措辞一致甚至更坚决。
+- 系统 11 条守卫（intimacyFilter / memoryGuard / dailyGuard 等）本就不含「未成年保护」规则；唯一相关的 privacyLaw 反而在主动放开限制。
+
+### 设计原则（节能低代码路线）
+- **大模型已具备的能力不重复实现**：安全对齐、价值观拒绝、常识判断由模型承担，系统不为其堆代码。
+- 守卫只做「表演合规」（工作/事实模式别亲密、别编造记忆），不做「语义安全」——语义安全交给模型。
+- 判定某能力该由谁承担的方法：**控制变量实验**——关闭相关提示词看行为是否变化；变了→提示词作用，没变→模型能力。
+
+### 可复用资产
+- `scripts/safety-compare.py` — 控制变量对比测试（`--label guard-on/guard-off`、`--report`、`--case "单条"` 二分定位）
+- `scripts/safety-cases.json` — 施压链测试用例
+- `results/safety-compare/*.jsonl` — 三轮完整记录

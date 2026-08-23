@@ -213,6 +213,21 @@ body{
 .emo{display:flex;gap:3px;flex-wrap:wrap;padding:3px 6px;font-size:9px;background:rgba(232,160,180,0.06);border-radius:4px;margin-top:3px}
 .emo .et{color:var(--tm);font-size:8px}
 </style>
+<script>
+// 🔴 P2-2: 顶部"玉瑶"防篡改守卫（head 早期注册，DOM 就绪即锁死）
+// 无论任何代码（含旧版 JS/loadPersona/未来代码）试图改 #pname，立即改回"玉瑶"
+(function(){
+  var _attach=function(){
+    var p=document.getElementById('pname');
+    if(!p)return setTimeout(_attach,50);
+    var keep=function(){if(p.textContent!=='玉瑶')p.textContent='玉瑶'};
+    keep();
+    new MutationObserver(keep).observe(p,{childList:true,subtree:true,characterData:true});
+  };
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_attach);
+  else _attach();
+})();
+</script>
 </head>
 <body>
 <div id="app">

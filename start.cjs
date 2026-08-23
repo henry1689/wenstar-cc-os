@@ -43,7 +43,7 @@ const prestartResults = [];
 const PORT = process.env.PORT || '3000';
 let _portBusy = false;
 try {
-  const out = execSync(`netstat -ano | findstr ":${PORT}.*LISTENING"`, { encoding: 'utf8', timeout: 5000, shell: 'cmd' }).toString().trim();
+  const out = execSync(`netstat -ano | findstr ":${PORT}.*LISTENING"`, { encoding: 'utf8', timeout: 5000, shell: 'cmd', windowsHide: true }).toString().trim();
   _portBusy = out.length > 0;
 } catch { _portBusy = false; }
 if (_portBusy) {
@@ -53,7 +53,7 @@ if (_portBusy) {
 for (const s of prestartScripts) {
   if (_portBusy) { prestartResults.push({ label: s.label, ok: false, reason: '端口占用，跳过写库' }); continue; }
   try {
-    execSync(s.cmd, { cwd: __dirname, stdio: 'pipe', timeout: 30000 });
+    execSync(s.cmd, { cwd: __dirname, stdio: 'pipe', timeout: 30000, windowsHide: true });
     prestartResults.push({ label: s.label, ok: true });
   } catch (e) {
     prestartResults.push({ label: s.label, ok: false, reason: (e.stderr || e.message || '').toString().split('\n')[0] });
@@ -72,9 +72,13 @@ console.log('[Start] 启动 server.ts (端口 ' + (process.env.PORT || '3000') +
 const memLimit = process.env.TIANQUAN_LITE === 'true'
   ? '--max-old-space-size=10240'
   : '--max-old-space-size=12288';
-const child = spawn('node', [TSC_CLI, 'src/webui/server.ts'], { shell: true,
+// 🔴 闪屏修复：去 shell:true + windowsHide:true。
+// shell:true 在 Windows 强制走 cmd.exe /c 弹黑窗；process.execPath 是当前 node 绝对路径，
+// windowsHide:true 用 CREATE_NO_WINDOW 创建无控制台子进程 → server 无窗口启动。
+const child = spawn(process.execPath, [TSC_CLI, 'src/webui/server.ts'], {
   cwd: __dirname,
   stdio: 'inherit',
+  windowsHide: true,
   env: { ...process.env, NODE_OPTIONS: memLimit },
 });
 

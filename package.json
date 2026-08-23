@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "cleanup:tmp": "node scripts/cleanup-tmp.mjs",
+    "cleanup:backups": "node scripts/cleanup-backups.mjs",
     "test": "node ./node_modules/vitest/vitest.mjs run",
     "test:full": "node scripts/test-full-local.cjs",
     "test:watch": "vitest",

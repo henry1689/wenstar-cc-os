@@ -52,3 +52,7 @@ bionic-cognitive-engine/venv/
 .agent-cnc/reports/*.md
 .agent-cnc/reports/*.json
 .agent-cnc/history/*.jsonl
+
+# 测试用补丁脚本（不含入仓库）
+scripts/patch-minor-check.mjs
+scripts/patch-safety.mjs
