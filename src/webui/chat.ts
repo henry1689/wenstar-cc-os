@@ -2107,6 +2107,38 @@ try {
   }
 } catch { /* 降级到旧拼接链 */ }
 
+// 🗺️ 2026-08-24 高德实时路线: 检测位置意图 → 调瑶光 wf_amap_route → 实时数据注入 finalKnowledgeText。
+// 静默失败（总线/高德不可用绝不影响聊天）；仅玉瑶态触发（会晤/门卫拒绝/转场轮跳过）。
+if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityName && message.length > 3) {
+  try {
+    const _ROUTE_PLACES: Record<string, string> = {
+      '家': 'xinghai_mingcheng', '星海名城': 'xinghai_mingcheng',
+      '公司': 'guangming_office', '办公室': 'guangming_office', '上班': 'guangming_office',
+      '公寓': 'guangming_apartment',
+      '花卉小镇': '荷兰花卉小镇', '前海公园': '前海公园', '前海地铁站': '前海地铁站',
+      '地铁站': '前海地铁站', '光明': 'guangming_office', '凤凰街道': 'guangming_office',
+    };
+    const _placeSrc = '家|星海名城|公司|办公室|上班|公寓|花卉小镇|前海公园|前海地铁站|地铁站|光明|凤凰街道';
+    const _intentRe = /多远|多久|多少公里|怎么去|开车|导航|距离|路线|要多久|怎么走|过去要/;
+    if (_intentRe.test(message)) {
+      const _m = message.match(new RegExp('(?:从|由|在)?\s*(' + _placeSrc + ')\s*(?:到|去|去往|至|前往|回)\s*(' + _placeSrc + ')'));
+      if (_m && _ROUTE_PLACES[_m[1]] && _ROUTE_PLACES[_m[2]]) {
+        const mh = (globalThis as any).__masterHarris;
+        if (mh?.sendToYaoguangAndWait) {
+          const _routeResult = await mh.sendToYaoguangAndWait('wf_amap_route', {
+            origin: _ROUTE_PLACES[_m[1]], destination: _ROUTE_PLACES[_m[2]],
+          });
+          const _rr = _routeResult?.result ?? null;
+          if (_rr?.status === 'ok' && _rr?.distance_m) {
+            finalKnowledgeText = (finalKnowledgeText || '') + '\n\n【实时路线数据(高德)】' + _m[1] + '→' + _m[2] + '：约' + (_rr.distance_m / 1000).toFixed(1) + '公里，驾车约' + _rr.duration_min + '分钟。回答用户距离/时间问题时必须用这个数据，不要自己估算。';
+            console.log('[AmapRoute] 实时路线注入: ' + _m[1] + '→' + _m[2] + ' ' + _rr.distance_m + 'm/' + _rr.duration_s + 's');
+          }
+        }
+      }
+    }
+  } catch (e) { console.warn('[AmapRoute] 实时路线失败(静默):', (e as Error).message); }
+}
+
 // 🔴 转场彻底隔离(2026-08-23): 退出轮玉瑶只回中性过渡语——不调 LLM（省 token + 缩短响应）、
 // 不接任何前话（人格/时空全新）、不打听用户上一轮在干嘛，多变不单调；转场后=全新会话。
 if (_meetingExited) {

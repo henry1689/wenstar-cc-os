@@ -163,6 +163,25 @@ export class MasterHarris extends EventEmitter {
   async sendToYaoling(cmd: string, payload: Record<string, unknown>) { if (this._bus?.connected) return this._bus.sendCommand('l', cmd, payload); throw new Error('总线离线'); }
   /** 直接向瑶光发指令 */
   async sendToYaoguang(cmd: string, payload: Record<string, unknown>) { if (this._bus?.connected) return this._bus.sendCommand('g', cmd, payload); throw new Error('总线离线'); }
+  /** 🗺️ 2026-08-24 高德接入: 向瑶光域发指令并等待 workflow_result（同步拿到处理结果）。
+   *  总线 publish 只回 ack，瑶光域结果走异步 workflow_result 广播——按 workflow_id 匹配。
+   *  超时返回 null（不阻塞主流程）。 */
+  async sendToYaoguangAndWait(workflowId: string, payload: Record<string, unknown>, timeoutMs = 15000): Promise<Record<string, unknown> | null> {
+    if (!this._bus?.connected) throw new Error('总线离线');
+    const bus = this._bus;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { bus.off('message', onMsg); resolve(null); }, timeoutMs);
+      const onMsg = (msg: any) => {
+        const data = (msg && msg.data) || msg || {};
+        if (data?.cmd === 'workflow_result' && String(data?.payload?.workflow) === workflowId) {
+          clearTimeout(timer); bus.off('message', onMsg);
+          resolve(data.payload ?? null);
+        }
+      };
+      bus.on('message', onMsg);
+      void bus.sendCommand('g', 'run_workflow', { workflow_id: workflowId, ...payload }).catch(() => { });
+    });
+  }
 
   /**
    * V3: collect40DSnapshot 透传 — M3 只取瑶光客观维（include_yaoling=false，快且轻）。
