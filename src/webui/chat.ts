@@ -680,17 +680,32 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
       const _ecm = new EntityContextManager();
       const _startIndex = ctx._entityMeeting?.getMeetingStartHistoryIndex?.();
       const _meetingUuid = ctx._entityMeeting?.getEntityUUID?.();
-      enrichedHistory = _ecm.getContextWindow(ctx.conversationHistory, _activeMeetingName, 40, _startIndex);
-      // Phase 2: DB 侧精准补充 — 如果 startIndex 未覆盖，从 conversations 表按 UUID 补
-      if (_meetingUuid && enrichedHistory.length < 10) {
+      // 🔴 人格独立红线(2026-08-21): 玉瑶态(_meeting=null)必须用**玉瑶专属历史**(belong=玉瑶UUID)，
+      // 不能读混合 conversationHistory——否则玉瑶继承实体会话（接话/知道用户与他人隐私/延续实体场景）。
+      if (_meetingUuid) {
+        enrichedHistory = _ecm.getContextWindow(ctx.conversationHistory, _activeMeetingName, 40, _startIndex);
+        // Phase 2: DB 侧精准补充 — 如果 startIndex 未覆盖，从 conversations 表按 UUID 补
+        if (enrichedHistory.length < 10) {
+          try {
+            const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
+            const _store = new EntityContextStore(ctx.storage.getSQLite());
+            const _dbTurns = _store.queryEntityContext(_meetingUuid, 40);
+            if (_dbTurns.length > enrichedHistory.length) {
+              enrichedHistory = _dbTurns;
+            }
+          } catch { /* DB 补充失败不阻塞 */ }
+        }
+      } else {
+        // 玉瑶态: 只读玉瑶专属历史（conversations.belong=玉瑶UUID），绝对不读其他实体对话
         try {
-          const { EntityContextStore } = await import('../app/entity/EntityContextStore.js');
-          const _store = new EntityContextStore(ctx.storage.getSQLite());
-          const _dbTurns = _store.queryEntityContext(_meetingUuid, 40);
-          if (_dbTurns.length > enrichedHistory.length) {
-            enrichedHistory = _dbTurns;
-          }
-        } catch { /* DB 补充失败不阻塞 */ }
+          const { EntityContextStore: _ECS2 } = await import('../app/entity/EntityContextStore.js');
+          const _store2 = new _ECS2(ctx.storage.getSQLite());
+          const _yuyaoU = ctx.m4?.getFamilyGraph?.()?.getUUIDByName?.('玉瑶') ?? null;
+          const _yuyaoTurns = _yuyaoU ? _store2.queryEntityContext(_yuyaoU, 40) : [];
+          enrichedHistory = _yuyaoTurns.length > 0 ? _yuyaoTurns : ctx.conversationHistory.slice(-40);
+        } catch {
+          enrichedHistory = ctx.conversationHistory.slice(-40);
+        }
       }
     } catch {
       enrichedHistory = ctx.conversationHistory.slice(-40);
@@ -854,6 +869,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         // 🔴 P1-1: 对话组 flush 由对话组管理段（_meetingExited → _shouldCloseGroup）统一执行，
         //   用真实 reply 生成锚点/碎片；本轮不新建对话组。
         _meetingExited = true;
+        // 🔴 人格独立红线(2026-08-21): 转场回玉瑶=全新会话——重置场景锚点/情感基线，
+        // 玉瑶时空正确（不延续实体场景如浴室/全裸/在外地），绝不接实体会话话题。
+        try { (ctx.m5 as any)?.resetSession?.(); } catch { /* 场景重置失败不阻塞 */ }
         const _exitUuid = _em.getEntityUUID();
         const exitResult = await _em.exit();
         // 🔴 户籍管理法（第九条 搜索闸门·收口）: 退出会晤时清除会话实体 UUID，
