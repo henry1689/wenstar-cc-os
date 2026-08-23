@@ -203,19 +203,6 @@ export class ConversationDB {
     return rows;
   }
 
-  /** 🎭 按角色扮演角色名检索对话历史（再续前缘用） */
-  searchByRoleplay(charName: string, limit = 30): ConversationRow[] {
-    this.ensureReady();
-    const stmt = this.db.prepare(
-      `SELECT id, role, content, timestamp, topic FROM conversations WHERE roleplay_char = ? AND is_compacted = 0 ORDER BY timestamp DESC LIMIT ?`,
-    );
-    stmt.bind([charName, limit]);
-    const rows: ConversationRow[] = [];
-    while (stmt.step()) rows.push(stmt.getAsObject() as any);
-    stmt.free();
-    return rows.reverse(); // 正序（最早→最新）
-  }
-
   findByTimeRange(start: string, end: string, limit = 10, entityUuids?: string[]): ConversationRow[] {
     this.ensureReady();
     // 🔴 P0-A4 修复: 时间导航（"昨天/上周说了什么"）原无 UUID 过滤，跨实体拉对话。
