@@ -120,7 +120,9 @@ export async function persistConversation(input: PersistInput): Promise<void> {
   const _fg = input.ctx.m4?.getFamilyGraph?.();
   const _yuyaoUUID = _fg?.getUUIDByName?.('玉瑶') ?? null;
   // 归属 = 聊天对象 UUID（会晤激活/群聊当前发言者）或 玉瑶 UUID（默认私聊）
-  let belongUUID: string | null = _meetingUUID ?? _yuyaoUUID;
+  // 🔴 转场彻底隔离(2026-08-23): 退出轮 _meeting=null（_em.exit 已清空），belong 兜底原实体 UUID
+  //   ——退出消息归原实体，绝不污染玉瑶历史（玉瑶转场后=全新会话，看不到转场消息）
+  let belongUUID: string | null = _meetingUUID ?? (input.ctx as any)?._exitEntityUuid ?? _yuyaoUUID;
   let asstUUID: string | null = _meetingUUID ?? _yuyaoUUID;
   let ownerEntityName: string | null = _meetingUUID ? (input.ctx._entityMeeting?.getEntityName?.() ?? null) : '玉瑶';
   // 强制 belong 非空（杜绝脏数据；world_domain_id 预留接口本次不落地）

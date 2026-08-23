@@ -389,6 +389,8 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
     // ChatEntry — entry guard pipeline (extracted)
     const entryResult = await runChatEntry(message, ctx, { _currentRole });
     const dna = entryResult.dna;
+    // 🔴 转场彻底隔离(2026-08-23): 每轮进入清除转场归属标记（退出轮由 exit 分支重新设置）
+    (ctx as any)._exitEntityUuid = null;
     let _ruleEngineBlocked = entryResult.ruleEngineBlocked;
     let _ruleEngineReply = entryResult.ruleEngineReply;
     const _weatherContext = entryResult.weatherContext || '';
@@ -905,6 +907,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         if (exitResult?.minutes) {
           console.log('[EntityMeeting] 多人会议结束，纪要已自动归档');
         }
+        // 🔴 转场彻底隔离(2026-08-23): 记录退出实体 UUID —— 退出消息归属原实体（不污染玉瑶历史），
+        // 玉瑶转场后=全新会话（玉瑶专属历史过滤，看不到转场消息）；下一轮 processChat 开头清除。
+        (ctx as any)._exitEntityUuid = _exitUuid;
       } else if (_isMulti && intent.kind === 'addParticipant' && intent.targets.length === 1) {
         // ── 群聊加人（addParticipant ≠ 唤醒拒绝）──
         _em.addParticipant(intent.targets[0]);
@@ -2096,8 +2101,20 @@ try {
   }
 } catch { /* 降级到旧拼接链 */ }
 
-// 规则引擎拦截：违规时跳过LLM生成，直接返回合规回复
-if (_ruleEngineBlocked && _ruleEngineReply) {
+// 🔴 转场彻底隔离(2026-08-23): 退出轮玉瑶只回中性过渡语——不调 LLM（省 token + 缩短响应）、
+// 不接任何前话（人格/时空全新）、不打听用户上一轮在干嘛，多变不单调；转场后=全新会话。
+if (_meetingExited) {
+  const _YUYAO_WELCOME_POOL = [
+    '我在，有什么吩咐？',
+    '嗯，在呢。你说。',
+    '在的，有什么需要？',
+    '我在呢，怎么了？',
+    '在呀，什么事？',
+    '嗯？我在，你说。',
+  ];
+  reply = _YUYAO_WELCOME_POOL[Math.floor(Math.random() * _YUYAO_WELCOME_POOL.length)];
+} else if (_ruleEngineBlocked && _ruleEngineReply) {
+  // 规则引擎拦截：违规时跳过LLM生成，直接返回合规回复
   reply = _ruleEngineReply;
 } else {
 // 🔴 D2 修复: userMessage 移除 knowledgeBaseText — KB 由 finalKnowledgeText（memoryText）唯一承载，
