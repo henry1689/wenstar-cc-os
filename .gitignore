@@ -56,3 +56,4 @@ bionic-cognitive-engine/venv/
 # 测试用补丁脚本（不含入仓库）
 scripts/patch-minor-check.mjs
 scripts/patch-safety.mjs
+*.sentinel-lock
