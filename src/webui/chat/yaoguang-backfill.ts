@@ -41,6 +41,30 @@ let _queue: YaoguangBackfillJob[] = [];
 let _processing = false;
 let _inFlight = new Set<string>(); // dnaRootId 单飞去重
 
+// ── 🛰️ 2026-08-24 和风真实天气（30分钟缓存，失败静默降级）────────
+let _weatherCache: { at: number; data: Record<string, unknown> } | null = null;
+async function _getRealWeather(): Promise<Record<string, unknown> | null> {
+  if (_weatherCache && Date.now() - _weatherCache.at < 30 * 60 * 1000) return _weatherCache.data;
+  try {
+    const { fetchWeatherNow } = await import('../../engine/temporal/weather_qweather_client.js');
+    const now = await fetchWeatherNow();
+    if (!now) return null;
+    const data = {
+      temperature: parseFloat(now.temp as unknown as string) || 0,
+      humidity: parseFloat(now.humidity as unknown as string) || 0,
+      weather_text: now.weatherType || '',
+      wind_dir: now.windDir || '',
+      wind_scale: now.windScale || 0,
+    };
+    _weatherCache = { at: Date.now(), data };
+    console.log('[QWeather] 回填天气已获取: ' + data.weather_text + ' ' + data.temperature + '°C 湿度' + data.humidity + '%');
+    return data;
+  } catch (e) {
+    console.warn('[QWeather] 天气获取失败(静默):', (e as Error)?.message);
+    return null;
+  }
+}
+
 /** 写入 perception_40d 列（经 SQLite writeRaw） */
 async function _writeP40(
   ctx: any,
@@ -89,6 +113,8 @@ async function _processNext(): Promise<void> {
             interpersonal_labels: job.interpersonalLabels,
             raw_input_text: job.rawInputText,
             scene_desc: job.rawInputText,
+            // 🛰️ 2026-08-24 和风真实天气 → 瑶光客观维（温度/湿度/天气文本）
+            environmental_params: (await _getRealWeather()) ?? undefined,
           },
           { include_yaoling: false, timeout_ms: 30_000 },
         );
