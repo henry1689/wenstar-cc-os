@@ -2139,6 +2139,41 @@ if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityNa
   } catch (e) { console.warn('[AmapRoute] 实时路线失败(静默):', (e as Error).message); }
 }
 
+// 🧠 2026-08-24 瑶光物理客观规律: 读场景锚点 → wf_physical_laws → 一致性约束注入。
+// 仅在关键场景触发（浴室/床/裸露/亲密动作），普通聊天零开销；静默失败不影响主流程。
+if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityName) {
+  try {
+    // 🔴 2026-08-24 触发改进: 用「本轮消息 + 最近历史」实时推断场景（不依赖上一轮锚点），
+    // 保证"去浴室冲凉吧"这一轮就注入——否则玉瑶首轮自由发挥建立错误叙述（如穿着短衫）后难以纠正。
+    const _recentTurns: string[] = (ctx.conversationHistory || [])
+      .slice(-3).map((t: any) => t.content || '').filter(Boolean);
+    const _lawText = (message + ' ' + _recentTurns.join(' '));
+    const _lawScene = /浴|冲凉|洗澡|淋浴|泡澡/;
+    const _lawBed = /床上|床沿|被窝|床/;
+    const _lawNude = /脱光|脱了|全裸|赤裸|一丝不挂|光着/;
+    const _lawIntimate = /亲热|亲密|做爱|爱抚|前戏/;
+    const _needLaws = _lawScene.test(_lawText) || (_lawBed.test(_lawText) && (_lawNude.test(_lawText) || _lawIntimate.test(_lawText))) || _lawNude.test(_lawText);
+    if (_needLaws) {
+      // 场景词 → 瑶光物理规律入参
+      const _locDetail = _lawScene.test(_lawText) ? '浴室' : (_lawBed.test(_lawText) ? '床上' : '');
+      const _lawAction = _lawScene.test(_lawText) ? '冲凉' : (_lawIntimate.test(_lawText) ? '亲密' : '睡觉');
+      const mh = (globalThis as any).__masterHarris;
+      if (mh?.sendToYaoguangAndWait) {
+        const _lawResult = await mh.sendToYaoguangAndWait('wf_physical_laws', {
+          location_detail: _locDetail,
+          action: _lawAction,
+        });
+        const _lr = _lawResult?.result ?? null;
+        if (_lr?.status === 'ok' && _lr?.laws?.length) {
+          finalKnowledgeText = (finalKnowledgeText || '') + '\n\n' + _lr.laws.join('\n') +
+            (_lr.forbidden_words?.length ? '\n🔴 当前身体状态下禁止出现的词汇: ' + _lr.forbidden_words.join('、') : '');
+          console.log('[PhysicalLaws] 注入: ' + (_lr.state?.location || '') + '/' + (_lr.state?.action || '') + ' nudity=' + _lr.state?.nudity + ' laws=' + _lr.laws.length);
+        }
+      }
+    }
+  } catch (e) { console.warn('[PhysicalLaws] 失败(静默):', (e as Error).message); }
+}
+
 // 🔴 转场彻底隔离(2026-08-23): 退出轮玉瑶只回中性过渡语——不调 LLM（省 token + 缩短响应）、
 // 不接任何前话（人格/时空全新）、不打听用户上一轮在干嘛，多变不单调；转场后=全新会话。
 if (_meetingExited) {

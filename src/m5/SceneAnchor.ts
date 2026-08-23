@@ -63,6 +63,9 @@ export function extractAnchor(conversationHistory?: ConversationTurn[], userMess
   for (const [rx, loc] of locMap) {
     if (rx.test(text)) { location = loc; break; }
   }
+  // 🔴 2026-08-24 位置惯性: 本轮无位置词时沿用上一位置（人在浴室不会因一句话瞬移厨房）。
+  // 换位置必须由明确位置词触发；'未知'是唯一从空位置开始的状态。
+  if (!location && _anchor.location) location = _anchor.location;
 
   // 动作提取
   let action = '';
@@ -70,6 +73,7 @@ export function extractAnchor(conversationHistory?: ConversationTurn[], userMess
   else if (/高潮|丢了|到了|去了|射/.test(text)) action = '高潮';
   else if (/前戏|舔|吻|抚摸|揉|亲吻/.test(text)) action = '前戏';
   else if (/调情|挑逗|勾引/.test(text)) action = '调情';
+  else if (/冲凉|洗澡|淋浴|浴缸|泡澡/.test(text)) action = '冲凉';
   else if (/睡觉|睡[了着]|困了|晚安/.test(text)) action = '睡觉';
   else if (/开会|项目|方案|代码|设计|架构|客户/.test(text)) action = '工作';
   else if (/吃|喝|饭|菜|早餐|午餐|晚餐/.test(text)) action = '吃饭';
@@ -80,8 +84,12 @@ export function extractAnchor(conversationHistory?: ConversationTurn[], userMess
   let nudity = _anchor.nudity;
   // 衰减：当前文本无任何亲密关键词时，nudity 每轮 -1（2→1→0）。
   // 原来 nudity 升到2后永不下降（除非"穿上"），导致角色扮演退出后常态对话仍带裸体场景。
-  const _hasIntimate = /操|插入|做爱|抽插|高潮|前戏|舔|裸|脱|抚摸|揉|淫|性交|吻|一丝不挂/.test(text);
+  const _hasIntimate = /操|插入|做爱|抽插|高潮|前戏|舔|裸|脱|抚摸|揉|淫|性交|吻|一丝不挂|浴|冲凉|洗澡|洗|水/.test(text);
   if (!_hasIntimate && nudity > 0) { nudity = Math.max(0, nudity - 1); }
+  // 🔴 2026-08-24 浴室/冲凉客观规律: 浴室淋浴即裸身（无衣可穿），nudity 直接置 3。
+  // 床上亲密（脱光）同样置 3——extractAnchor 原有"脱光→3"覆盖多数情况，这里兜底动作级。
+  if (/浴|冲凉|洗澡|淋浴/.test(text)) nudity = 3;
+  else if (/床上|床沿|被窝/.test(text) && /亲热|亲密|做|脱|裸/.test(text)) nudity = 3;
   // 原有渐进式追踪
   if (/一丝不挂|全裸|光着身子|什么都没穿|赤裸/.test(text)) nudity = 3;
   else if (/脱光|衣服.*脱|褪尽|全部脱/.test(text)) nudity = 3;
