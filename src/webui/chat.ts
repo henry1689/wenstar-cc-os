@@ -910,6 +910,9 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         // 🔴 转场彻底隔离(2026-08-23): 记录退出实体 UUID —— 退出消息归属原实体（不污染玉瑶历史），
         // 玉瑶转场后=全新会话（玉瑶专属历史过滤，看不到转场消息）；下一轮 processChat 开头清除。
         (ctx as any)._exitEntityUuid = _exitUuid;
+        // 🔴 玉瑶态角色重置(2026-08-23): 退出轮处于会晤中 → 角色路由强制 recaller，
+        // 若不重置，转场后 _currentRole 延续"记忆助手"→ 玉瑶态答非所问（"你现在在哪"→"嗯～好呀。你说"）。
+        _currentRole = 'secretary';
       } else if (_isMulti && intent.kind === 'addParticipant' && intent.targets.length === 1) {
         // ── 群聊加人（addParticipant ≠ 唤醒拒绝）──
         _em.addParticipant(intent.targets[0]);
