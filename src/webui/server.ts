@@ -550,6 +550,18 @@ async function initPipeline(): Promise<void> {
     }
   } catch (e) { console.error('🛡️ FG 完整性守护异常:', e); }
 
+  // 🔴 2026-08-24 LLM识别方案: FG 健康检查 + 自动清理（幽灵/inferred/auto_fix/重复 边持续兜底）
+  try {
+    const { FGHealthCheck } = await import('../app/fg/FGHealthCheck.js');
+    const fgHealth = new FGHealthCheck(familyGraph);
+    const fgReport = fgHealth.check();
+    console.log(`  FG 健康: 节点${fgReport.totalNodes} 边${fgReport.totalEdges} | 垃圾${fgReport.garbageNodes} auto_fix${fgReport.autoFixEdges} inferred${fgReport.inferredEdges} 幽灵${fgReport.ghostEdges} 重复${fgReport.duplicateEdges} → ${fgReport.isHealthy ? '✅' : '⚠️'}`);
+    if (!fgReport.isHealthy) {
+      const fgCleaned = fgHealth.runCleanup();
+      if (fgCleaned.cleaned > 0) console.log(`  FG 自动清理: ${fgCleaned.cleaned} 条 ${JSON.stringify(fgCleaned.details)}`);
+    }
+  } catch (e) { console.warn('  FG 健康检查失败:', e); }
+
   // V10.0: 三段记忆健康守护
   try {
     const esql3 = storage.getSQLite();

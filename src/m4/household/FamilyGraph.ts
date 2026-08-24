@@ -414,6 +414,8 @@ const REVERSE_RELATION: Record<string, string> = {
 
 /** 🏛️ §十五: 统一反向映射表（家族+社交，同等对待） */const ALL_REVERSE: Record<string, string> = { ...REVERSE_RELATION, ...SOCIAL_REVERSE };
 const KINSHIP_TERMS = Object.keys(KINSHIP_MAP).sort((a, b) => b.length - a.length);
+/** V10.1: _auto_fix 全员双向认识 24h 冷却时间戳（模块级；配合 500 条批量上限兜底，防止每次启动全量补边） */
+let _lastFullAcqFixTs = 0;
 const PENDING_PROMOTION_THRESHOLD = 3;
 /** V4.0: occurrences 权重标识 — ≥5 为高可信度待确认项 */
 const HIGH_OCCURRENCE_THRESHOLD = 5;
@@ -1722,6 +1724,9 @@ export class FamilyGraph implements FamilyGraphInterface {
   async addEdge(edge: GraphEdge): Promise<void> {
     // 🔴 V3.3 自指边拦截: 禁止 source = target
     if (edge.source_id === edge.target_id) return;
+    // 🔴 V10.1 重复边拦截: 同源同目标同关系已存在则跳过（防止 RAG 反复写入同一关系导致边数膨胀）
+    const dup = this.query('SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?', [edge.source_id, edge.target_id, edge.relation]);
+    if (dup.length > 0) return;
     this.run(
       'INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
@@ -4313,128 +4318,46 @@ export class FamilyGraph implements FamilyGraphInterface {
    * 所有 INSERT 使用 INSERT OR IGNORE，启动时可重复执行不产生重复边。
    */
   inferFamilyLinks(): { inferred: number; details: string[] } {
-    const details: string[] = [];
+    // 🔴 2026-08-24 LLM识别方案: 血缘传播规则 ①-⑤ 已停用
+    // 根因（数据实证）: 一条错误 child_of（如"徐诗雨→熊梓铭"）→ 熊梓铭被推为徐家父辈
+    //   → 熊勇/王全芬被推为徐家祖辈 → 熊梓玥被推为徐家姑姑。规则雪球把熊、徐两家彻底污染，
+    //   曾产出 425 条 _inferred 边几乎全错（含"熊梓玥 aunt_of 徐诗雨""王全芬 grandfather_of 徐诗韵"）。
+    //   V10.1 年龄验证只挡年龄矛盾，挡不住跨家族错配。
+    // 家族关系改由「LLM 识别（FGRelationExtractor）+ _v2 人工确认」维护；
+    // 反向边补全由 completeReverseEdges 负责（server.ts 启动已跑，基于既有正确边，安全）。
+    // 如需重新启用规则推理，参考 git 历史 V10.0 原实现。V10.1 的 _getNodeAge/_isParentAgePlausible 保留供复用。
+    return { inferred: 0, details: ['血缘传播推理已停用（LLM识别方案 2026-08-24）：反向边由 completeReverseEdges 补全，家族关系由 LLM+_v2 维护'] };
+  }
 
-    // ── 预加载所有边到内存 ──
-    const allEdges: Array<{ src: string; tgt: string; rel: string }> = this.query(
-      'SELECT source_id as src, target_id as tgt, relation as rel FROM edges'
-    );
-    const edgeSet = new Set(allEdges.map(e => `${e.src}|${e.tgt}|${e.rel}`));
+  /** V10.1: 从节点 properties 读取 age；未知/非法返回 null */
+  private _getNodeAge(nodeId: string): number | null {
+    const rows = this.query('SELECT properties FROM nodes WHERE id = ?', [nodeId]);
+    if (!rows.length) return null;
+    try {
+      const age = JSON.parse(rows[0].properties || '{}').age;
+      if (typeof age === 'number' && age >= 0 && age < 150) return age;
+      return null;
+    } catch { return null; }
+  }
 
-    let added = 0;
-    // 🛡️ V5.3: 获取"我"的节点 ID——所有推理跳过用户节点
-    const meNodes = this.query("SELECT id FROM nodes WHERE name = '我'");
-    const meId = meNodes.length > 0 ? meNodes[0].id : null;
-
-    const addEdge = (src: string, tgt: string, rel: string, revRel?: string): boolean => {
-      // 🛡️ V5.3: 绝不创建涉及"我"的推理边——用户不是户籍人物
-      if (src === meId || tgt === meId) return false;
-      let didAdd = false;
-      const key = `${src}|${tgt}|${rel}`;
-      if (!edgeSet.has(key)) {
-        this.run('INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [uid(), src, tgt, rel, '{"_inferred":true}', new Date().toISOString(), new Date().toISOString()]);
-        edgeSet.add(key); added++; didAdd = true;
-      }
-      // 🏛️ 户籍铁律 §三.1: 每条家族边自动创建反向边
-      const reverseRel = revRel || REVERSE_RELATION[rel] || null;
-      if (reverseRel && reverseRel !== rel) {
-        const revKey = `${tgt}|${src}|${reverseRel}`;
-        if (!edgeSet.has(revKey)) {
-          this.run('INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [uid(), tgt, src, reverseRel, '{"_inferred":true}', new Date().toISOString(), new Date().toISOString()]);
-          edgeSet.add(revKey); added++; didAdd = true;
-        }
-      }
-      return didAdd;
+  /**
+   * V10.1 年龄合理性验证（血缘推理专用）:
+   * 父母年龄必须 ≥16 且大于孩子；任一年龄未知则放行（宁放行勿误删）。
+   * @returns true=合理可建边, false=年龄矛盾应跳过
+   */
+  private _isParentAgePlausible(rel: string, src: string, tgt: string): boolean {
+    const PARENT_SIDE: Record<string, 'src' | 'tgt'> = {
+      'parent_of': 'src', 'mother_of': 'src', 'father_of': 'src',
+      'child_of': 'tgt', // child_of 时 target 是父母
     };
-
-    // ── 收集所有手足关系对 (A, B)  ──
-    const SIBLING_RELS = new Set(['elder_sister_of','younger_sister_of','elder_brother_of',
-      'younger_brother_of','sister_of','brother_of','sibling_of']);
-    const siblingPairs: Array<[string, string]> = [];
-    for (const e of allEdges) {
-      if (SIBLING_RELS.has(e.rel)) {
-        siblingPairs.push([e.src, e.tgt]);
-      }
-    }
-
-    if (siblingPairs.length === 0) return { inferred: 0, details: [] };
-
-    // ═══ 规则①②③: 姐妹/兄弟共享父母/姑姑/堂表亲 ═══
-    // 🛡️ V10.0: 仅共享近亲关系，不传播隔代关系（避免 grandmother_of 从姐妹传播）
-    const SHARED_RELS = new Set(['child_of','niece_of','nephew_of','cousin_of']);
-    const SKIP_PROPAGATE = new Set(['grandchild_of','grandmother_of','grandfather_of','grandparent_of']);
-    for (const [sibA, sibB] of siblingPairs) {
-      for (const e of allEdges) {
-        if (e.src === sibA && SHARED_RELS.has(e.rel)) {
-          // sibA 有这条关系 → sibB 也应该有
-          if (addEdge(sibB, e.tgt, e.rel)) {
-            details.push(`rule①-③: sibling共享 →${e.tgt}(${e.rel})`);
-          }
-        }
-        // 🛡️ V10.0: 跳过隔代关系（不应在手足间传播）
-        if (e.src === sibA && SKIP_PROPAGATE.has(e.rel)) {
-          details.push(`V10.0 SKIP: 不传播隔代关系 ${sibB}←${e.tgt}(${e.rel})`);
-        }
-      }
-    }
-
-    // ═══ 规则④: 父母的父母是祖辈 ═══
-    // 收集 child_of 映射: child → [parentId, ...]
-    const childToParents: Map<string, string[]> = new Map();
-    for (const e of allEdges) {
-      if (e.rel === 'child_of') {
-        if (!childToParents.has(e.src)) childToParents.set(e.src, []);
-        childToParents.get(e.src)!.push(e.tgt);
-      }
-    }
-    // 对每个 parent，再查其 parent
-    for (const [child, parents] of childToParents) {
-      for (const parent of parents) {
-        const grandParents = childToParents.get(parent) || [];
-        for (const gp of grandParents) {
-          // 推断祖辈边: gp(祖辈) → child(孙辈)
-          // 检查 nodes 表获取 gp 性别以确定 grand*father* 或 grand*mother*
-          const gpNodes = this.query("SELECT properties FROM nodes WHERE id = ?", [gp]);
-          const gpGender = gpNodes.length > 0
-            ? (() => { try { return JSON.parse(gpNodes[0].properties || '{}').gender; } catch { return null; } })()
-            : null;
-          const gpRel = gpGender === 'male' ? 'grandfather_of' : 'grandmother_of';
-          if (addEdge(gp, child, gpRel)) { details.push(`rule④: →grandchild(grandchild_of)`); }
-          if (addEdge(child, gp, 'grandchild_of')) { details.push(`rule④: grandchild→grandparent`); }
-        }
-      }
-    }
-
-    // ═══ 规则⑤: 父母的姐妹/兄弟是姑姑/舅舅 ═══
-    for (const [child, parents] of childToParents) {
-      for (const parent of parents) {
-        // 找 parent 的手足
-        for (const e of allEdges) {
-          if ((e.src === parent || e.tgt === parent) && SIBLING_RELS.has(e.rel)) {
-            const auntUncle = e.src === parent ? e.tgt : e.src;
-            // 确定 aunt/uncle 的性别
-            const auNodes = this.query("SELECT properties FROM nodes WHERE id = ?", [auntUncle]);
-            const auGender = auNodes.length > 0
-              ? (() => { try { return JSON.parse(auNodes[0].properties || '{}').gender; } catch { return null; } })()
-              : null;
-            // aunt/uncle → child
-            const auRel = auGender === 'male' ? 'uncle_of' : 'aunt_of';
-            if (addEdge(auntUncle, child, auRel)) { details.push(`rule⑤: ${auntUncle}→${child}(${auRel})`); }
-            // child → aunt/uncle
-            const childRel = auGender === 'male' ? 'nephew_of' : 'niece_of';
-            if (addEdge(child, auntUncle, childRel)) { details.push(`rule⑤: ${child}→${auntUncle}(${childRel})`); }
-          }
-        }
-      }
-    }
-
-    if (added > 0) {
-      this.markDirty(true);
-      console.log(`[FamilyGraph] 血缘传递推理: ${added} 条新边`);
-    }
-    return { inferred: added, details };
+    const ps = PARENT_SIDE[rel];
+    if (!ps) return true; // 非亲子关系不检查
+    const parentId = ps === 'src' ? src : tgt;
+    const childId = ps === 'src' ? tgt : src;
+    const pAge = this._getNodeAge(parentId);
+    const cAge = this._getNodeAge(childId);
+    if (pAge == null || cAge == null) return true; // 年龄未知 → 放行
+    return pAge >= 16 && pAge > cAge;
   }
 
   /**
@@ -5569,7 +5492,8 @@ export class FamilyGraph implements FamilyGraphInterface {
     if (aWithoutEdge > 0) errors.push(`${aWithoutEdge} 个 A 类节点缺少家族边到"我"`);
 
     // ⑪ V10.0: 垃圾节点检测+自动清理
-    const GARBAGE = new Set(['我','爸爸','妈妈','妹妹','老婆','姐姐','哥哥','弟弟','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班']);
+    // 🔴 V10.1: '我' 从 GARBAGE 移除——SELF-00001 是用户本人锚点节点（_ensureSelfNode 固定 ID），绝不可当垃圾删除
+    const GARBAGE = new Set(['爸爸','妈妈','妹妹','老婆','姐姐','哥哥','弟弟','公司','学生','小说','开心','时候你','纪实小','计划吗','那你','加班']);
     let garbageCleaned = 0;
     for (const g of GARBAGE) {
       const n = this.query("SELECT id FROM nodes WHERE name = ?", [g]);
@@ -5594,7 +5518,9 @@ export class FamilyGraph implements FamilyGraphInterface {
     checks.push({ name: '亲子双向边完整', passed: true, detail: orphanParents > 0 ? `自动修复${orphanParents}处` : '通过' });
 
     // ⑬ V10.0: 社交边双向完整性（colleague/boss/spouse）
-    const SOCIAL_REV: Record<string,string> = {'colleague_of':'colleague_of','boss_of':'subordinate_of','subordinate_of':'boss_of','spouse_of':'spouse_of','friend_of':'friend_of'};
+    // 🔴 2026-08-24 LLM识别方案: 仅保留互补反向（boss↔subordinate）。自反关系（colleague_of/spouse_of/friend_of）
+    //    一条即双向语义，不再复制反向边（曾产生 78 条冗余 _auto_fix colleague）。
+    const SOCIAL_REV: Record<string,string> = {'boss_of':'subordinate_of','subordinate_of':'boss_of'};
     let socialFixed = 0;
     for (const e of this.query("SELECT e.id, sn.name as src, e.relation, tn.name as tgt, e.source_id, e.target_id FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation IN ('colleague_of','boss_of','subordinate_of','spouse_of','friend_of')")) {
       const rev = SOCIAL_REV[e.relation];
@@ -5610,67 +5536,57 @@ export class FamilyGraph implements FamilyGraphInterface {
     checks.push({ name: '社交双向边完整', passed: true, detail: socialFixed > 0 ? `自动修复${socialFixed}处` : '通过' });
 
     // ⑭ V10.0: 同事团体完整性 — 有colleague_of边的人之间必须两两双向
+    // 🔴 2026-08-24 LLM识别方案: 停用自动补全 cw_ 边（O(n²) 制造边源）。同事关系由 LLM 识别 + _v2 确认维护，
+    //    此处仅统计缺失并报告，不再自动插入 colleague_of（避免与新 LLM 提取器打架）。
     const coworkers = this.query("SELECT DISTINCT sn.name FROM edges e JOIN nodes sn ON e.source_id=sn.id WHERE e.relation='colleague_of'");
     const cwNames = coworkers.map((r: any) => r.name);
-    let cwFixed = 0;
+    let cwMissing = 0;
     for (let i = 0; i < cwNames.length; i++) {
       for (let j = i + 1; j < cwNames.length; j++) {
         const a = cwNames[i], b = cwNames[j];
         const ab = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='colleague_of'", [a, b]);
         const ba = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='colleague_of'", [b, a]);
-        if (ab.length === 0) {
-          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'colleague_of', '{\"_auto_fix\":true}', ?, ?)",
-            ['cw_' + a + '_' + b, a, b, new Date().toISOString(), new Date().toISOString()]); cwFixed++;
-        }
-        if (ba.length === 0) {
-          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'colleague_of', '{\"_auto_fix\":true}', ?, ?)",
-            ['cw_' + b + '_' + a, b, a, new Date().toISOString(), new Date().toISOString()]); cwFixed++;
-        }
+        if (ab.length === 0) cwMissing++;
+        if (ba.length === 0) cwMissing++;
       }
     }
-    checks.push({ name: '同事团体两两双向', passed: cwFixed === 0 ? true : true, detail: cwFixed > 0 ? `自动补全${cwFixed}条 (${cwNames.length}人)` : `通过 (${cwNames.length}人)` });
+    checks.push({ name: '同事团体两两双向', passed: cwMissing === 0, detail: cwMissing > 0 ? `缺${cwMissing}条（仅报告不自动补，LLM识别方案）` : `通过 (${cwNames.length}人)` });
 
-    // ⑮ V10.0: 全员双向认识 — 所有人的 acquaintance_of 边必须双向
-    let acqFixed = 0;
-    const allNames = this.query("SELECT name FROM nodes WHERE type='person' AND name NOT IN ('我','爸爸','妈妈')");
-    const nameList = allNames.map((r: any) => r.name);
-    for (let i = 0; i < nameList.length; i++) {
-      for (let j = i + 1; j < nameList.length; j++) {
-        const a = nameList[i], b = nameList[j];
-        const ab = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='acquaintance_of'", [a, b]);
-        const ba = this.query("SELECT id FROM edges WHERE source_id=(SELECT id FROM nodes WHERE name=?) AND target_id=(SELECT id FROM nodes WHERE name=?) AND relation='acquaintance_of'", [b, a]);
-        if (ab.length === 0) {
-          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'acquaintance_of', '{\"_auto_fix\":true}', ?, ?)",
-            ['aq_' + a + '_' + b, a, b, new Date().toISOString(), new Date().toISOString()]); acqFixed++;
-        }
-        if (ba.length === 0) {
-          this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), 'acquaintance_of', '{\"_auto_fix\":true}', ?, ?)",
-            ['aq_' + b + '_' + a, b, a, new Date().toISOString(), new Date().toISOString()]); acqFixed++;
-        }
-      }
+    // ⑮ V10.0/V10.1: 全员双向认识 — 只补"已有单向"的反向边
+    // 🔴 2026-08-24 LLM识别方案: acquaintance_of 是自反关系（一条即双向语义），不再补反向边——
+    //    补出的 _auto_fix 反向会被 FGHealthCheck 当垃圾清理，形成「guard补→health删」拉锯。
+    //    认识关系由 LLM 识别（FGRelationExtractor）+ _v2 确认维护。此处仅统计报告，不落任何边。
+    let acqMissing = 0;
+    const existingAcq = this.query(
+      "SELECT e.source_id as src, e.target_id as tgt FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation='acquaintance_of' AND sn.name NOT IN ('我','爸爸','妈妈') AND tn.name NOT IN ('我','爸爸','妈妈')"
+    ) as Array<{ src: string; tgt: string }>;
+    const acqPairs = new Set<string>();
+    for (const e of existingAcq) {
+      if (e.src === e.tgt) continue;
+      acqPairs.add(e.src + '|' + e.tgt);
     }
-    // batch limit: only fix if total is reasonable
-    if (acqFixed > 500) {
-      this.run("DELETE FROM edges WHERE properties LIKE '%_auto_fix%' AND relation='acquaintance_of'"); acqFixed = 0;
-      checks.push({ name: '全员双向认识', passed: false, detail: `修复量过大(${acqFixed})，已跳过` });
-    } else {
-      checks.push({ name: '全员双向认识', passed: acqFixed === 0, detail: acqFixed > 0 ? `自动补全${acqFixed}条` : `通过 (${nameList.length}人)` });
+    for (const pair of acqPairs) {
+      const [a, b] = pair.split('|');
+      if (!acqPairs.has(b + '|' + a)) acqMissing++; // 缺反向 → 仅计数
     }
+    checks.push({ name: '全员双向认识', passed: acqMissing === 0, detail: acqMissing > 0 ? `缺${acqMissing}条反向（仅报告不自动补，LLM识别方案）` : `通过 (${existingAcq.length}条已有边)` });
 
     // ⑯ V10.0: 家族/社交边全面双向检查+修复
+    // 🔴 2026-08-24 LLM识别方案: 仅保留互补反向对（child↔parent、长幼姐妹、boss↔subordinate）。
+    //    自反关系（colleague_of/spouse_of/friend_of/sibling_of/sister_of/brother_of）一条即双向语义，
+    //    不再为其复制反向边（曾产生 78 条冗余 _auto_fix colleague）。acquaintance_of 已由 V10.1 剔除。
     const REV_MAP: Record<string,string> = {
       'child_of':'parent_of','parent_of':'child_of','mother_of':'child_of','father_of':'child_of',
       'elder_sister_of':'younger_sister_of','younger_sister_of':'elder_sister_of',
-      'sister_of':'sister_of','brother_of':'brother_of','sibling_of':'sibling_of',
-      'colleague_of':'colleague_of','boss_of':'subordinate_of','subordinate_of':'boss_of',
-      'spouse_of':'spouse_of','friend_of':'friend_of','acquaintance_of':'acquaintance_of',
+      'boss_of':'subordinate_of','subordinate_of':'boss_of',
     };
     let allRevFixed = 0;
     const ALL_RELATIONS = Object.keys(REV_MAP);
     for (const rel of ALL_RELATIONS) {
       const rev = REV_MAP[rel];
+      // 🔴 2026-08-24 LLM识别方案: 反向边补全跳过"我"相关（红线——用户不是户籍人物，不得产生家族反向边）
       const orphans = this.query(
-        "SELECT e.id, sn.name as src, tn.name as tgt FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation=? AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e.target_id AND e2.target_id=e.source_id AND e2.relation=?)", [rel, rev]);
+        "SELECT e.id, sn.name as src, tn.name as tgt FROM edges e JOIN nodes sn ON e.source_id=sn.id JOIN nodes tn ON e.target_id=tn.id WHERE e.relation=? AND sn.name<>'我' AND tn.name<>'我' AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id=e.target_id AND e2.target_id=e.source_id AND e2.relation=?)", [rel, rev]);
       for (const o of orphans) {
         const eid = 'rv_' + Math.random().toString(36).substring(2, 10);
         this.run("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?, (SELECT id FROM nodes WHERE name=?), (SELECT id FROM nodes WHERE name=?), ?, '{\"_auto_fix\":true}', ?, ?)",
