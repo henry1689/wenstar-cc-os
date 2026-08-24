@@ -704,13 +704,13 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
           const _store2 = new _ECS2(ctx.storage.getSQLite());
           const _yuyaoU = ctx.m4?.getFamilyGraph?.()?.getUUIDByName?.('玉瑶') ?? null;
           const _yuyaoTurns = _yuyaoU ? _store2.queryEntityContext(_yuyaoU, 40) : [];
-          enrichedHistory = _yuyaoTurns.length > 0 ? _yuyaoTurns : ctx.conversationHistory.slice(-40);
+          enrichedHistory = _yuyaoTurns.length > 0 ? _yuyaoTurns : ctx.conversationHistory.slice(-20);
         } catch {
-          enrichedHistory = ctx.conversationHistory.slice(-40);
+          enrichedHistory = ctx.conversationHistory.slice(-20);
         }
       }
     } catch {
-      enrichedHistory = ctx.conversationHistory.slice(-40);
+      enrichedHistory = ctx.conversationHistory.slice(-20);
     }
     // 🆕 V10.11: 会晤模式下多重增强 — 动态窗口 + isolateTurns + 压缩 + 摘要文本
     if (_activeMeetingName && enrichedHistory.length > 0) {
@@ -1238,17 +1238,23 @@ export async function processChat(message: string, ctx: ChatContext, streamOpts?
         const _paeCfg = getRetrievalFusionConfig()?.p1_speed?.llm_reduction;
         const _paeShort = !!(_paeCfg?.enabled && _paeCfg?.pae_signal_shortcircuit) && !_meetingEntityName;
         if (_uniquePersons.length > 0 && (!_paeShort || hasProfileSignal(message))) {
-          _acquisitionReport = await ctx._profileAcquisitionEngine.acquire(
-            message,
-            _uniquePersons,
-            {
-              fgContext: ctx_m4?.family_context || [],
-              mode: 'pre_generation',
-              source: 'user_message',
-              // S4-M5: 会晤旁路 Layer2（acquire 内短路）
-              isMeeting: !!_meetingEntityName,
-            }
-          );
+          // 🔴 2026-08-24 性能修复: PAE 前置改为异步（chatTaskQueue 限流，不 await 主链）——
+          // 原 await acquire 会阻塞主链最多 45s（PAE 内 LLM 超时），而 _acquisitionReport 从不被消费，纯浪费。
+          void chatTaskQueue.enqueue(async () => {
+            try {
+              await ctx._profileAcquisitionEngine!.acquire(
+                message,
+                _uniquePersons,
+                {
+                  fgContext: ctx_m4?.family_context || [],
+                  mode: 'pre_generation',
+                  source: 'user_message',
+                  // S4-M5: 会晤旁路 Layer2（acquire 内短路）
+                  isMeeting: !!_meetingEntityName,
+                }
+              );
+            } catch (_e) { /* PAE 异步失败不影响主链 */ }
+          });
         } else if (_paeShort && _uniquePersons.length > 0) {
           console.log('[PAE] Hook B 短路(无档案信号): 跳过 ' + _uniquePersons.join('、'));
         }

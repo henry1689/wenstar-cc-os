@@ -26,7 +26,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   /** 日常对话：中性情绪、工作、闲聊 */
   daily: {
     temperature: 0.9,
-    maxTokens: 2000,
+    maxTokens: 800,
     timeoutMs: 45_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
@@ -35,7 +35,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   /** 回忆/分享：需要更多创造力和输出长度 */
   recall: {
     temperature: 1.0,
-    maxTokens: 1500,
+    maxTokens: 300,
     timeoutMs: 45_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,
@@ -44,7 +44,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   /** 亲密场景：高创造、长输出、宽松惩罚 */
   intimate: {
     temperature: 1.0,
-    maxTokens: 2500,
+    maxTokens: 1000,
     timeoutMs: 60_000,
     frequencyPenalty: 0.0,
     presencePenalty: 0.2,
@@ -62,7 +62,7 @@ const SCENARIO_CONFIGS: Record<LLMScenario, LLMScenarioConfig> = {
   /** 简短模式：极短输出 */
   short_mode: {
     temperature: 0.4,
-    maxTokens: 600,
+    maxTokens: 300,
     timeoutMs: 30_000,
     frequencyPenalty: 0.3,
     presencePenalty: 0.2,

@@ -59,7 +59,7 @@ export function injectMemories(opts: InjectOptions): string {
     m4Timeline = [],
     knowledgeBaseText = '',
     vaultHits = [],
-    maxChars = 8000,
+    maxChars = 5000,  // 2026-08-24 提速: 8000→5000（上下文瘦身）
     preserveLabels = false,
     vaultBoost = false,
     query,
