@@ -708,6 +708,34 @@ async function initPipeline(): Promise<void> {
     pae = undefined;
   }
 
+  // 🔴 2026-08-24 LLM识别方案: FG 关系 LLM 提取（24h 节流，读最近对话批量提取一次；不用对话热路径防耗 token）
+  try {
+    const { FGRelationExtractor } = await import('../app/fg/FGRelationExtractor.js');
+    const fgExtractor = new FGRelationExtractor(familyGraph);
+    fgExtractor.setLLM(llmProvider);
+    const esql3 = storage.getSQLite();
+    let lastExtractTs = 0;
+    if (esql3 && typeof esql3.queryAll === 'function') {
+      const tsRow = esql3.queryAll("SELECT value FROM engine_store WHERE key='fg_llm_extract_ts' LIMIT 1");
+      lastExtractTs = Number((tsRow?.[0] as any)?.value || 0);
+    }
+    if (Date.now() - lastExtractTs >= 24 * 60 * 60 * 1000) {
+      const recent = conversationDB?.getRecentConversations?.(200) || [];
+      if (recent.length > 0) {
+        const dialogues = recent.map((c: any) => ({ role: c.role, content: c.content }));
+        const res = await fgExtractor.extractAndApplyRecent(dialogues, { currentTime: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) });
+        console.log(`  FG LLM 关系提取: 提取${res.extracted} 写入${res.applied}${res.skipped.length > 0 ? ` 跳过${res.skipped.length}` : ''}`);
+        if (esql3 && typeof esql3.writeRaw === 'function') {
+          esql3.writeRaw("INSERT OR REPLACE INTO engine_store (key, value) VALUES ('fg_llm_extract_ts', ?)", String(Date.now()));
+        }
+      } else {
+        console.log('  FG LLM 关系提取: 无对话可提取');
+      }
+    } else {
+      console.log('  FG LLM 关系提取: 24h 节流内跳过');
+    }
+  } catch (e) { console.warn('  FG LLM 关系提取失败:', e); }
+
   // ── V4.0 户籍门阀过滤器初始化（三层白名单·始终激活）──
   try {
     gatekeeper = new UUIDGatekeeper(familyGraph);

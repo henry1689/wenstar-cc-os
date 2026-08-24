@@ -64,16 +64,16 @@ export class FGRelationExtractor {
     const prompt = this.buildExtractionPrompt(dialogue, context);
     
     try {
-      const response = await this.llm.chat({
-        messages: [
+      const text = await this.llm.rawCall(
+        [
           { role: 'system', content: '你是一个关系识别专家，只输出 JSON 格式的关系列表。' },
           { role: 'user', content: prompt },
         ],
-        temperature: 0.1,
-        maxTokens: 500,
-      });
+        500,
+        0.1
+      );
 
-      return this.parseExtractionResponse(response.content);
+      return this.parseExtractionResponse(text);
     } catch (err) {
       return {
         valid: false,
@@ -126,15 +126,15 @@ export class FGRelationExtractor {
     
     // LLM 验证
     try {
-      const response = await this.llm!.chat({
-        messages: [
+      const text = await this.llm!.rawCall(
+        [
           { role: 'system', content: '判断这个人名是否是语音识别错误产生的垃圾节点。只输出 true 或 false。' },
           { role: 'user', content: `这个名字是语音识别产生的，判断是否合理：${name}` },
         ],
-        temperature: 0,
-        maxTokens: 10,
-      });
-      return response.content.toLowerCase().includes('true');
+        10,
+        0
+      );
+      return text.toLowerCase().includes('true');
     } catch {
       return false;
     }
@@ -173,7 +173,7 @@ ${context?.speaker ? `说话人：${context.speaker}` : ''}
     try {
       const json = content.match(/\{[\s\S]*\}/)?.[0];
       if (!json) throw new Error('No JSON found');
-      
+
       const data = JSON.parse(json);
       return {
         valid: true,
@@ -187,5 +187,74 @@ ${context?.speaker ? `说话人：${context.speaker}` : ''}
         errors: ['Failed to parse LLM response'],
       };
     }
+  }
+
+  /**
+   * 把 LLM 提取的关系写入 FG（2026-08-24 LLM识别方案）
+   * 门槛: confidence≥0.7 | 8 种关系白名单 | 跳过"我" | 不建新节点（防 LLM 幻觉人名垃圾）
+   * 标记: properties 写 _llm + confidence + reason（区别于 _v2 人工确认）
+   */
+  applyRelations(result: RelationExtractionResult): { applied: number; skipped: string[] } {
+    if (!result.valid) return { applied: 0, skipped: [] };
+    const WHITELIST = new Set(['child_of','parent_of','elder_sister_of','younger_sister_of','spouse_of','colleague_of','friend_of','acquaintance_of']);
+    const skipped: string[] = [];
+    let applied = 0;
+    const now = new Date().toISOString();
+
+    for (const rel of result.relations || []) {
+      if (!WHITELIST.has(rel.relation)) { skipped.push(`${rel.from}-${rel.to}:非法类型[${rel.relation}]`); continue; }
+      // 🔴 血缘关系（child/parent）要求更高置信（0.9）——这类错误影响会晤身份，宁缺勿滥
+      const minConf = ['parent_of','father_of','mother_of','child_of'].includes(rel.relation) ? 0.9 : 0.7;
+      if ((rel.confidence ?? 0) < minConf) { skipped.push(`${rel.from}-${rel.to}:confidence不足(${rel.confidence})`); continue; }
+      if (rel.from === '我' || rel.to === '我') { skipped.push(`${rel.from}-${rel.to}:涉及"我"（红线）`); continue; }
+      const src = this.findPersonId(rel.from);
+      const tgt = this.findPersonId(rel.to);
+      if (!src || !tgt) { skipped.push(`${rel.from}-${rel.to}:节点不存在（不新建防幻觉）`); continue; }
+      if (src === tgt) continue;
+      // 🔴 血缘关系年龄合理性：复用 FamilyGraph V10.1 校验（_isParentAgePlausible），防 LLM"自信的错误"污染
+      //    （如"熊梓铭 parent_of 徐诗雨"这类跨家族错配，confidence 再高也拦截）
+      if (['parent_of','father_of','mother_of','child_of'].includes(rel.relation)) {
+        const plausible = (this.fg as any)._isParentAgePlausible?.(rel.relation, src, tgt);
+        if (plausible === false) { skipped.push(`${rel.from}-${rel.to}:年龄矛盾（V10.1校验）`); continue; }
+      }
+      const exist = this.q('SELECT id FROM edges WHERE source_id=? AND target_id=? AND relation=?', [src, tgt, rel.relation]);
+      if (exist.length > 0) { skipped.push(`${rel.from}-${rel.to}:已存在`); continue; }
+      this.r("INSERT OR IGNORE INTO edges (id, source_id, target_id, relation, properties, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        [this.fgId(), src, tgt, rel.relation,
+          JSON.stringify({ _llm: true, confidence: rel.confidence, reason: rel.reason || '', _extractedAt: now }),
+          now, now]);
+      applied++;
+    }
+    if (applied > 0) this.flushDirty();
+    return { applied, skipped };
+  }
+
+  /** 最近对话 → LLM 提取 → 写入 FG（一次调用） */
+  async extractAndApplyRecent(
+    dialogues: Array<{ role: string; content: string }>,
+    context?: { currentTime?: string }
+  ): Promise<{ extracted: number; applied: number; skipped: string[] }> {
+    if (!this.llm) return { extracted: 0, applied: 0, skipped: ['LLM not configured'] };
+    const text = (dialogues || []).slice(-30)
+      .map(d => `${d.role === 'user' ? '用户' : '玉瑶'}: ${String(d.content || '').replace(/\s+/g, ' ').substring(0, 200)}`)
+      .join('\n');
+    if (!text.trim()) return { extracted: 0, applied: 0, skipped: [] };
+    const result = await this.extractRelationsFromDialogue(text, context);
+    const { applied, skipped } = this.applyRelations(result);
+    return { extracted: result.relations?.length || 0, applied, skipped };
+  }
+
+  /** 人名 → 节点 id（先精确 name，再 aliases LIKE；不建新节点） */
+  private findPersonId(name: string): string | null {
+    const n = String(name || '').trim();
+    if (!n || n.length < 2 || n.length > 6) return null;
+    const rows = this.q("SELECT id FROM nodes WHERE name=? AND type='person'", [n]);
+    if (rows.length > 0) return rows[0].id as string;
+    const aliasRows = this.q("SELECT id FROM nodes WHERE type='person' AND aliases LIKE ?", [`%${n}%`]);
+    return aliasRows.length > 0 ? aliasRows[0].id as string : null;
+  }
+
+  private fgId(): string {
+    return 'llm_' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
   }
 }
