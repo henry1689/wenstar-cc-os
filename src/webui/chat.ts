@@ -2107,6 +2107,9 @@ try {
   }
 } catch { /* 降级到旧拼接链 */ }
 
+// 🔴 2026-08-24 物理规律跨轮场景缓存（模块级）：触发过浴室/床上裸身场景后跨轮延续，直到显式退出/换实体。
+let _lawSceneCache: { entity: string; location: string; action: string; at: number } | null = null;
+
 // 🗺️ 2026-08-24 高德实时路线: 检测位置意图 → 调瑶光 wf_amap_route → 实时数据注入 finalKnowledgeText。
 // 静默失败（总线/高德不可用绝不影响聊天）；仅玉瑶态触发（会晤/门卫拒绝/转场轮跳过）。
 if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityName && message.length > 3) {
