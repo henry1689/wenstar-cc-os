@@ -301,7 +301,7 @@ export async function persistConversation(input: PersistInput): Promise<void> {
     try {
       const v40Semantic = input.decision.enhanced.perceptionV40 ?? buildFallbackV40(input.p);
       enqueueYaoguangBackfill(input.ctx, {
-        dnaRootId: (input.dna as any).dna_root_id ?? input.dna.branch_id ?? 'TT00000001M01SYS0000000',
+        dnaRootId: (input.dna as any).dna_root_id ?? input.dna.branch_id ?? '',
         globalUid: input.dna.global_uid,
         locationFingerprint: input.dna.location_fingerprint ?? '0'.repeat(32),
         sceneTags: input.dna.scene_tags,

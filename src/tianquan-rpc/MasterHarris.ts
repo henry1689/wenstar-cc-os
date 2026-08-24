@@ -101,6 +101,49 @@ export class MasterHarris extends EventEmitter {
     if (this._degradation.activeScenarios.length > 0) {
       console.log(`[MasterHarris] ⚠️ 降级激活: ${this._degradation.activeScenarios.join(', ')}`);
     }
+    // 🔴 2026-08-24 瑶光域守护: 定期探测 g 域，离线则自动重启（根治 TCP 假死导致跨域全失效）
+    this.startYaoguangGuard();
+  }
+
+  // ── 🛡️ 瑶光域守护（每 90 秒探测，离线自动重启）────────────────
+  private _yaoguangGuardStarted = false;
+  private _yaoguangRestarting = false;
+  startYaoguangGuard(): void {
+    if (this._yaoguangGuardStarted) return;
+    this._yaoguangGuardStarted = true;
+    const loop = async () => {
+      if (this._bus?.connected) {
+        try {
+          // 轻量探测: wf_location_fingerprint 空参数（瑶光域秒回）
+          const r = await this.sendToYaoguangAndWait('wf_location_fingerprint', { task: '' }, 4000);
+          if (!r) {
+            console.warn('[YaoguangGuard] 瑶光域无响应，尝试重启...');
+            await this._restartYaoguang();
+          }
+        } catch (e) {
+          console.warn('[YaoguangGuard] 探测异常:', (e as Error)?.message);
+        }
+      }
+    };
+    setInterval(loop, 90_000);
+    setTimeout(loop, 15_000); // 启动后 15 秒首次探测
+  }
+
+  private async _restartYaoguang(): Promise<void> {
+    if (this._yaoguangRestarting) return;
+    this._yaoguangRestarting = true;
+    try {
+      const { spawn } = await import('node:child_process');
+      const py = process.env.TIANQUAN_PYTHON || 'python';
+      const script = 'D:/wenstar/wenstar_os/domain_yaoguang/bus_receiver.py';
+      const child = spawn(py, ['-u', script], { detached: true, stdio: 'ignore' });
+      child.unref();
+      console.log('[YaoguangGuard] 已重启瑶光域: ' + py + ' ' + script);
+    } catch (e) {
+      console.warn('[YaoguangGuard] 重启失败:', (e as Error)?.message);
+    } finally {
+      this._yaoguangRestarting = false;
+    }
   }
 
   async stop() {
@@ -143,7 +186,7 @@ export class MasterHarris extends EventEmitter {
       const busResult = await this._bus.sendCommand(domainTag, 'run_workflow', {
         workflow_id: route.workflowId,
         task: task.description || task.userMessage,
-        dna_root_id: task.constraints?.dna_root_id || 'TT00000001M01SYS0000000',
+        dna_root_id: task.constraints?.dna_root_id || '',
         location_fingerprint: task.constraints?.location_fingerprint || '0'.repeat(32),
         ...(task.constraints || {}),
       });
