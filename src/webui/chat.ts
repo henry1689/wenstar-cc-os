@@ -2189,6 +2189,29 @@ if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny) {
   } catch (e) { console.warn('[PhysicalLaws] 失败(静默):', (e as Error).message); }
 }
 
+// 🚄 2026-08-24 火车时刻查询(12306): "深圳到广州南的高铁几点" → wf_train_schedule → 真实车次注入。
+// 触发词: 高铁/火车/车次/余票/动车 + 站名对；静默失败不影响聊天。
+if (!_meetingExited && !_ruleEngineBlocked && !_meetingDeny && !_meetingEntityName && message.length > 3) {
+  try {
+    if (/高铁|火车|车次|余票|动车|班次/.test(message)) {
+      const _stSrc = '深圳|广州南|广州|光明城|福田|香港|北京|上海|武汉|长沙|东莞|惠州|珠海|佛山|中山|厦门|南昌';
+      const _sm = message.match(new RegExp('(?:从|由)?\\s*(' + _stSrc + ')\\s*(?:到|去|至|前往|回)\\s*(' + _stSrc + ')'));
+      if (_sm) {
+        const mh = (globalThis as any).__masterHarris;
+        if (mh?.sendToYaoguangAndWait) {
+          const _trainResult = await mh.sendToYaoguangAndWait('wf_train_schedule', { from_station: _sm[1], to_station: _sm[2] });
+          const _tr = _trainResult?.result ?? null;
+          if (_tr?.status === 'ok' && _tr?.trains?.length) {
+            const _sample = _tr.trains.slice(0, 5).map((t: any) => t.train_no + ' ' + t.depart + '→' + t.arrive + ' 历时' + t.duration).join('；');
+            finalKnowledgeText = (finalKnowledgeText || '') + '\n\n【火车时刻·12306】' + _sm[1] + '→' + _sm[2] + '（' + _tr.date + '）共' + _tr.count + '车次，早班示例：' + _sample + '。回答用户火车/高铁/车次/余票问题时，以这些真实车次信息为准。';
+            console.log('[Train] 注入: ' + _sm[1] + '→' + _sm[2] + ' ' + _tr.count + '车次');
+          }
+        }
+      }
+    }
+  } catch { /* 火车查询失败不影响聊天 */ }
+}
+
 // 🛰️ 2026-08-24 和风真实天气注入玉瑶/会晤 prompt（30分钟缓存，失败静默不影响聊天）。
 // 玉瑶答"外面天气/温度/外出/穿衣"直接以真实数据为准（此前靠季节常识可能不准）。
 if (!_meetingExited && !_ruleEngineBlocked) {
