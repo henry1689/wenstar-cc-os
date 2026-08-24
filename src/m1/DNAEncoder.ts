@@ -201,6 +201,7 @@ export class DNAEncoder {
     this.buffer = [];
     this.sequencer.reset();
     this.extractor.reset();
+    this._fingerprintCache = '0'.repeat(32);  // P1-1: 会话场景指纹重置
   }
 
   getStats(): { encodeCount: number; failCount: number; failRate: number; stageFailures: Record<string, number> } {
@@ -278,7 +279,8 @@ export class DNAEncoder {
       warnings: warnings.length > 0 ? warnings : undefined,
       dna_root_id,
       global_uid: DNAEncoder.generateGlobalUID('MM', l1Result.seq_pos, 0, ''),
-      location_fingerprint: '0'.repeat(32),  // 瑶光空白期全0, G2全PASS
+      // P1-1: 场景指纹派生（替代恒全0）——无场景词时沿用会话缓存，降级保持 G2 全PASS
+      location_fingerprint: this.deriveLocationFingerprint(utterance),
     };
 
     return dna;
@@ -305,6 +307,38 @@ export class DNAEncoder {
       location_fingerprint: '0'.repeat(32),
       warnings: ['empty_input'],
     };
+  }
+
+  /** 会话级场景指纹缓存（P1-1）：有场景词时更新，无词时沿用，保持时空连续 */
+  private _fingerprintCache: string = '0'.repeat(32);
+
+  /**
+   * P1-1: 场景指纹派生 — 与瑶光 workflow_executor 关键词规则保持一致。
+   * 命中明确场景词 → 更新缓存并返回；未命中 → 沿用缓存（降级：无任何场景时保持全0，G2 全PASS）。
+   */
+  private deriveLocationFingerprint(utterance: string): string {
+    const t = (utterance || '').toLowerCase();
+    const rules: Array<[RegExp, string]> = [
+      [/(总经理|经理室|三楼)/, 'office:factory_office_3f_ceo:ceo_desk'],
+      [/(办公室|工位|会议室|公司|上班|厂区|车间|前台|茶水间)/, 'office:guangming_office:desk_a2'],
+      [/(宿舍|凤凰公寓)/, 'home:fenghuang_apartment_32f:living_tv'],
+      [/(公寓)/, 'home:guangming_apartment:apt_bed'],
+      [/(浴室|洗澡|冲凉|淋浴|卫生间|厕所)/, 'home:xinghai_mingcheng:master_bath'],
+      [/(卧室|床上|床|睡觉|躺)/, 'home:xinghai_mingcheng:master_bed'],
+      [/(客厅|沙发)/, 'home:xinghai_mingcheng:living_sofa'],
+      [/(厨房|做饭|吃饭|餐厅|餐桌)/, 'home:xinghai_mingcheng:dining_table'],
+      [/(玄关|进门|回家)/, 'home:xinghai_mingcheng:entrance'],
+      [/(阳台)/, 'home:xinghai_mingcheng:bedroom2_desk'],
+      [/(通勤|开车|高速|堵车)/, 'outdoor:commute_home_office:car'],
+      [/(公园)/, 'outdoor:qianhai_park:entrance'],
+    ];
+    for (const [re, fp] of rules) {
+      if (re.test(t)) {
+        this._fingerprintCache = fp;
+        return fp;
+      }
+    }
+    return this._fingerprintCache;
   }
 
   /**
