@@ -21,12 +21,14 @@ import type { ConsolidationQueue } from '../../../m7/ConsolidationQueue.js';
 import type { InductionScheduler } from '../../../m7/InductionScheduler.js';
 import { SleepTimeConsolidator } from './SleepTimeConsolidator.js';
 import { HippocampalIndex } from './HippocampalIndex.js';
+import { MemoryAssessor } from '../../../app/vault/MemoryAssessor.js';
 
 export interface HippocampusDeps {
   storage: FusionStorageAdapter;
   m7: M7Orchestrator;
   consolidationQueue: ConsolidationQueue;
   inductionScheduler: InductionScheduler;
+  assessor: MemoryAssessor;   // P0: 三库流转调度器（砂金→金库→黑钻 + 衰减）
 }
 
 // ═══════════════════════════════════════════════════════
@@ -225,6 +227,33 @@ function createHippocampalIndexMaintenance(storage: FusionStorageAdapter): Rhyth
   };
 }
 
+/** 三库流转调度器 — 砂金→金库→黑钻 + 衰减（MemoryAssessor，替代旧独立 setInterval） */
+function createAssessorTasks(assessor: MemoryAssessor): RhythmComponent {
+  return {
+    name: 'MemoryAssessor',
+    tasks: [
+      {
+        name: 'assessor.sandToGold',
+        rhythm: HippocampusRhythm.SWR,
+        intervalMs: 30 * 60_000,  // 每 30 分钟
+        execute: async () => assessor.triggerSandToGold(),
+      },
+      {
+        name: 'assessor.goldToDiamond',
+        rhythm: HippocampusRhythm.DELTA,
+        intervalMs: 2 * 3600_000,  // 每 2 小时
+        execute: async () => assessor.triggerGoldToDiamond(),
+      },
+      {
+        name: 'assessor.decay',
+        rhythm: HippocampusRhythm.DELTA,
+        intervalMs: 24 * 3600_000,  // 每 24 小时
+        execute: async () => assessor.triggerDecay(),
+      },
+    ],
+  };
+}
+
 // ═══════════════════════════════════════════════════════
 //  主入口
 // ═══════════════════════════════════════════════════════
@@ -243,7 +272,7 @@ function createHippocampalIndexMaintenance(storage: FusionStorageAdapter): Rhyth
  * @returns coordinator 实例，供 chat.ts 和 API 路由使用
  */
 export function assembleAndStartHippocampus(deps: HippocampusDeps): HippocampusRhythmCoordinator {
-  const { storage, m7, consolidationQueue, inductionScheduler } = deps;
+  const { storage, m7, consolidationQueue, inductionScheduler, assessor } = deps;
 
   const hrc = initHippocampusCoordinator(storage);
 
@@ -255,6 +284,7 @@ export function assembleAndStartHippocampus(deps: HippocampusDeps): HippocampusR
   hrc.register(createCoreMemoryTasks());
   hrc.register(createDailyMaintenanceTasks(storage));
   hrc.register(createHippocampalIndexMaintenance(storage));
+  hrc.register(createAssessorTasks(assessor));
 
   hrc.start();
   (globalThis as any).__hippocampusCoordinator = hrc;

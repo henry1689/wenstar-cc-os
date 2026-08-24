@@ -808,9 +808,12 @@ async function initPipeline(): Promise<void> {
   // 🔥 天权海马体节律调度器 — 统一调度所有海马体组件 (调试模式下跳过)
   if (!isDebugMode()) {
   try {
+    const { MemoryAssessor } = await import('../app/vault/MemoryAssessor.js');
+    const assessor = new MemoryAssessor(storage);
+    (globalThis as any).__memoryAssessor = assessor;
     const { assembleAndStartHippocampus } = await import('../app/brain/assembleHippocampus.js');
     const hrc = assembleAndStartHippocampus({
-      storage, m7, consolidationQueue, inductionScheduler,
+      storage, m7, consolidationQueue, inductionScheduler, assessor,
     });
     console.log('  天权海马体节律调度器已启动 ✓');
     markModuleAlive('Hippocampus·海马体');

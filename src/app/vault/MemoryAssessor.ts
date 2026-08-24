@@ -451,4 +451,10 @@ export class MemoryAssessor {
     const count = sqlite.queryAll('SELECT COUNT(*) as c FROM black_diamond') as any[];
     return count[0]?.c || 0;
   }
+
+  /** P0: 公开衰减触发器 — 供 HippocampusRhythmCoordinator 调度（原 runDecay private） */
+  async triggerDecay(): Promise<number> {
+    await this.runDecay();
+    return 1;
+  }
 }
