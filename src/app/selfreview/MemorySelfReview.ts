@@ -63,9 +63,9 @@ export class MemorySelfReview {
         report.actions.push(`实体关联过多: ${c.name} (${c.mem_count}条记忆)`);
       }
 
-      // ③ 过期社交关系衰减
+      // ③ 过期社交关系衰减（entity_relations 无 id 列，用 entity_a_id+entity_b_id 定位）
       const oldRelations = sqlite.queryAll(
-        `SELECT er.id, e.name as source_name, e2.name as target_name
+        `SELECT er.entity_a_id, er.entity_b_id, e.name as source_name, e2.name as target_name
          FROM entity_relations er
          JOIN entities e ON e.id = er.entity_a_id
          JOIN entities e2 ON e2.id = er.entity_b_id
@@ -76,8 +76,8 @@ export class MemorySelfReview {
       for (const rel of oldRelations) {
         try {
           sqlite.writeRaw(
-            'UPDATE entity_relations SET strength = MAX(0.05, strength * 0.5) WHERE id = ?',
-            [(rel as any).id],
+            'UPDATE entity_relations SET strength = MAX(0.05, strength * 0.5) WHERE entity_a_id = ? AND entity_b_id = ?',
+            [(rel as any).entity_a_id, (rel as any).entity_b_id],
           );
           report.expiredRelations++;
         } catch (e: any) { console.error('[MemorySelfReview] error:', e?.message); }
