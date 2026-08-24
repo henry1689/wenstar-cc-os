@@ -227,6 +227,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
       threadId: (input.dna as any).dna_root_id ?? idUser,
       sourceConversationIds: [input.seqPos],
+      dnaRootId: (input.dna as any).dna_root_id ?? null,          // P0-1: DNA根码落库
+      entityGenes: (input.dna as any).entity_genes ?? null,       // P0-2: L3实体基因落库
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
       belongEntityUuid: belongUUID || undefined,  // V10.4: 实体归属标注
@@ -283,6 +285,8 @@ export async function persistConversation(input: PersistInput): Promise<void> {
       stabilityScore: calciumLevel >= 2 ? 0.45 : 0.2,
       threadId: (input.dna as any).dna_root_id ?? idAssist,
       sourceConversationIds: [input.seqPos + 1],
+      dnaRootId: (input.dna as any).dna_root_id ?? null,          // P0-1: DNA根码落库
+      entityGenes: (input.dna as any).entity_genes ?? null,       // P0-2: L3实体基因落库
       globalUid: input.dna.global_uid, locationFingerprint: input.dna.location_fingerprint,
       dialogGroupId: null, topicLabel: null,
       belongEntityUuid: asstUUID || undefined,  // P1-2: 统一走 EntityOwnershipResolver

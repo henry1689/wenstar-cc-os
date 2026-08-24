@@ -769,6 +769,8 @@ export class SQLiteAdapter {
     threadId?: string | null; sessionId?: string | null;
     sourceConversationIds?: number[] | null;
     dialogGroupId?: string | null; topicLabel?: string | null;
+    dnaRootId?: string | null;        // P0-1: DNA 根码透传落库（编码规约 B1）
+    entityGenes?: any[] | null;       // P0-2: L3 实体基因落库（编码规约 B2）
     belongEntityUuid?: string | null;  // V10.4: 实体归属标注
     isForesight?: boolean;            // V13: 前瞻时态标记
     validUntilMs?: number | null;     // V13: 有效截止时间(ms)
@@ -789,9 +791,10 @@ export class SQLiteAdapter {
          confidence_score, stability_score, thread_id, session_id, source_conversation_ids,
          recall_count, promoted_to_diamond, strength_updated_at, effective_strength,
          is_landmark, primary_emotion, memory_type, dialog_group_id, topic_label,
+	         dna_root_id, entity_genes,
 	         global_uid, location_fingerprint, belong_entity_uuid,
 		         is_foresight, valid_until_ms, foresight_status, namespace)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 1.0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           opts.id, opts.seqPos, opts.createdAt, p40Json,
           opts.calciumScore, opts.calciumLevel,
@@ -806,6 +809,7 @@ export class SQLiteAdapter {
           opts.createdAt,
           opts.primaryEmotion, opts.memoryType || 'dialog',
           opts.dialogGroupId ?? null, opts.topicLabel ?? null,
+          opts.dnaRootId ?? null, opts.entityGenes ? JSON.stringify(opts.entityGenes) : null,
           opts.globalUid || ('MM' + createHash('sha256').update(opts.id).digest('hex').substring(0, 8).toUpperCase()), opts.locationFingerprint ?? null,
 	          opts.belongEntityUuid ?? null,
           opts.isForesight ? 1 : 0, opts.validUntilMs ?? null, opts.foresightStatus ?? null,
