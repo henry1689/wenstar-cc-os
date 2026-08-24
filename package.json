@@ -15,6 +15,7 @@
     "stress-test": "npx tsx test/run-all-stress.ts",
     "webui": "node start.cjs",
     "health": "node ./node_modules/tsx/dist/cli.mjs src/cli/health-check.ts",
+    "fg:maintenance": "node ./node_modules/tsx/dist/cli.mjs scripts/fg-maintenance.ts",
     "port:3000": "node scripts/check-port-3000.cjs",
     "wait:health": "node scripts/wait-for-health.cjs",
     "smoke:api": "node ./node_modules/vitest/vitest.mjs run scripts/__tests__/runtime-api-smoke.test.ts",
