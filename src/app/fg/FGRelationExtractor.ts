@@ -244,14 +244,20 @@ ${context?.speaker ? `说话人：${context.speaker}` : ''}
     return { extracted: result.relations?.length || 0, applied, skipped };
   }
 
-  /** 人名 → 节点 id（先精确 name，再 aliases LIKE；不建新节点） */
+  /** 人名 → 节点 id（先精确 name → aliases → 简称子串；不建新节点） */
   private findPersonId(name: string): string | null {
     const n = String(name || '').trim();
     if (!n || n.length < 2 || n.length > 6) return null;
     const rows = this.q("SELECT id FROM nodes WHERE name=? AND type='person'", [n]);
     if (rows.length > 0) return rows[0].id as string;
-    const aliasRows = this.q("SELECT id FROM nodes WHERE type='person' AND aliases LIKE ?", [`%${n}%`]);
-    return aliasRows.length > 0 ? aliasRows[0].id as string : null;
+    const aliasRows = this.q("SELECT id FROM nodes WHERE type='person' AND aliases LIKE ?", [`%"${n}"%`]);
+    if (aliasRows.length > 0) return aliasRows[0].id as string;
+    // 🔴 2026-08-25: 简称子串匹配（对话常用"诗雨"→"徐诗雨"；仅唯一命中才用，防歧义误配）
+    if (n.length >= 2) {
+      const subRows = this.q("SELECT id FROM nodes WHERE type='person' AND name LIKE ?", [`%${n}%`]);
+      if (subRows.length === 1) return subRows[0].id as string;
+    }
+    return null;
   }
 
   private fgId(): string {
