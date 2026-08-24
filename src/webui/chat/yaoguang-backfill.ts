@@ -82,7 +82,7 @@ async function _processNext(): Promise<void> {
           console.warn('[YaoguangBackfill] 天权 RPC 未就绪，跳过本轮回填');
           continue;
         }
-        // 2. 拉瑶光客观 40D（include_yaoling=false，快且轻）
+        // 2. 拉瑶光客观 40D + 瑶灵主观 40D（include_yaoling=true，双域全采）
         // 🛰️ 2026-08-24 和风真实天气（先取再传，避免 Promise 序列化为 {}）
         const _wx = await getRealWeather();
         if (_wx) console.log('[QWeather] 回填天气: ' + _wx.summary);
@@ -98,7 +98,7 @@ async function _processNext(): Promise<void> {
             environmental_params: _wx ? { temperature: _wx.temperature, humidity: _wx.humidity, weather_text: _wx.weather_text, weather_raw: _wx.weather_raw, wind_dir: _wx.wind_dir, wind_scale: _wx.wind_scale } : undefined,
             temporal_context: _wx ? { weather_raw: _wx.weather_raw } : undefined,
           },
-          { include_yaoling: false, timeout_ms: 30_000 },
+          { include_yaoling: true, timeout_ms: 30_000 },
         );
         // 3. 失败/无 objective → 跳过
         const objective = res?.yaoguang?.snapshot?.objective as
