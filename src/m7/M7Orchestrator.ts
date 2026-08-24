@@ -496,14 +496,14 @@ export class M7Orchestrator {
         });
       }
 
-      // ④ 从近期对话频率估算"活跃时段"
+      // ④ 从近期对话频率估算"活跃时段"（conversations 用 timestamp 列）
       const recentMessages = sqlite.queryAll(
-        `SELECT created_at FROM conversations ORDER BY created_at DESC LIMIT 50`
+        `SELECT timestamp FROM conversations ORDER BY timestamp DESC LIMIT 50`
       );
       if (recentMessages && recentMessages.length >= 10) {
         const hourCounts: Record<number, number> = {};
         for (const msg of recentMessages) {
-          const h = new Date(msg.created_at as string).getHours();
+          const h = new Date((msg as any).timestamp as string).getHours();
           hourCounts[h] = (hourCounts[h] || 0) + 1;
         }
         const peakHours = Object.entries(hourCounts)
