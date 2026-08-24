@@ -16,7 +16,6 @@ import { HeartStateStore } from './heart/HeartStateStore.js';
 import { GenerationOrchestrator } from './cortex/GenerationOrchestrator.js';
 import { L0Classifier } from './reflex/L0Classifier.js';
 import { L05IntentRouter } from './reflex/L05IntentRouter.js';
-import { SafetyInterceptor } from './reflex/SafetyInterceptor.js';
 import { OutputProcessor } from './cortex/OutputProcessor.js';
 import { LegacyAdapter } from './legacy-adapter.js';
 import { CommunicationModeStore } from './reflex/CommunicationModeStore.js';
@@ -69,7 +68,6 @@ export class Orchestrator {
     this._commModeRouter = new CommunicationModeRouter(commStore);
 
     const modules: ILifecycle[] = [
-      new SafetyInterceptor(),
       new L0Classifier(),
       new L05IntentRouter(),
       this._commModeRouter,
