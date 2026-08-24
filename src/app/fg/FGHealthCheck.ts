@@ -180,17 +180,17 @@ export class FGHealthCheck {
   }
 
   private cleanupDuplicates(): number {
-    // 🔴 2026-08-24: MIN(id) 保留的是随机 UUID 最小，不是最早创建；改为保留 created_at 最早一条
+    // 🔴 2026-08-24 V2修复: 用「有序三元组 (source_id,target_id,relation)」分组——只删完全重复（同方向同关系）。
+    //    曾误用「无序对」分组，把有向互反关系（colleague_of/spouse_of 的 A→B 与 B→A 同 relation 同无序对）
+    //    当重复删一半，致 78 条 colleague + 3 条 spouse 反向被误删（2026-08-24 review 实证）。
+    //    保留 created_at 最早一条（MIN(id) 是随机 UUID 最小，非最早创建）。
     const before = this.countEdges();
     this.r(`
       DELETE FROM edges
       WHERE id NOT IN (
         SELECT id FROM (
           SELECT id, ROW_NUMBER() OVER (
-            PARTITION BY
-              CASE WHEN source_id < target_id THEN source_id ELSE target_id END,
-              CASE WHEN source_id < target_id THEN target_id ELSE source_id END,
-              relation
+            PARTITION BY source_id, target_id, relation
             ORDER BY created_at ASC, id ASC
           ) AS rn
           FROM edges
