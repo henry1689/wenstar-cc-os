@@ -83,6 +83,9 @@ async function _processNext(): Promise<void> {
           continue;
         }
         // 2. 拉瑶光客观 40D（include_yaoling=false，快且轻）
+        // 🛰️ 2026-08-24 和风真实天气（先取再传，避免 Promise 序列化为 {}）
+        const _wx = await getRealWeather();
+        if (_wx) console.log('[QWeather] 回填天气: ' + _wx.summary);
         const res = await mh.collect40DSnapshot(
           {
             dna_root_id: job.dnaRootId,
@@ -92,12 +95,8 @@ async function _processNext(): Promise<void> {
             interpersonal_labels: job.interpersonalLabels,
             raw_input_text: job.rawInputText,
             scene_desc: job.rawInputText,
-            // 🛰️ 2026-08-24 和风真实天气 → 瑶光客观维（公共模块）
-            environmental_params: (async () => {
-              const w = await getRealWeather();
-              if (w) console.log('[QWeather] 回填天气: ' + w.summary);
-              return w ? { temperature: w.temperature, humidity: w.humidity, weather_text: w.weather_text, wind_dir: w.wind_dir, wind_scale: w.wind_scale } : undefined;
-            })(),
+            environmental_params: _wx ? { temperature: _wx.temperature, humidity: _wx.humidity, weather_text: _wx.weather_text, weather_raw: _wx.weather_raw, wind_dir: _wx.wind_dir, wind_scale: _wx.wind_scale } : undefined,
+            temporal_context: _wx ? { weather_raw: _wx.weather_raw } : undefined,
           },
           { include_yaoling: false, timeout_ms: 30_000 },
         );

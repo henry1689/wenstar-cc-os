@@ -17,8 +17,17 @@ export interface WeatherInfo {
   weather_text: string;
   wind_dir: string;
   wind_scale: number;
+  /** 英文天气 key（瑶光 D26 台风/雷暴判断用）：typhoon/thunderstorm/其他 */
+  weather_raw: string;
   /** 人类可读摘要，如"阴，28°C，西南风3级，湿度87%" */
   summary: string;
+}
+
+/** 和风中文天气文本 → 瑶光 D26 英文 key（台风/雷暴特殊处理） */
+function toWeatherRaw(text: string): string {
+  if (/台[风]/.test(text)) return 'typhoon';
+  if (/雷[阵雨暴]|雷雨|雷暴|强对流/.test(text)) return 'thunderstorm';
+  return 'other';
 }
 
 /** 获取当前天气（30 分钟缓存 + 失败重试 1 次） */
@@ -37,6 +46,7 @@ export async function getRealWeather(force = false): Promise<WeatherInfo | null>
           weather_text: now.weatherType || '',
           wind_dir: now.windDir || '',
           wind_scale: now.windScale || 0,
+          weather_raw: toWeatherRaw(now.weatherType || ''),
           summary: `${now.text || ''}${hum ? '，湿度' + hum + '%' : ''}`,
         };
         _cache = { at: Date.now(), data };
