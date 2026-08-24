@@ -166,7 +166,7 @@ export class MasterHarris extends EventEmitter {
   /** 🗺️ 2026-08-24 高德接入: 向瑶光域发指令并等待 workflow_result（同步拿到处理结果）。
    *  总线 publish 只回 ack，瑶光域结果走异步 workflow_result 广播——按 workflow_id 匹配。
    *  超时返回 null（不阻塞主流程）。 */
-  async sendToYaoguangAndWait(workflowId: string, payload: Record<string, unknown>, timeoutMs = 15000): Promise<Record<string, unknown> | null> {
+  async sendToYaoguangAndWait(workflowId: string, payload: Record<string, unknown>, timeoutMs = 6000): Promise<Record<string, unknown> | null> {
     if (!this._bus?.connected) throw new Error('总线离线');
     const bus = this._bus;
     return new Promise((resolve) => {
